@@ -219,6 +219,7 @@ impl Renderer {
         let world_pass = world(Mode::Opaque, Geometry::Vertices)?;
         let translucent_pass = world(Mode::Translucent, Geometry::Vertices)?;
         let translucent_terrain_pass = world(Mode::TranslucentTerrain, Geometry::Vertices)?;
+        let text_pass = world(Mode::Text, Geometry::Vertices)?;
         let clouds_pass = world(Mode::Clouds, Geometry::Vertices)?;
         let weather_pass = world(Mode::Weather, Geometry::Vertices)?;
         let celestial_pass = world(Mode::Celestial, Geometry::Vertices)?;
@@ -413,6 +414,7 @@ impl Renderer {
                 world: world_pass,
                 translucent: translucent_pass,
                 translucent_terrain: translucent_terrain_pass,
+                text: text_pass,
                 clouds: clouds_pass,
                 weather: weather_pass,
                 celestial: celestial_pass,

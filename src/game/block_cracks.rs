@@ -115,7 +115,7 @@ impl BlockCracks {
             model: glam::Mat4::IDENTITY,
             origin: glam::IVec3::from_array(overlay.pos),
             layer: RenderLayer::Crumbling,
-            translucent: true,
+            blend: crate::renderer::Blending::Translucent,
             light: None,
             overlay: 0.0,
             glint: crate::renderer::Glint::None,

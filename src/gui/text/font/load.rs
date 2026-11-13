@@ -84,12 +84,10 @@ fn load_providers(
                 }
             }
             "space" => load_space(&provider, glyphs),
-            "unihex" => {
-                match load_unihex(assets, &provider) {
-                    Ok(provider) => unihex.push(provider),
-                    Err(e) => eprintln!("font: {e:#}"),
-                }
-            }
+            "unihex" => match load_unihex(assets, &provider) {
+                Ok(provider) => unihex.push(provider),
+                Err(e) => eprintln!("font: {e:#}"),
+            },
             "reference" => {
                 if let Some(ref_id) = provider.get("id").and_then(|v| v.as_str()) {
                     load_font_stack(

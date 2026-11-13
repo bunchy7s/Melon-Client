@@ -315,11 +315,7 @@ impl ClientEntity {
             let target = if dead {
                 ax::PLAY_DEAD
             } else if moving {
-                if wet && !ground {
-                    ax::SWIM
-                } else {
-                    ax::WALK
-                }
+                if wet && !ground { ax::SWIM } else { ax::WALK }
             } else if wet && !ground {
                 ax::IDLE_UNDERWATER
             } else if wet {

@@ -56,14 +56,36 @@ pub struct EntityDraw {
     pub origin: glam::IVec3,
     /// [`RenderLayer::Entities`] or [`RenderLayer::Hand`].
     pub layer: RenderLayer,
-    /// Blended, without writing depth: an item with see-through texels.
-    pub translucent: bool,
+    pub blend: Blending,
     /// The light on this draw (`EntityRenderer.getPackedLightCoords` at
     pub light: Option<[f32; 3]>,
     /// Hurt red or creeper white, see [`DrawLight::overlay`](crate::renderer::pipeline::world::DrawLight::overlay).
     pub overlay: f32,
     /// Enchantment glint overlay (`ItemStack.hasFoil`).
     pub glint: Glint,
+}
+
+/// How an [`EntityDraw`] meets what is drawn already. In the order they are
+/// drawn within a layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Blending {
+    /// Depth written, texels below the cutout dropped.
+    Opaque,
+    /// A text display (`RenderPipelines.TEXT_POLYGON_OFFSET`): blended and
+    /// depth written, so what lies behind and is drawn later stays behind.
+    Text,
+    /// Blended, without writing depth: an item with see-through texels.
+    Translucent,
+}
+
+impl Blending {
+    pub fn of(translucent: bool) -> Self {
+        if translucent {
+            Self::Translucent
+        } else {
+            Self::Opaque
+        }
+    }
 }
 
 /// Which enchanted-glint overlay a draw wants (`TextureTransform` scale

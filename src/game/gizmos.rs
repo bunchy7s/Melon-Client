@@ -144,7 +144,7 @@ impl GizmoMesh {
                 model: Mat4::IDENTITY,
                 origin,
                 layer: RenderLayer::Shadows,
-                translucent: false,
+                blend: crate::renderer::Blending::Opaque,
                 light: None,
                 overlay: 0.0,
                 glint: crate::renderer::Glint::None,

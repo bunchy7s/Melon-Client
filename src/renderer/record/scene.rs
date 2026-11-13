@@ -1,5 +1,6 @@
 //! Recording the 3D scene: sky, world layers, entities.
 
+use crate::renderer::Blending;
 use crate::renderer::pipeline::world::{DrawLight, FogInput, Mode};
 use crate::renderer::{
     ChunkDraw, MeshId, QuadMeshId, RenderLayer, Renderer, SceneFrame, Sky, SkyKind, TerrainMesh,
@@ -142,13 +143,15 @@ impl Renderer {
                     let view_proj = self.world_view_projection(world, layer);
                     let mut entities: Vec<_> =
                         scene.entities.iter().filter(|e| e.layer == layer).collect();
-                    entities.sort_by_key(|e| e.translucent);
+                    entities.sort_by_key(|e| e.blend);
                     let fog = self.model_fog(world, layer);
                     for entity in entities {
-                        let (mode, pass) = if entity.translucent {
-                            (Mode::Translucent, &self.pipelines.translucent)
-                        } else {
-                            (Mode::Opaque, &self.pipelines.world)
+                        let (mode, pass) = match entity.blend {
+                            Blending::Translucent => {
+                                (Mode::Translucent, &self.pipelines.translucent)
+                            }
+                            Blending::Text => (Mode::Text, &self.pipelines.text),
+                            Blending::Opaque => (Mode::Opaque, &self.pipelines.world),
                         };
                         let at = (
                             view_proj * world.relative_to(entity.model, entity.origin),
@@ -396,6 +399,7 @@ impl Renderer {
             Mode::Opaque => &self.pipelines.world,
             Mode::Translucent => &self.pipelines.translucent,
             Mode::TranslucentTerrain => &self.pipelines.translucent_terrain,
+            Mode::Text => &self.pipelines.text,
             Mode::Clouds => &self.pipelines.clouds,
             Mode::Weather => &self.pipelines.weather,
             Mode::Celestial => &self.pipelines.celestial,
@@ -493,6 +497,7 @@ impl Renderer {
             Mode::Solid => &self.pipelines.terrain[0],
             Mode::Opaque => &self.pipelines.terrain[1],
             Mode::Translucent
+            | Mode::Text
             | Mode::TranslucentTerrain
             | Mode::Clouds
             | Mode::Weather

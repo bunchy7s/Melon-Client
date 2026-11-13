@@ -36,9 +36,9 @@ use vk_util::{
 };
 
 pub use frame::{
-    Blur, CelestialDraw, ChunkDraw, CornerLight, EntityDraw, Frame, Glint, QuadCorner, RenderLayer,
-    SceneFrame, Sky, SkyKind, TerrainMesh, TerrainQuad, WORLD_Z_NEAR, WorldDraw, WorldVertex,
-    world_projection,
+    Blending, Blur, CelestialDraw, ChunkDraw, CornerLight, EntityDraw, Frame, Glint, QuadCorner,
+    RenderLayer, SceneFrame, Sky, SkyKind, TerrainMesh, TerrainQuad, WORLD_Z_NEAR, WorldDraw,
+    WorldVertex, world_projection,
 };
 
 use ash::vk;
@@ -195,6 +195,8 @@ struct Pipelines {
     translucent: pipeline::Pass,
     /// The blended variant that writes depth, for translucent terrain.
     translucent_terrain: pipeline::Pass,
+    /// Text displays: blended, depth written.
+    text: pipeline::Pass,
     /// Fancy clouds: blended, no back-face cull.
     clouds: pipeline::Pass,
     /// Rain and snow: blended, no cull.
@@ -390,6 +392,7 @@ impl Drop for Renderer {
             self.pipelines.world.destroy(&self.device);
             self.pipelines.translucent.destroy(&self.device);
             self.pipelines.translucent_terrain.destroy(&self.device);
+            self.pipelines.text.destroy(&self.device);
             self.pipelines.clouds.destroy(&self.device);
             self.pipelines.weather.destroy(&self.device);
             self.pipelines.celestial.destroy(&self.device);

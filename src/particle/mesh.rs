@@ -228,7 +228,7 @@ impl ParticleMeshes {
                         model: Mat4::IDENTITY,
                         origin: view.origin,
                         layer: RenderLayer::Particles,
-                        translucent,
+                        blend: crate::renderer::Blending::of(translucent),
                         light: Some([1.0; 3]),
                         overlay: 0.0,
                         glint: crate::renderer::Glint::None,

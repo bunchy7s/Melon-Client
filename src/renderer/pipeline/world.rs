@@ -124,6 +124,9 @@ pub enum Mode {
     Opaque,
     /// Blob shadows and see-through items: blended, depth-tested, no depth
     Translucent,
+    /// Text displays (`RenderPipelines.TEXT_POLYGON_OFFSET`): blended,
+    /// depth-tested and depth written, clear texels dropped.
+    Text,
     /// Water, glass and ice (vanilla `TRANSLUCENT_TERRAIN`): blended, drawn
     TranslucentTerrain,
     /// Fancy clouds (`RenderPipelines.CLOUDS`): translucent, depth written
@@ -221,7 +224,7 @@ pub unsafe fn create(
                 .depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL),
             translucent_blend(),
         ),
-        Mode::Clouds | Mode::TranslucentTerrain => (
+        Mode::Clouds | Mode::TranslucentTerrain | Mode::Text => (
             vk::CullModeFlags::BACK,
             vk::PipelineDepthStencilStateCreateInfo::default()
                 .depth_test_enable(true)
@@ -374,7 +377,7 @@ pub unsafe fn create(
         extra_sets,
         depth_bias: match mode {
             Mode::Crumbling => Some((40.0, 3.0)),
-            Mode::Opaque | Mode::Translucent => Some((16.0, 2.0)),
+            Mode::Opaque | Mode::Translucent | Mode::Text => Some((16.0, 2.0)),
             _ => None,
         },
     }

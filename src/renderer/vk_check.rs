@@ -273,6 +273,7 @@ fn validation_layers_accept_every_pipeline() {
             Mode::Solid,
             Mode::Opaque,
             Mode::Translucent,
+            Mode::Text,
             Mode::TranslucentTerrain,
             Mode::Clouds,
             Mode::Weather,

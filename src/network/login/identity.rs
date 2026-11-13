@@ -42,9 +42,7 @@ impl Identity {
 
     pub fn uuid(&self) -> uuid::Uuid {
         match self {
-            Identity::Offline { username } => {
-                crate::auth::accounts::offline_uuid(username)
-            }
+            Identity::Offline { username } => crate::auth::accounts::offline_uuid(username),
             Identity::Online { uuid, .. } => *uuid,
         }
     }

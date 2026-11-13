@@ -285,7 +285,8 @@ impl InWorld {
                 shadow: state.flags & FLAG_SHADOW != 0,
                 obfuscation_seed: 0,
             };
-            paint.obfuscation_seed = (entity.id as u64) ^ self.ticks.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            paint.obfuscation_seed =
+                (entity.id as u64) ^ self.ticks.wrapping_mul(0x9E37_79B9_7F4A_7C15);
             for (i, (line, width)) in lines.iter().zip(&widths).enumerate() {
                 let x = if state.flags & FLAG_ALIGN_LEFT != 0 {
                     0.0
@@ -317,7 +318,10 @@ impl InWorld {
         if entity.kind == EntityKind::Other {
             return None;
         }
-        if matches!(entity.kind, EntityKind::ItemFrame | EntityKind::GlowItemFrame) {
+        if matches!(
+            entity.kind,
+            EntityKind::ItemFrame | EntityKind::GlowItemFrame
+        ) {
             let name = entity.item.get_custom_name().filter(|_| looked_at)?;
             return Some(crate::component::pumpkin::from_pumpkin(name));
         }
@@ -532,7 +536,11 @@ mod tests {
             ..view()
         };
         let size = (320.0, 180.0);
-        let forward = -Vec3::new(camera.view.x_axis.z, camera.view.y_axis.z, camera.view.z_axis.z);
+        let forward = -Vec3::new(
+            camera.view.x_axis.z,
+            camera.view.y_axis.z,
+            camera.view.z_axis.z,
+        );
         let (at, depth) = camera.project(eye + forward * 4.0, size).unwrap();
         assert!((at[0] - 160.0).abs() < 1e-2 && (at[1] - 90.0).abs() < 1e-2);
         assert!((depth - 4.0).abs() < 1e-3);

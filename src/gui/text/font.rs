@@ -370,7 +370,10 @@ impl Font {
         let glyphs = face.map_or(&self.glyphs, |face| &face.glyphs);
         let mut pools: HashMap<i32, Vec<char>> = HashMap::new();
         for (&c, glyph) in glyphs {
-            pools.entry(glyph.advance.ceil() as i32).or_default().push(c);
+            pools
+                .entry(glyph.advance.ceil() as i32)
+                .or_default()
+                .push(c);
         }
         if face.is_none_or(|face| face.unihex) {
             let mut seen = std::collections::HashSet::new();
@@ -389,7 +392,9 @@ impl Font {
             chars.sort_unstable();
         }
         let pools = Rc::new(pools);
-        self.pools.borrow_mut().insert(key.to_owned(), pools.clone());
+        self.pools
+            .borrow_mut()
+            .insert(key.to_owned(), pools.clone());
         pools
     }
 
@@ -854,8 +859,7 @@ mod unifont_tests {
             rows("1C"),
             rows("FFFF")
         ));
-        font.glyphs
-            .insert(' ', Glyph::new(GlyphKind::Space, 4.0));
+        font.glyphs.insert(' ', Glyph::new(GlyphKind::Space, 4.0));
         font.glyphs
             .insert('\u{e000}', Glyph::new(GlyphKind::Space, 1.5));
         let mut seed = 7;
@@ -868,7 +872,10 @@ mod unifont_tests {
         let picks: std::collections::HashSet<char> = (0..64)
             .map(|_| font.random_glyph_in(None, 'a', &mut seed))
             .collect();
-        assert_eq!(picks, std::collections::HashSet::from(['a', 'b', '\u{e000}']));
+        assert_eq!(
+            picks,
+            std::collections::HashSet::from(['a', 'b', '\u{e000}'])
+        );
         assert_eq!(font.random_glyph_in(None, '中', &mut seed), '中');
     }
 

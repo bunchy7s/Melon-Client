@@ -66,7 +66,7 @@ impl LeadMeshes {
                 model: Mat4::IDENTITY,
                 origin: kept.origin,
                 layer: RenderLayer::Entities,
-                translucent: false,
+                blend: crate::renderer::Blending::Opaque,
                 light: None,
                 overlay: 0.0,
                 glint: Glint::None,

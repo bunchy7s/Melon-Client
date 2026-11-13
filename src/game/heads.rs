@@ -186,7 +186,7 @@ pub(super) fn submit_worn_head(
             * Mat4::from_scale(Vec3::new(0.625, -0.625, -0.625)),
         origin,
         layer,
-        translucent,
+        blend: crate::renderer::Blending::of(translucent),
         light: Some(light),
         overlay: 0.0,
         glint: Glint::entity(crate::world::glint::has_foil(stack)),

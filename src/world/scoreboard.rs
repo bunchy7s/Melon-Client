@@ -686,7 +686,10 @@ mod tests {
         assert!(span("x").style.obfuscated);
         assert!(text.spans.iter().any(|s| s.style.sprite.is_some()));
         assert!(span("B").style.bold && span("B").style.color == Some(red));
-        assert_eq!(span("N").style.color, Some(TextColor([0x12, 0xab, 0x34]).rgb()));
+        assert_eq!(
+            span("N").style.color,
+            Some(TextColor([0x12, 0xab, 0x34]).rgb())
+        );
         assert_eq!(span("Alex").style.color, Some(red));
         assert!(!span("Alex").style.bold);
         assert_ne!(span("!").style.color, Some(red));

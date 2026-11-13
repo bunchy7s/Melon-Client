@@ -165,11 +165,8 @@ fn nbt(map: &Map<String, Value>) -> Option<Contents> {
 }
 
 fn object(map: &Map<String, Value>) -> Option<Contents> {
-    let kind = string(map, "object").map(|kind| {
-        kind.strip_prefix("minecraft:")
-            .unwrap_or(&kind)
-            .to_owned()
-    });
+    let kind = string(map, "object")
+        .map(|kind| kind.strip_prefix("minecraft:").unwrap_or(&kind).to_owned());
     let info = match kind.as_deref() {
         Some("atlas") => atlas(map).unwrap_or_else(missing_atlas),
         Some("player") => player(map).unwrap_or_else(missing_player),

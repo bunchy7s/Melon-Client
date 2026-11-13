@@ -78,7 +78,7 @@ impl BlockOutline {
                 model: Mat4::IDENTITY,
                 origin: IVec3::from_array(hit.pos),
                 layer: RenderLayer::Shadows,
-                translucent: false,
+                blend: crate::renderer::Blending::Opaque,
                 light: None,
                 overlay: 0.0,
                 glint: crate::renderer::Glint::None,
