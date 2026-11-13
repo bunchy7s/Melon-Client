@@ -84,4 +84,20 @@ mod tests {
         assert!(!is_solid(short_grass) && is_drawn(short_grass));
         assert!(!is_solid(u16::MAX));
     }
+
+    #[test]
+    fn mod_blocks_are_solid_as_their_spec_says() {
+        use pumpkin_data::mod_registry::{BlockSpec, register_block};
+        let cube = register_block("melon_test:cube", &BlockSpec::default()).unwrap();
+        let cube = cube.default_state.id.as_u16();
+        assert!(cube >= BlockStateId::COUNT);
+        assert!(is_solid(cube) && is_drawn(cube));
+        let pane: BlockSpec =
+            serde_json::from_str(r#"{"render": {"solid": false, "layer": "cutout"}}"#).unwrap();
+        let pane = register_block("melon_test:pane", &pane).unwrap();
+        let pane = pane.default_state.id.as_u16();
+        assert!(!is_solid(pane) && is_drawn(pane));
+        let unregistered = BlockStateId::COUNT + pumpkin_data::mod_registry::STATE_CAP - 1;
+        assert!(!is_solid(unregistered) && !is_drawn(unregistered));
+    }
 }

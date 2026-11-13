@@ -131,12 +131,13 @@ pub fn table() -> &'static [AoFlags] {
     &TABLE
 }
 
-/// The flags of `state`; [`AoFlags::AIR`] for unknown states.
+/// The flags of `state`: from the table for vanilla states, worked out
+/// for zip-mod states past it; [`AoFlags::AIR`] for unknown states.
 pub fn of(state: u16) -> AoFlags {
     TABLE
         .get(usize::from(state))
         .copied()
-        .unwrap_or(AoFlags::AIR)
+        .unwrap_or_else(|| AoFlags::of(state))
 }
 
 #[cfg(test)]

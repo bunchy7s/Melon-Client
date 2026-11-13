@@ -106,7 +106,7 @@ impl LightCache {
             .flags
             .get(usize::from(state))
             .copied()
-            .unwrap_or(AoFlags::AIR);
+            .unwrap_or_else(|| crate::world::block::ao_flags::of(state));
         let light = if flags.emissive_rendering() {
             FULL_BRIGHT
         } else {

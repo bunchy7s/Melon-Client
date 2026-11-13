@@ -19,6 +19,7 @@ pub mod ao_shape;
 mod atlas;
 mod block_state;
 pub mod mipmap;
+mod mod_hints;
 mod tint;
 pub mod variants;
 
@@ -400,8 +401,14 @@ impl BlockModels {
                 })
                 .clone()
         };
-        let by_state: Vec<StateModel<BakedQuad>> =
-            pending.iter().map(|model| model.map(&mut finish)).collect();
+        let by_state: Vec<StateModel<BakedQuad>> = pending
+            .iter()
+            .enumerate()
+            .map(|(id, model)| {
+                let model = model.map(&mut finish);
+                mod_hints::apply(id as u16, &model).unwrap_or(model)
+            })
+            .collect();
         let sprites = baker
             .texture_index
             .iter()
