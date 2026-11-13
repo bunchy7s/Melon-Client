@@ -1,0 +1,335 @@
+//! What the camera sees of the environment each frame: the atmosphere
+
+use glam::{Mat4, Vec3};
+
+use super::InWorld;
+use super::camera::Camera;
+use super::world_resources::WorldResources;
+use crate::renderer::{CelestialDraw, SkyKind};
+use crate::world::atmosphere::{Atmosphere, BiomeMix};
+use crate::world::dimension::Skybox;
+use crate::world::fluid::FluidKind;
+use crate::world::fog::{self, FogContext, FogData, FogEffects, FogType};
+use crate::world::level::Level;
+use crate::world::physics::{eye_in_water, fluid_height};
+use crate::world::sky;
+
+/// `LocalPlayer.waterVisionTime`'s end: ticks in the water until the eyes
+const WATER_VISION_TICKS: i32 = 600;
+
+/// One frame's environment.
+pub struct FrameEnvironment {
+    pub atmosphere: Atmosphere,
+    pub fog: FogData,
+    pub fog_type: FogType,
+}
+
+impl InWorld {
+    /// Blindness and night vision, as the fog reads them. (Darkness'
+    fn fog_effects(&self, partial: f32) -> FogEffects {
+        use crate::world::player::status_effects::{BLINDNESS_ID, NIGHT_VISION_ID};
+        let blindness = self
+            .status_effects
+            .get(BLINDNESS_ID)
+            .map(|effect| (effect.duration, effect.infinite()));
+        let night_vision = self
+            .status_effects
+            .get(NIGHT_VISION_ID)
+            .map_or(0.0, |effect| {
+                if effect.ends_within(200) {
+                    0.7 + crate::math::angle::sin(
+                        (effect.duration as f32 - partial) * crate::math::angle::PI * 0.2,
+                    ) * 0.3
+                } else {
+                    1.0
+                }
+            });
+        FogEffects {
+            blindness,
+            darkness: None,
+            night_vision,
+        }
+    }
+
+    /// This frame's atmosphere at the camera, its fog, and what the camera
+    pub(super) fn environment(
+        &self,
+        camera: &Camera,
+        aspect: f32,
+        partial: f32,
+        render_distance: u8,
+        cloud_range: u8,
+    ) -> FrameEnvironment {
+        let day = self.clocks.environment(partial);
+        let mix = BiomeMix::gaussian(camera.position, |x, y, z| self.level.biome_at(x, y, z));
+        let atmosphere = Atmosphere::resolve(&self.dimension_type, &self.biomes, &mix, &day)
+            .with_weather(self.weather.rain, self.weather.thunder);
+        let fog_type = fog_type(&self.level, camera, aspect);
+        let spectator = self.game_mode.current.is_spectator();
+        let min_y = self.dimension_type.height.min_y;
+        let context = FogContext {
+            fog_type,
+            spectator,
+            render_distance_chunks: render_distance,
+            camera_y: camera.position.y,
+            min_y,
+            void_darkness_range: 32.0,
+            water_vision: self.water_vision(fog_type == FogType::Water),
+            fire_resistance: false,
+            forward: camera.forward(),
+            effects: self.fog_effects(partial),
+            cloud_range_chunks: cloud_range,
+            rain_level: self.weather.rain,
+            thunder_level: self.weather.thunder,
+            rain_fog: self.rain_fog,
+        };
+        let fog = fog::setup(&atmosphere, &context);
+        FrameEnvironment {
+            atmosphere,
+            fog,
+            fog_type,
+        }
+    }
+
+    /// `AtmosphericFogEnvironment.updateRainFogState`: the rain's fog moves a
+    pub(super) fn update_rain_fog(&mut self, camera: glam::Vec3, now: std::time::Instant) {
+        let ticks = self
+            .rain_fog_at
+            .replace(now)
+            .map_or(0.0, |last| now.duration_since(last).as_secs_f32() * 20.0);
+        let at = camera.floor().as_ivec3();
+        let sky = f32::from(self.level.light_at(at.x, at.y, at.z).1);
+        let open_sky = ((sky - 8.0) / 7.0).clamp(0.0, 1.0);
+        let rains = self
+            .level
+            .biome_at(at.x, at.y, at.z)
+            .and_then(|id| self.biomes.biome(id))
+            .is_none_or(|biome| biome.has_precipitation);
+        let target = self.weather.rain * open_sky * if rains { 1.0 } else { 0.5 };
+        self.rain_fog += (target - self.rain_fog) * (ticks * 0.2).min(1.0);
+    }
+
+    /// `LocalPlayer.getWaterVision`: `0` out of the water, then more as the
+    fn water_vision(&self, in_water: bool) -> f32 {
+        if !in_water {
+            return 0.0;
+        }
+        let time = self.water_vision_time as f32;
+        if self.water_vision_time >= WATER_VISION_TICKS {
+            return 1.0;
+        }
+        let a = (time / 100.0).clamp(0.0, 1.0);
+        let b = if time < 100.0 {
+            0.0
+        } else {
+            ((time - 100.0) / 500.0).clamp(0.0, 1.0)
+        };
+        a * 0.6 + b * 0.399_999_98
+    }
+
+    /// One client tick of the eyes getting used to the water.
+    pub(super) fn tick_water_vision(&mut self) {
+        let eye = self.player.tick_eye();
+        let in_water = eye_in_water(&self.level, eye.as_vec3());
+        if in_water {
+            let speed = if self.game_mode.current.is_spectator() {
+                10
+            } else {
+                1
+            };
+            self.water_vision_time = (self.water_vision_time + speed).clamp(0, WATER_VISION_TICKS);
+        } else if self.water_vision_time > 0 {
+            self.water_vision_time = (self.water_vision_time - 10).clamp(0, WATER_VISION_TICKS);
+        }
+    }
+
+    /// The sky's meshes in drawing order for this frame, as `SkyRenderer`
+    pub(super) fn sky_draws(
+        &self,
+        assets: &WorldResources,
+        look: &FrameEnvironment,
+        camera: &Camera,
+        white: crate::renderer::TextureId,
+    ) -> Vec<CelestialDraw> {
+        let atmosphere = &look.atmosphere;
+        let mut out = Vec::new();
+        match atmosphere.skybox {
+            Skybox::None => {}
+            Skybox::End => out.push(CelestialDraw {
+                kind: SkyKind::Glow,
+                mesh: assets.end_sky_mesh,
+                atlas: assets.end_sky,
+                model: Mat4::IDENTITY,
+                tint: [1.0; 4],
+            }),
+            Skybox::Overworld => {
+                let [r, g, b] = atmosphere.sky_color;
+                out.push(CelestialDraw {
+                    kind: SkyKind::Disc,
+                    mesh: assets.sky_disc_mesh,
+                    atlas: white,
+                    model: Mat4::from_translation(Vec3::ZERO),
+                    tint: [r, g, b, 1.0],
+                });
+                let day = &atmosphere.day;
+                let glow = atmosphere.sunrise_sunset_color;
+                if glow[3] > 0.001 {
+                    out.push(CelestialDraw {
+                        kind: SkyKind::Glow,
+                        mesh: assets.sunrise_mesh,
+                        atlas: white,
+                        model: sky::sunrise_model(day.sun_angle, glow[3]),
+                        tint: glow,
+                    });
+                }
+                for (mesh, atlas, model) in [
+                    (assets.sun_mesh, assets.sun, sky::sun_model(day)),
+                    (
+                        assets.moon_mesh,
+                        assets.moon[day.moon_phase as usize],
+                        sky::moon_model(day),
+                    ),
+                ] {
+                    out.push(CelestialDraw {
+                        kind: SkyKind::Celestial,
+                        mesh,
+                        atlas,
+                        model,
+                        tint: [1.0; 4],
+                    });
+                }
+                if day.star_brightness > 0.001 {
+                    let b = day.star_brightness;
+                    out.push(CelestialDraw {
+                        kind: SkyKind::Celestial,
+                        mesh: assets.star_mesh,
+                        atlas: white,
+                        model: sky::star_model(day),
+                        tint: [b, b, b, b],
+                    });
+                }
+                if camera.position.y < HORIZON_HEIGHT && look.fog_type != FogType::Water {
+                    out.push(CelestialDraw {
+                        kind: SkyKind::Disc,
+                        mesh: assets.dark_disc_mesh,
+                        atlas: white,
+                        model: Mat4::from_translation(Vec3::new(0.0, 12.0, 0.0)),
+                        tint: [0.0, 0.0, 0.0, 1.0],
+                    });
+                }
+            }
+        }
+        out
+    }
+}
+
+/// `ClientLevelData.getHorizonHeight`: where the world's horizon is, for
+const HORIZON_HEIGHT: f32 = 63.0;
+
+/// `Camera.getFluidInCamera`, `ATMOSPHERIC` for none: water at the eye,
+pub fn fog_type(level: &Level, camera: &Camera, aspect: f32) -> FogType {
+    if eye_in_water(level, camera.position) {
+        return FogType::Water;
+    }
+    for offset in camera.near_plane(aspect) {
+        let point = camera.position + offset;
+        let block = point.floor().as_ivec3();
+        if let Some(height) = fluid_height(level, block, FluidKind::Lava) {
+            if f64::from(point.y) <= f64::from(block.y) + f64::from(height) {
+                return FogType::Lava;
+            }
+        } else if level
+            .block_state(block.x, block.y, block.z)
+            .is_some_and(is_powder_snow)
+        {
+            return FogType::PowderSnow;
+        }
+    }
+    FogType::Atmospheric
+}
+
+/// Whether a block state is powder snow.
+fn is_powder_snow(state: u16) -> bool {
+    pumpkin_data::BlockStateId::new(state).is_some_and(|id| {
+        pumpkin_data::Block::from_state_id(id) == &pumpkin_data::Block::POWDER_SNOW
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::world::chunk::{Chunk, Section};
+    use pumpkin_data::Block;
+
+    fn camera_at(position: Vec3) -> Camera {
+        Camera {
+            position,
+            view: Mat4::IDENTITY,
+            fov: 70.0,
+            far: 256.0,
+            bob: Mat4::IDENTITY,
+        }
+    }
+
+    /// A level of air with `states` at the given positions.
+    fn level_with(states: &[([i32; 3], u16)]) -> Level {
+        let mut level = Level::default();
+        level.insert(Chunk::new(
+            0,
+            0,
+            (0..24).map(|_| Section::empty()).collect(),
+        ));
+        for &(pos, state) in states {
+            level.set_block(pos, state, false);
+        }
+        level
+    }
+
+    fn water() -> u16 {
+        Block::WATER.default_state.id.as_u16()
+    }
+
+    #[test]
+    fn the_air_is_atmospheric_and_water_fogs_below_its_surface() {
+        let level = level_with(&[([4, 70, 4], water()), ([4, 69, 4], water())]);
+        let aspect = 16.0 / 9.0;
+        assert_eq!(
+            fog_type(&level, &camera_at(Vec3::new(8.5, 70.5, 8.5)), aspect),
+            FogType::Atmospheric
+        );
+        assert_eq!(
+            fog_type(&level, &camera_at(Vec3::new(4.5, 70.5, 4.5)), aspect),
+            FogType::Water
+        );
+        assert_eq!(
+            fog_type(&level, &camera_at(Vec3::new(4.5, 70.95, 4.5)), aspect),
+            FogType::Atmospheric
+        );
+    }
+
+    #[test]
+    fn lava_and_powder_snow_fog_the_near_plane() {
+        let lava = Block::LAVA.default_state.id.as_u16();
+        let snow = Block::POWDER_SNOW.default_state.id.as_u16();
+        let level = level_with(&[([4, 70, 4], lava), ([9, 70, 4], snow)]);
+        let aspect = 1.0;
+        assert_eq!(
+            fog_type(&level, &camera_at(Vec3::new(4.5, 70.5, 4.5)), aspect),
+            FogType::Lava
+        );
+        assert_eq!(
+            fog_type(&level, &camera_at(Vec3::new(9.5, 70.5, 4.5)), aspect),
+            FogType::PowderSnow
+        );
+    }
+
+    #[test]
+    fn a_covered_source_is_full_to_the_top() {
+        let stone = Block::STONE.default_state.id.as_u16();
+        let level = level_with(&[([4, 70, 4], water()), ([4, 71, 4], stone)]);
+        assert_eq!(
+            fog_type(&level, &camera_at(Vec3::new(4.5, 70.97, 4.5)), 1.0),
+            FogType::Water
+        );
+    }
+}

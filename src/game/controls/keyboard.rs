@@ -1,0 +1,259 @@
+//! Keys in a world: movement, hotbar, F3 combos, the game mode switcher.
+
+use super::WorldContext;
+use crate::cycle::Cycle;
+use crate::game::minecraft_yaw;
+use crate::game::{GAMEMASTER_LEVEL, InWorld};
+use crate::gui::hud::item_slot;
+use crate::gui::overlay::OverlayAction;
+use crate::gui::screen::{ScreenAction, TextEvent};
+use crate::gui::text::StyledText;
+use crate::math::wrap_degrees;
+use crate::settings::input::{Action, InputBind};
+use crate::world::game_mode::GameMode;
+use crate::world::inventory::HOTBAR_SLOTS;
+use winit::keyboard::{Key, NamedKey};
+
+impl InWorld {
+    pub(super) fn can_switch_game_mode(&self) -> bool {
+        self.permission_level >= GAMEMASTER_LEVEL
+    }
+
+    /// `GameModeSwitcherScreen.switchToHoveredGameMode`.
+    pub(crate) fn switch_game_mode(&mut self, mode: GameMode) {
+        if mode != self.game_mode.current && self.can_switch_game_mode() {
+            self.joined.session.send_change_game_mode(mode);
+        }
+    }
+
+    /// A key went down or up. `text` is what it typed, as text events.
+    pub fn key(
+        &mut self,
+        key: &Key,
+        bind: Option<&InputBind>,
+        pressed: bool,
+        text: &[TextEvent],
+        ui: &WorldContext,
+    ) -> ScreenAction {
+        if let Some(bind) = bind {
+            self.keys.apply_bind(bind, pressed, &ui.config.input);
+        }
+
+        if let Key::Named(NamedKey::F3) = key {
+            if pressed {
+                if !self.keys.f3_held {
+                    self.keys.f3_used = false;
+                }
+                self.keys.f3_held = true;
+            } else {
+                self.keys.f3_held = false;
+                let mode = self
+                    .overlay
+                    .as_ref()
+                    .and_then(|overlay| overlay.released_debug_key());
+                if let Some(mode) = mode {
+                    return self.apply_overlay_action(OverlayAction::SwitchGameMode(mode), ui);
+                } else if !self.keys.f3_used {
+                    self.debug.toggle();
+                    self.save_debug_settings();
+                }
+            }
+            return ScreenAction::None;
+        }
+        if !pressed {
+            return ScreenAction::None;
+        }
+        if self.keys.f3_held
+            && let Some(action) = self.debug_key(key, ui)
+        {
+            self.keys.f3_used = true;
+            return action;
+        }
+
+        if let Some(actions) = self.with_overlay(ui, |overlay, ctx| overlay.key(bind, text, ctx)) {
+            return self.apply_overlay_actions(actions, ui);
+        }
+
+        let binds = &ui.config.input.binds;
+        if let Some(bind) = bind {
+            for action in binds.actions_for(bind) {
+                self.play_action(action, ui);
+            }
+        }
+        ScreenAction::None
+    }
+
+    /// A matching bind pressed while playing, no overlay.
+    fn play_action(&mut self, action: Action, ui: &WorldContext) {
+        let mode = self.game_mode.current;
+        match action {
+            Action::TogglePerspective => self.camera_mode = self.camera_mode.next(),
+            Action::Inventory if self.rides_with_inventory() => self.open_mount_inventory(),
+            Action::Inventory => self.open_inventory(ui),
+            Action::Chat => self.open_chat(false, ui),
+            Action::Command => self.open_chat(true, ui),
+            Action::Drop if !mode.is_spectator() => {
+                let whole = self.keys.sprint;
+                self.drop_selected(whole);
+            }
+            Action::SwapOffhand if !mode.is_spectator() => self.swap_offhand(),
+            other => {
+                if let Some(n) = other.hotbar_index() {
+                    self.hotbar_key(n, ui);
+                }
+            }
+        }
+    }
+
+    /// `KeyboardHandler.handleDebugKeys` for what Melon has: the action,
+    pub(super) fn debug_key(&mut self, key: &Key, ui: &WorldContext) -> Option<ScreenAction> {
+        let feedback =
+            |this: &mut Self, key: &'static str| this.debug_feedback(ui.lang, ui.font, key);
+        let on_off = |on: bool, on_key: &'static str, off_key: &'static str| {
+            if on { on_key } else { off_key }
+        };
+        let mut action = ScreenAction::None;
+        match key {
+            Key::Named(NamedKey::F4) => {
+                if let Some(overlay) = &mut self.overlay {
+                    overlay.cycle_game_mode();
+                } else if self.can_switch_game_mode() {
+                    self.open_switcher(ui);
+                } else {
+                    feedback(self, "debug.gamemodes.error");
+                }
+            }
+            Key::Named(NamedKey::F6) => {
+                self.debug_view.extended = !self.debug_view.extended;
+                let state = if self.debug_view.extended {
+                    "shown"
+                } else {
+                    "hidden"
+                };
+                self.debug_line(ui.lang, ui.font, &format!("Optional F3 entries: {state}"));
+            }
+            Key::Character(c) => match c.to_ascii_lowercase().as_str() {
+                "a" => {
+                    self.level.remesh_all();
+                    feedback(self, "debug.reload_chunks.message");
+                }
+                "b" => {
+                    self.debug_view.hitboxes = !self.debug_view.hitboxes;
+                    let key = on_off(
+                        self.debug_view.hitboxes,
+                        "debug.show_hitboxes.on",
+                        "debug.show_hitboxes.off",
+                    );
+                    feedback(self, key);
+                }
+                "c" => {
+                    let feet = self.player.pos();
+                    action = ScreenAction::Clipboard(format!(
+                        "/execute in {} run tp @s {:.2} {:.2} {:.2} {:.2} {:.2}",
+                        self.dimension,
+                        feet.x,
+                        feet.y,
+                        feet.z,
+                        wrap_degrees(minecraft_yaw(self.player.yaw())),
+                        wrap_degrees(self.player.pitch()),
+                    ));
+                    feedback(self, "debug.copy_location.message");
+                }
+                "d" => self.chat.clear_messages(),
+                "g" => {
+                    self.debug_view.chunk_borders = !self.debug_view.chunk_borders;
+                    let key = on_off(
+                        self.debug_view.chunk_borders,
+                        "debug.chunk_boundaries.on",
+                        "debug.chunk_boundaries.off",
+                    );
+                    feedback(self, key);
+                }
+                "h" => {
+                    let on = !item_slot::advanced_tooltips();
+                    item_slot::set_advanced_tooltips(on);
+                    feedback(
+                        self,
+                        on_off(
+                            on,
+                            "debug.advanced_tooltips.on",
+                            "debug.advanced_tooltips.off",
+                        ),
+                    );
+                }
+                "i" => {
+                    if let Some(hit) = self.hit_block() {
+                        let [x, y, z] = hit.pos;
+                        let state = self.level.block_state(x, y, z).unwrap_or(0);
+                        action = ScreenAction::Clipboard(
+                            super::super::debug_info::setblock_command(hit.pos, state),
+                        );
+                        feedback(self, "debug.inspect.client.block");
+                    } else if let Some(entity) =
+                        self.hit_entity().and_then(|hit| self.entities.get(hit.id))
+                    {
+                        let at = entity.tick_pos();
+                        action = ScreenAction::Clipboard(format!(
+                            "/summon minecraft:{} {:.2} {:.2} {:.2}",
+                            entity.ty.resource_name, at.x, at.y, at.z
+                        ));
+                        feedback(self, "debug.inspect.client.entity");
+                    }
+                }
+                "n" if self.overlay.is_none() => {
+                    if !self.can_switch_game_mode() {
+                        feedback(self, "debug.creative_spectator.error");
+                    } else if self.game_mode.current.is_spectator() {
+                        let back = self.game_mode.previous.unwrap_or(GameMode::Creative);
+                        self.joined.session.send_change_game_mode(back);
+                    } else {
+                        self.joined
+                            .session
+                            .send_change_game_mode(GameMode::Spectator);
+                    }
+                }
+                _ => return None,
+            },
+            _ => return None,
+        }
+        self.save_debug_settings();
+        Some(action)
+    }
+
+    /// Keeps what F3 and its combos switched on for the next run.
+    fn save_debug_settings(&self) {
+        self.debug_view.save(self.debug.visible());
+    }
+
+    /// A number key while playing: the hotbar slot, or in creative with C
+    pub(super) fn hotbar_key(&mut self, index: u8, ui: &WorldContext) {
+        let mode = self.game_mode.current;
+        if mode.is_spectator() {
+            let targets = self.teleport_targets();
+            let action = self.spectator_menu.select_slot(usize::from(index), targets);
+            self.spectator_action(action);
+            return;
+        }
+        let (load, save) = (self.keys.load_hotbar, self.keys.save_hotbar);
+        if mode == GameMode::Creative && (load || save) {
+            let index = usize::from(index);
+            if load {
+                let items = self.hotbars.hotbars[index].clone();
+                for (i, stack) in items.into_iter().enumerate() {
+                    let slot = HOTBAR_SLOTS.start + i;
+                    self.inventory.slots_mut()[slot] = stack.clone();
+                    self.joined.session.send_creative_slot(slot as i16, &stack);
+                }
+            } else {
+                let items = std::array::from_fn(|i| self.inventory.hotbar(i).clone());
+                self.hotbars.store(index, items);
+                let message = ui
+                    .lang
+                    .format("inventory.hotbarSaved", &["X", &(index + 1).to_string()]);
+                self.hud.set_overlay_message(StyledText::plain(&message));
+            }
+            return;
+        }
+        self.select_hotbar(index);
+    }
+}

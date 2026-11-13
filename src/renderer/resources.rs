@@ -1,0 +1,301 @@
+//! Textures, cube maps and meshes: uploading, updating and freeing them.
+
+use super::{
+    CubeMapId, MeshId, QuadMeshId, Renderer, TerrainQuad, TextureId, WorldVertex, texture,
+    texture_update,
+};
+use ash::vk;
+use image::RgbaImage;
+
+impl Renderer {
+    pub fn white_texture(&self) -> TextureId {
+        self.textures.white
+    }
+
+    pub fn load_texture(&mut self, rgba: &RgbaImage) -> anyhow::Result<TextureId> {
+        let tex = unsafe {
+            self.uploader(self.textures.nearest_sampler)
+                .image_2d(rgba)?
+        };
+        Ok(self.put_texture(tex))
+    }
+
+    /// A texture sampled linearly (`blur: true` in its `.mcmeta`): the
+    pub fn load_texture_linear(&mut self, rgba: &RgbaImage) -> anyhow::Result<TextureId> {
+        let tex = unsafe { self.uploader(self.textures.linear_sampler).image_2d(rgba)? };
+        Ok(self.put_texture(tex))
+    }
+
+    /// A texture that repeats outside `0..1` (vanilla's `GL_REPEAT`), so a
+    pub fn load_texture_tiled(&mut self, rgba: &RgbaImage) -> anyhow::Result<TextureId> {
+        let tex = unsafe { self.uploader(self.textures.repeat_sampler).image_2d(rgba)? };
+        Ok(self.put_texture(tex))
+    }
+
+    /// Linear and wrapping: the enchanted glint (`blur: true` and UVs that
+    pub fn load_texture_linear_tiled(&mut self, rgba: &RgbaImage) -> anyhow::Result<TextureId> {
+        let tex = unsafe {
+            self.uploader(self.textures.linear_repeat_sampler)
+                .image_2d(rgba)?
+        };
+        Ok(self.put_texture(tex))
+    }
+
+    /// The item-glint sampler the GUI shaders read at set 1 binding 3.
+    pub fn bind_gui_glint(&mut self, texture: TextureId) {
+        let Some(tex) = self.textures.list.get(texture.0) else {
+            return;
+        };
+        unsafe {
+            self.gui_uniforms.bind_glint(
+                &self.device,
+                tex.view,
+                self.textures.linear_repeat_sampler,
+            );
+        }
+    }
+
+    /// A texture with its smaller levels (`mips`, each half the size of the
+    pub fn load_texture_mipmapped(
+        &mut self,
+        rgba: &RgbaImage,
+        mips: &[RgbaImage],
+    ) -> anyhow::Result<TextureId> {
+        let tex = unsafe {
+            self.uploader(self.textures.mipmap_sampler)
+                .image_2d_mipmapped(rgba, mips)?
+        };
+        Ok(self.put_texture(tex))
+    }
+
+    /// Rewrites part of mip `level` of a texture with `pixels`, top-left at
+    pub fn update_texture(
+        &mut self,
+        texture: TextureId,
+        level: u32,
+        x: u32,
+        y: u32,
+        pixels: RgbaImage,
+    ) {
+        if let Some(target) = self.textures.list.get(texture.0)
+            && level < target.mip_levels
+            && !target.shared
+        {
+            self.textures
+                .pending_updates
+                .push(texture_update::PendingUpdate {
+                    image: target.image,
+                    level,
+                    x,
+                    y,
+                    pixels,
+                });
+        }
+    }
+
+    /// Stores a new texture: in the next slot to reuse, else a freed one,
+    fn put_texture(&mut self, tex: texture::Texture) -> TextureId {
+        let id = if let Some(id) = self.textures.reuse.pop_front() {
+            self.retire(id);
+            id
+        } else if let Some(id) = self.textures.free.pop() {
+            id
+        } else {
+            self.textures.list.push(tex);
+            TextureId(self.textures.list.len() - 1)
+        };
+        self.textures.list[id.0] = tex;
+        if let Some(tracked) = &mut self.textures.tracked {
+            tracked.push(id);
+        }
+        id
+    }
+
+    /// Puts the white texture in slot `id` and destroys what was there
+    fn retire(&mut self, id: TextureId) {
+        let mut white = self.textures.list[self.textures.white.0];
+        white.shared = true;
+        let old = std::mem::replace(&mut self.textures.list[id.0], white);
+        if !old.shared {
+            self.textures.retired.push((self.frames.number, old));
+        }
+    }
+
+    /// Frees a texture. Its id draws white until an upload takes the slot.
+    pub fn free_texture(&mut self, id: TextureId) {
+        if id == self.textures.white
+            || self.textures.list.get(id.0).is_none_or(|t| t.shared)
+            || self.textures.free.contains(&id)
+        {
+            return;
+        }
+        self.retire(id);
+        self.textures.free.push(id);
+    }
+
+    /// The next uploads go into these slots, in order, replacing what they
+    pub fn begin_texture_reuse(&mut self, ids: Vec<TextureId>) {
+        self.textures.reuse = ids.into();
+    }
+
+    /// Stops reusing slots. The ones no upload took are freed, or, when the
+    pub fn end_texture_reuse(&mut self, free: bool) -> Vec<TextureId> {
+        let left: Vec<TextureId> = std::mem::take(&mut self.textures.reuse).into();
+        if free {
+            for &id in &left {
+                self.free_texture(id);
+            }
+            return Vec::new();
+        }
+        left
+    }
+
+    /// Records the ids of the uploads from now on, until
+    pub fn track_textures(&mut self) {
+        self.textures.tracked = Some(Vec::new());
+        self.tracked_meshes = Some(Vec::new());
+    }
+
+    /// The textures and meshes uploaded since
+    pub fn take_tracked(&mut self) -> (Vec<TextureId>, Vec<MeshId>) {
+        (
+            self.textures.tracked.take().unwrap_or_default(),
+            self.tracked_meshes.take().unwrap_or_default(),
+        )
+    }
+
+    /// Frees a cube map. Its id must not be drawn again.
+    pub fn free_cubemap(&mut self, id: CubeMapId) {
+        if let Some(tex) = self.textures.cubemaps.get_mut(id.0)
+            && !tex.shared
+        {
+            let old = *tex;
+            tex.shared = true;
+            self.textures.retired.push((self.frames.number, old));
+        }
+    }
+
+    /// Destroys the retired textures no frame in flight can still use.
+    pub(super) fn destroy_retired_textures(&mut self) {
+        let now = self.frames.number;
+        let device = &self.device;
+        let pool = self.textures.descriptor_pool;
+        self.textures.retired.retain(|(frame, tex)| {
+            if now < frame + super::MAX_FRAMES_IN_FLIGHT as u64 + 1 {
+                return true;
+            }
+            unsafe {
+                let _ = device.free_descriptor_sets(pool, &[tex.descriptor_set]);
+                device.destroy_image_view(tex.view, None);
+                device.destroy_image(tex.image, None);
+                device.free_memory(tex.memory, None);
+            }
+            false
+        });
+    }
+
+    /// Six equal-size faces in Vulkan order (+X, -X, +Y, -Y, +Z, -Z).
+    pub fn load_cubemap(&mut self, faces: &[RgbaImage; 6]) -> anyhow::Result<CubeMapId> {
+        let tex = unsafe { self.uploader(self.textures.linear_sampler).cubemap(faces)? };
+        self.textures.cubemaps.push(tex);
+        Ok(CubeMapId(self.textures.cubemaps.len() - 1))
+    }
+
+    /// Uploads a mesh (a list of quads, see [`WorldVertex`]); it can be
+    pub fn upload_mesh(&mut self, vertices: &[WorldVertex]) -> anyhow::Result<MeshId> {
+        let id = unsafe {
+            self.meshes
+                .upload(&self.device, &self.mem_props, vertices)?
+        };
+        if let Some(tracked) = &mut self.tracked_meshes {
+            tracked.push(MeshId(id));
+        }
+        Ok(MeshId(id))
+    }
+
+    /// Frees a mesh from [`upload_mesh`](Self::upload_mesh). Its GPU memory
+    pub fn free_mesh(&mut self, mesh: MeshId) {
+        self.meshes.free(mesh.0, self.frames.number);
+    }
+
+    /// Uploads a chunk's block faces; drawn like [`upload_mesh`](Self::upload_mesh)'s.
+    pub fn upload_quads(&mut self, quads: &[TerrainQuad]) -> anyhow::Result<QuadMeshId> {
+        let id = unsafe {
+            let id = self
+                .quad_meshes
+                .upload(&self.device, &self.mem_props, quads)?;
+            if let Err(e) = self.quad_sets.sync(
+                &self.device,
+                self.pipelines.layouts.table,
+                self.quad_meshes.buffers(),
+            ) {
+                self.quad_meshes.free(id, self.frames.number);
+                return Err(e);
+            }
+            id
+        };
+        Ok(QuadMeshId(id))
+    }
+
+    /// Frees quads from [`upload_quads`](Self::upload_quads), as
+    pub fn free_quads(&mut self, quads: QuadMeshId) {
+        self.quad_meshes.free(quads.0, self.frames.number);
+    }
+
+    /// Bytes of mesh memory allocated and in use.
+    pub fn mesh_memory(&self) -> (u64, u64) {
+        let (a, b) = self.meshes.usage();
+        let (c, d) = self.quad_meshes.usage();
+        (a + c, b + d)
+    }
+
+    pub(super) fn uploader(&self, sampler: vk::Sampler) -> texture::Uploader<'_> {
+        texture::Uploader {
+            device: &self.device,
+            mem_props: &self.mem_props,
+            command_pool: self.frames.command_pool,
+            queue: self.queue,
+            descriptor_pool: self.textures.descriptor_pool,
+            descriptor_set_layout: self.pipelines.layout,
+            sampler,
+        }
+    }
+}
+
+impl Renderer {
+    /// Draws each program's quads with its shader in `shaders` from now
+    pub fn set_gui_shaders(
+        &mut self,
+        shaders: &[super::GuiShader],
+    ) -> Vec<(super::quad::Program, anyhow::Error)> {
+        let mut failed = Vec::new();
+        unsafe {
+            if let Err(e) = self.device.device_wait_idle() {
+                eprintln!("Warten auf die GPU fehlgeschlagen: {e}");
+            }
+            self.pipelines.ui.clear_pack(&self.device);
+            for shader in shaders {
+                let bytes = |words: &[u32]| -> Vec<u8> {
+                    words.iter().flat_map(|w| w.to_le_bytes()).collect()
+                };
+                let (vert, frag) = (bytes(&shader.vert), bytes(&shader.frag));
+                let built = super::pipeline::ui::create_all(
+                    &self.device,
+                    self.render_pass,
+                    self.pipelines.layout,
+                    self.gui_uniforms.layout,
+                    super::pipeline::ui::Shaders {
+                        vert: &vert,
+                        frag: &frag,
+                        inputs: Some(&shader.inputs),
+                    },
+                );
+                match built {
+                    Ok(passes) => self.pipelines.ui.pack[shader.program.index()] = Some(passes),
+                    Err(e) => failed.push((shader.program, e)),
+                }
+            }
+        }
+        failed
+    }
+}

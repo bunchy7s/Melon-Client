@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Melon
+Comment=A Minecraft client in Rust
+# Exec: the path of the built program; install.sh fills it in.
+Exec=melon
+Icon=melon-face
+Terminal=false
+Categories=Game;
+StartupWMClass=melon

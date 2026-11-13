@@ -1,0 +1,340 @@
+//! What F3+B and F3+G draw into the world: entity hitboxes
+
+use std::path::{Path, PathBuf};
+
+use glam::{DVec3, Mat4, Vec3};
+use serde::{Deserialize, Serialize};
+
+use super::InWorld;
+use super::camera::{Camera, CameraMode};
+use super::gizmos::{DEFAULT_WIDTH, GizmoMesh, Gizmos, argb};
+use crate::renderer::{EntityDraw, Renderer};
+use crate::world::physics::Aabb;
+
+/// `Window`'s default line width, pixels.
+const THIN: f32 = 1.0;
+const THICK: f32 = 4.0;
+/// `ChunkBorderRenderer.MAJOR_LINES`, `CELL_BORDER` and `YELLOW`.
+const MAJOR: u32 = 0xFF40_40FF;
+const CELL: u32 = 0xFF00_9B9B;
+const YELLOW: u32 = 0xFFFF_FF00;
+
+/// What F3 and its combos have switched on, kept between runs
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DebugSettings {
+    pub overlay: bool,
+    pub hitboxes: bool,
+    pub chunk_borders: bool,
+    pub extended: bool,
+    pub advanced_tooltips: bool,
+}
+
+const FILE: &str = "debug_settings.json";
+
+/// Which debug renderers are on, and their mesh.
+#[derive(Default)]
+pub struct DebugView {
+    pub hitboxes: bool,
+    pub chunk_borders: bool,
+    /// F3+F6: the optional F3 entries (what is looked at, light, biome...).
+    pub extended: bool,
+    /// The GUI scale, which sizes the 3D crosshair (`guiScale`).
+    pub gui_scale: f32,
+    mesh: GizmoMesh,
+    path: Option<PathBuf>,
+}
+
+impl DebugView {
+    /// The settings in `game_dir`, or the defaults; also sets what lives
+    pub fn load(game_dir: &Path) -> (Self, bool) {
+        let path = game_dir.join(FILE);
+        let saved: DebugSettings = crate::json_file::load(&path).unwrap_or_default();
+        crate::gui::hud::item_slot::set_advanced_tooltips(saved.advanced_tooltips);
+        (
+            Self {
+                hitboxes: saved.hitboxes,
+                chunk_borders: saved.chunk_borders,
+                extended: saved.extended,
+                path: Some(path),
+                ..Self::default()
+            },
+            saved.overlay,
+        )
+    }
+
+    /// Writes the settings; `overlay` is whether F3 is shown.
+    pub fn save(&self, overlay: bool) {
+        let Some(path) = &self.path else { return };
+        let settings = DebugSettings {
+            overlay,
+            hitboxes: self.hitboxes,
+            chunk_borders: self.chunk_borders,
+            extended: self.extended,
+            advanced_tooltips: crate::gui::hud::item_slot::advanced_tooltips(),
+        };
+        if let Err(e) = crate::json_file::save(path, &settings) {
+            eprintln!("F3-Einstellungen nicht gespeichert: {e}");
+        }
+    }
+
+    pub fn any(&self) -> bool {
+        self.hitboxes || self.chunk_borders
+    }
+
+    pub fn clear(&mut self, renderer: &mut Renderer) {
+        self.mesh.release(renderer);
+    }
+}
+
+/// A world point moved so that, through the camera's sway ([`Camera::bob`]),
+fn still_in_view(camera: &Camera) -> impl Fn(DVec3) -> DVec3 {
+    let mut rotation = camera.view;
+    rotation.w_axis = glam::Vec4::W;
+    let undo = rotation.inverse() * camera.bob.inverse() * rotation;
+    let swaying = camera.bob != Mat4::IDENTITY;
+    let eye = camera.position.as_dvec3();
+    move |p: DVec3| {
+        if !swaying {
+            return p;
+        }
+        eye + undo.transform_point3((p - eye).as_vec3()).as_dvec3()
+    }
+}
+
+impl InWorld {
+    /// The hitboxes and chunk borders in view this frame, into `out`.
+    pub(super) fn draw_debug_view(
+        &mut self,
+        renderer: &mut Renderer,
+        camera: &Camera,
+        visible: &[i32],
+        partial: f32,
+        out: &mut Vec<EntityDraw>,
+    ) {
+        let crosshair = self.debug.visible()
+            && self.camera_mode == CameraMode::FirstPerson
+            && !self.game_mode.current.is_spectator();
+        if !self.debug_view.any() && !crosshair {
+            self.debug_view.clear(renderer);
+            return;
+        }
+        let mut gizmos = Gizmos::default();
+        if crosshair {
+            self.crosshair_gizmos(&mut gizmos, camera);
+        }
+        if self.debug_view.hitboxes {
+            self.hitbox_gizmos(&mut gizmos, visible, partial);
+        }
+        if self.debug_view.chunk_borders {
+            self.chunk_border_gizmos(&mut gizmos);
+        }
+        let (width, height) = renderer.framebuffer_size();
+        let per_pixel = 2.0 * (camera.fov.to_radians() / 2.0).tan() / height.max(1) as f32;
+        self.debug_view.mesh.draw(
+            renderer,
+            &gizmos,
+            camera.position.as_dvec3(),
+            per_pixel,
+            width as f32 / 1920.0,
+            out,
+        );
+    }
+
+    /// `DebugCrosshairRenderer`: the world's three axes, a black line (4
+    fn crosshair_gizmos(&self, gizmos: &mut Gizmos, camera: &Camera) {
+        let to_camera = -self.player.forward_vector().as_dvec3();
+        let length = 0.01 * f64::from(self.debug_view.gui_scale.max(1.0));
+        let still = still_in_view(camera);
+        let place = |p: DVec3| still(p);
+        let origin = camera.position.as_dvec3() - to_camera;
+        let axes = [
+            (DVec3::X, 0xFFFF_0000),
+            (DVec3::Y, 0xFF00_FF00),
+            (DVec3::Z, 0xFF7F_7FFF),
+        ];
+        for (axis, _) in axes {
+            gizmos.line(
+                place(origin),
+                place(origin + axis * length),
+                argb(0xFF00_0000),
+                THICK,
+            );
+        }
+        let front = origin + to_camera * 1.0e-4;
+        for (axis, color) in axes {
+            gizmos.line(place(front), place(front + axis * length), argb(color), 2.0);
+        }
+    }
+
+    /// `EntityHitboxDebugRenderer.showHitboxes`: the box (white), its
+    fn hitbox_gizmos(&self, gizmos: &mut Gizmos, visible: &[i32], partial: f32) {
+        let white = argb(0xFFFF_FFFF);
+        let red = argb(0xFFFF_0000);
+        let blue = argb(0xFF00_00FF);
+        for entity in visible.iter().filter_map(|&id| self.entities.get(id)) {
+            let (min, max) = entity.bounds(partial);
+            let bounds = Aabb {
+                min: min.as_dvec3(),
+                max: max.as_dvec3(),
+            };
+            let feet = entity.pos(partial);
+            gizmos.cuboid(&bounds, white, DEFAULT_WIDTH);
+            gizmos.point(feet, white, 2.0);
+            let eye = entity.eye(partial).as_dvec3();
+            if entity.is_living() {
+                let band = Aabb {
+                    min: DVec3::new(bounds.min.x, eye.y - 0.01, bounds.min.z),
+                    max: DVec3::new(bounds.max.x, eye.y + 0.01, bounds.max.z),
+                };
+                gizmos.cuboid(&band, red, DEFAULT_WIDTH);
+            }
+            let look = entity.view_vector(partial).as_dvec3();
+            gizmos.arrow(eye, eye + look * 2.0, blue, DEFAULT_WIDTH);
+        }
+        if self.camera_mode != CameraMode::FirstPerson {
+            let (min, max) = self.player.render_bounds();
+            let bounds = Aabb {
+                min: min.as_dvec3(),
+                max: max.as_dvec3(),
+            };
+            gizmos.cuboid(&bounds, white, DEFAULT_WIDTH);
+            gizmos.point(self.player.pos().as_dvec3(), white, 2.0);
+            let eye = self.player.eye();
+            let band = Aabb {
+                min: DVec3::new(bounds.min.x, f64::from(eye.y) - 0.01, bounds.min.z),
+                max: DVec3::new(bounds.max.x, f64::from(eye.y) + 0.01, bounds.max.z),
+            };
+            gizmos.cuboid(&band, red, DEFAULT_WIDTH);
+            let look: Vec3 = self.player.forward_vector();
+            gizmos.arrow(
+                eye.as_dvec3(),
+                (eye + look * 2.0).as_dvec3(),
+                blue,
+                DEFAULT_WIDTH,
+            );
+        }
+    }
+
+    /// `ChunkBorderRenderer.emitGizmos`: the borders of the 3×3 chunks
+    fn chunk_border_gizmos(&self, gizmos: &mut Gizmos) {
+        let (min_y, sections) = self.level.height();
+        let (y_min, y_max) = (f64::from(min_y), f64::from(min_y + sections * 16));
+        let feet = self.player.pos();
+        let (bx, by, bz) = (
+            feet.x.floor() as i32,
+            feet.y.floor() as i32,
+            feet.z.floor() as i32,
+        );
+        let x0 = f64::from(bx.div_euclid(16) * 16);
+        let z0 = f64::from(bz.div_euclid(16) * 16);
+        let (major, cell, yellow) = (argb(MAJOR), argb(CELL), argb(YELLOW));
+        let post = |gizmos: &mut Gizmos, x: f64, z: f64, color: [f32; 4], width: f32| {
+            gizmos.line(
+                DVec3::new(x, y_min, z),
+                DVec3::new(x, y_max, z),
+                color,
+                width,
+            );
+        };
+        let red = argb(0x80FF_0000);
+        for dx in [-16.0, 0.0, 16.0, 32.0] {
+            for dz in [-16.0, 0.0, 16.0, 32.0] {
+                post(gizmos, x0 + dx, z0 + dz, red, THICK);
+            }
+        }
+        for i in (2..16).step_by(2) {
+            let color = if i % 4 == 0 { cell } else { yellow };
+            let t = f64::from(i);
+            for edge in [0.0, 16.0] {
+                post(gizmos, x0 + t, z0 + edge, color, THIN);
+                post(gizmos, x0 + edge, z0 + t, color, THIN);
+            }
+        }
+        let ring = |gizmos: &mut Gizmos, y: f64, color: [f32; 4], width: f32| {
+            let corners = [
+                DVec3::new(x0, y, z0),
+                DVec3::new(x0, y, z0 + 16.0),
+                DVec3::new(x0 + 16.0, y, z0 + 16.0),
+                DVec3::new(x0 + 16.0, y, z0),
+            ];
+            for i in 0..4 {
+                gizmos.line(corners[i], corners[(i + 1) % 4], color, width);
+            }
+        };
+        let mut y = min_y;
+        while f64::from(y) <= y_max {
+            ring(
+                gizmos,
+                f64::from(y),
+                if y % 8 == 0 { cell } else { yellow },
+                THIN,
+            );
+            y += 2;
+        }
+        for x in [0.0, 16.0] {
+            for z in [0.0, 16.0] {
+                post(gizmos, x0 + x, z0 + z, major, THICK);
+            }
+        }
+        let mut y = min_y;
+        while f64::from(y) <= y_max {
+            ring(gizmos, f64::from(y), major, THICK);
+            y += 16;
+        }
+        let section_y = f64::from(by.div_euclid(16) * 16);
+        gizmos.cuboid(
+            &Aabb {
+                min: DVec3::new(x0, section_y, z0),
+                max: DVec3::new(x0 + 16.0, section_y + 16.0, z0 + 16.0),
+            },
+            major,
+            THIN,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::math::angle::Rotation;
+
+    #[test]
+    fn the_crosshair_stays_put_through_the_views_sway() {
+        let mut camera = Camera {
+            position: Vec3::new(10.0, 70.0, 5.0),
+            view: Mat4::rot_y_deg(90.0),
+            fov: 70.0,
+            far: 256.0,
+            bob: Mat4::IDENTITY,
+        };
+        let ahead = camera.position.as_dvec3() + DVec3::X;
+        assert_eq!(still_in_view(&camera)(ahead), ahead);
+        camera.bob = Mat4::from_translation(Vec3::new(0.1, -0.05, 0.0))
+            * Mat4::rot_z_deg(2.0)
+            * Mat4::rot_x_deg(3.0);
+        let moved = still_in_view(&camera)(ahead);
+        let mut rotation = camera.view;
+        rotation.w_axis = glam::Vec4::W;
+        let eye = camera.position.as_dvec3();
+        let unswayed = rotation.transform_point3((ahead - eye).as_vec3());
+        let swayed = camera
+            .bob
+            .transform_point3(rotation.transform_point3((moved - eye).as_vec3()));
+        assert!((unswayed - swayed).length() < 1e-5, "{unswayed} {swayed}");
+    }
+
+    #[test]
+    fn what_f3_switched_on_comes_back_next_run() {
+        let dir = std::env::temp_dir().join(format!("melon-debug-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (mut view, overlay) = DebugView::load(&dir);
+        assert!(!overlay && !view.hitboxes && !view.chunk_borders && !view.extended);
+        view.hitboxes = true;
+        view.extended = true;
+        view.save(true);
+        let (again, overlay) = DebugView::load(&dir);
+        assert!(overlay && again.hitboxes && again.extended && !again.chunk_borders);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

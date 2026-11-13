@@ -1,0 +1,368 @@
+use super::TextureId;
+use crate::math::angle;
+
+/// 2D affine (scale, rotate, translate). Splash text is the only rotated draw.
+#[derive(Clone, Copy)]
+pub struct Transform2D {
+    pub translate: [f32; 2],
+    pub rotate: f32,
+    pub scale: f32,
+}
+
+impl Transform2D {
+    pub fn apply(&self, p: [f32; 2]) -> [f32; 2] {
+        let (s, c) = angle::sin_cos(self.rotate);
+        let x = p[0] * self.scale;
+        let y = p[1] * self.scale;
+        [
+            x * c - y * s + self.translate[0],
+            x * s + y * c + self.translate[1],
+        ]
+    }
+}
+
+/// Vanilla's packed `0xAARRGGBB` colours (`ARGB`, the ints the decomp
+pub const fn argb(color: u32) -> [f32; 4] {
+    const fn channel(color: u32, shift: u32) -> f32 {
+        ((color >> shift) & 0xFF) as f32 / 255.0
+    }
+    [
+        channel(color, 16),
+        channel(color, 8),
+        channel(color, 0),
+        channel(color, 24),
+    ]
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Vertex {
+    pub pos: [f32; 2],
+    pub uv: [f32; 2],
+    pub color: [f32; 4],
+}
+
+/// Which blend function a draw call wants. Vanilla picks a `RenderPipeline`
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum BlendMode {
+    /// Straight alpha-over, `BlendFunction.TRANSLUCENT`.
+    #[default]
+    Alpha,
+    /// `BlendFunction.INVERT`: `src * (1 - dst) + dst * (1 - src)`.
+    Invert,
+    /// `BlendFunction.ADDITIVE`: `src + dst` (`GUI_TEXT_HIGHLIGHT`).
+    Additive,
+    /// The vignette's (`RenderPipelines.VIGNETTE`): `dst * (1 - src)`, so
+    Vignette,
+}
+
+/// Which of vanilla's GUI shaders a draw call stands for, so a resource
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum Program {
+    /// Sprites and textures: `core/position_tex_color`.
+    #[default]
+    Sprite,
+    /// Solid fills and gradients: `core/gui`.
+    Fill,
+    /// Glyphs and their underlines: `core/text` with `IS_GUI`.
+    Text,
+    /// Enchanted item icons: the baked sprite plus the scrolling glint.
+    Glint,
+}
+
+impl Program {
+    pub const ALL: [Program; 3] = [Program::Sprite, Program::Fill, Program::Text];
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
+pub struct DrawCall {
+    pub texture: TextureId,
+    /// The first index and the index count: six per quad (two triangles
+    pub first: u32,
+    pub count: u32,
+    /// `[x, y, w, h]` in GUI coords, or `None` for the full window.
+    pub scissor: Option<[f32; 4]>,
+    pub blend: BlendMode,
+    pub program: Program,
+}
+
+/// Immediate-mode quad list, rebuilt each frame. Every quad is four
+pub struct DrawList {
+    pub vertices: Vec<Vertex>,
+    pub calls: Vec<DrawCall>,
+    current_scissor: Option<[f32; 4]>,
+    current_blend: BlendMode,
+    current_program: Program,
+    /// Calls before this index are never merged into.
+    sealed: usize,
+}
+
+impl DrawList {
+    pub fn new() -> Self {
+        Self {
+            vertices: Vec::new(),
+            calls: Vec::new(),
+            current_scissor: None,
+            current_blend: BlendMode::Alpha,
+            current_program: Program::Sprite,
+            sealed: 0,
+        }
+    }
+
+    /// The index of the next call, which starts a call of its own: the
+    pub fn seal(&mut self) -> usize {
+        self.sealed = self.calls.len();
+        self.sealed
+    }
+
+    /// Empties the list for the next frame, keeping its memory.
+    pub fn clear(&mut self) {
+        self.vertices.clear();
+        self.calls.clear();
+        self.current_scissor = None;
+        self.current_blend = BlendMode::Alpha;
+        self.current_program = Program::Sprite;
+        self.sealed = 0;
+    }
+
+    /// Where the next vertex goes, for [`Self::scale_since`].
+    pub fn vertices_len(&self) -> usize {
+        self.vertices.len()
+    }
+
+    /// Scales every vertex pushed since `start` about the origin: a
+    pub fn scale_since(&mut self, start: usize, scale: f32) {
+        for vertex in &mut self.vertices[start..] {
+            vertex.pos = vertex.pos.map(|p| p * scale);
+        }
+    }
+
+    /// Moves every vertex pushed since `start` by `by`.
+    pub fn offset_since(&mut self, start: usize, by: [f32; 2]) {
+        for vertex in &mut self.vertices[start..] {
+            vertex.pos = [vertex.pos[0] + by[0], vertex.pos[1] + by[1]];
+        }
+    }
+
+    /// Clip later quads to `[x, y, w, h]` GUI coords (`None` = unclipped).
+    pub fn set_scissor(&mut self, scissor: Option<[f32; 4]>) {
+        self.current_scissor = scissor;
+    }
+
+    /// The clip rectangle in force, to restore after a nested one.
+    pub fn scissor(&self) -> Option<[f32; 4]> {
+        self.current_scissor
+    }
+
+    /// Blend function for later quads. Callers must set it back to
+    pub fn set_blend(&mut self, blend: BlendMode) {
+        self.current_blend = blend;
+    }
+
+    /// Which GUI shader later quads stand for; returns the one before, to
+    pub fn set_program(&mut self, program: Program) -> Program {
+        std::mem::replace(&mut self.current_program, program)
+    }
+
+    /// A whole texture, untinted (vanilla `blitSprite` of a sprite that
+    pub fn push_sprite(&mut self, texture: TextureId, x: f32, y: f32, w: f32, h: f32) {
+        self.push_rect(texture, x, y, w, h, [0.0, 0.0, 1.0, 1.0], [1.0; 4]);
+    }
+
+    /// A solid rectangle (vanilla `fill`), drawn with the 1x1 white texture.
+    pub fn push_fill(&mut self, white: TextureId, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
+        let program = self.fill_program();
+        let corners = [[x, y], [x, y + h], [x + w, y + h], [x + w, y]];
+        self.push_corners(white, corners, [[0.0, 0.0]; 4], [color; 4], program);
+    }
+
+    /// [`Program::Fill`], unless text is being drawn.
+    fn fill_program(&self) -> Program {
+        if self.current_program == Program::Text {
+            Program::Text
+        } else {
+            Program::Fill
+        }
+    }
+
+    /// One quad: `corners` top left, bottom left, bottom right, top right.
+    fn push_corners(
+        &mut self,
+        texture: TextureId,
+        corners: [[f32; 2]; 4],
+        uvs: [[f32; 2]; 4],
+        colors: [[f32; 4]; 4],
+        program: Program,
+    ) {
+        let first = (self.vertices.len() / 4 * 6) as u32;
+        self.vertices.extend((0..4).map(|i| Vertex {
+            pos: corners[i],
+            uv: uvs[i],
+            color: colors[i],
+        }));
+        self.push_call(texture, first, 6, program);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_rect(
+        &mut self,
+        texture: TextureId,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        uv: [f32; 4],
+        color: [f32; 4],
+    ) {
+        let [u0, v0, u1, v1] = uv;
+        let corners = [[x, y], [x, y + h], [x + w, y + h], [x + w, y]];
+        let uvs = [[u0, v0], [u0, v1], [u1, v1], [u1, v0]];
+        self.push_corners(texture, corners, uvs, [color; 4], self.current_program);
+    }
+
+    /// A quad of any four corners, in the order they go round, each with
+    pub fn push_quad(
+        &mut self,
+        texture: TextureId,
+        corners: [[f32; 2]; 4],
+        uvs: [[f32; 2]; 4],
+        color: [f32; 4],
+    ) {
+        self.push_corners(texture, corners, uvs, [color; 4], self.current_program);
+    }
+
+    /// `push_rect` after `transform` (splash text).
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_rect_transformed(
+        &mut self,
+        texture: TextureId,
+        transform: &Transform2D,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        uv: [f32; 4],
+        color: [f32; 4],
+    ) {
+        let [u0, v0, u1, v1] = uv;
+        let corners = [[x, y], [x, y + h], [x + w, y + h], [x + w, y]].map(|p| transform.apply(p));
+        let uvs = [[u0, v0], [u0, v1], [u1, v1], [u1, v0]];
+        self.push_corners(texture, corners, uvs, [color; 4], self.current_program);
+    }
+
+    /// `push_rect` as a parallelogram: top edge shifted by `shear_top`, bottom
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_rect_sheared(
+        &mut self,
+        texture: TextureId,
+        x: f32,
+        y0: f32,
+        y1: f32,
+        w: f32,
+        shear_top: f32,
+        shear_bottom: f32,
+        uv: [f32; 4],
+        color: [f32; 4],
+    ) {
+        let [u0, v0, u1, v1] = uv;
+        let corners = [
+            [x + shear_top, y0],
+            [x + shear_bottom, y1],
+            [x + w + shear_bottom, y1],
+            [x + w + shear_top, y0],
+        ];
+        let uvs = [[u0, v0], [u0, v1], [u1, v1], [u1, v0]];
+        self.push_corners(texture, corners, uvs, [color; 4], self.current_program);
+    }
+
+    /// Repeats `texture` (native width `tile_w`) across `[x, x+w)` instead of
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_rect_tiled_x(
+        &mut self,
+        texture: TextureId,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        tile_w: f32,
+        color: [f32; 4],
+    ) {
+        if w > 0.0 {
+            self.push_rect(texture, x, y, w, h, [0.0, 0.0, w / tile_w, 1.0], color);
+        }
+    }
+
+    /// Solid vertical gradient on the white texture. Menu background stand-in
+    #[allow(clippy::too_many_arguments)]
+    pub fn push_vgradient(
+        &mut self,
+        texture: TextureId,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        top: [f32; 4],
+        bottom: [f32; 4],
+    ) {
+        let corners = [[x, y], [x, y + h], [x + w, y + h], [x + w, y]];
+        let uvs = [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]];
+        let program = self.fill_program();
+        self.push_corners(texture, corners, uvs, [top, bottom, bottom, top], program);
+    }
+
+    fn push_call(&mut self, texture: TextureId, first: u32, count: u32, program: Program) {
+        if self.calls.len() > self.sealed
+            && let Some(last) = self.calls.last_mut()
+            && last.texture.0 == texture.0
+            && last.first + last.count == first
+            && last.scissor == self.current_scissor
+            && last.blend == self.current_blend
+            && last.program == program
+        {
+            last.count += count;
+            return;
+        }
+        self.calls.push(DrawCall {
+            texture,
+            first,
+            count,
+            scissor: self.current_scissor,
+            blend: self.current_blend,
+            program,
+        });
+    }
+}
+
+impl Default for DrawList {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn calls_merge_until_sealed() {
+        let mut list = DrawList::new();
+        let white = TextureId(0);
+        list.push_fill(white, 0.0, 0.0, 1.0, 1.0, [1.0; 4]);
+        list.push_fill(white, 0.0, 0.0, 1.0, 1.0, [1.0; 4]);
+        assert_eq!(list.calls.len(), 1);
+
+        let split = list.seal();
+        list.push_fill(white, 0.0, 0.0, 1.0, 1.0, [1.0; 4]);
+        list.push_fill(white, 0.0, 0.0, 1.0, 1.0, [1.0; 4]);
+        assert_eq!((split, list.calls.len()), (1, 2));
+        assert_eq!(list.calls[1].count, 12);
+
+        list.clear();
+        list.push_fill(white, 0.0, 0.0, 1.0, 1.0, [1.0; 4]);
+        list.push_fill(white, 0.0, 0.0, 1.0, 1.0, [1.0; 4]);
+        assert_eq!(list.calls.len(), 1);
+    }
+}

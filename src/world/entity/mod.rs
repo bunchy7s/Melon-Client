@@ -1,0 +1,27 @@
+//! Entities as vanilla's renderers see them: the model structure
+
+pub mod animation;
+pub mod animations;
+pub mod appearance;
+pub mod boat_sim;
+pub mod display;
+pub mod fishing;
+pub mod horse_sim;
+pub mod humanoid;
+pub mod interact;
+pub mod interaction_box;
+pub mod item_drop;
+pub mod keyframe;
+pub mod kind;
+pub mod leash;
+pub mod living;
+pub mod magic_name;
+pub mod mobs;
+pub mod model;
+pub mod player;
+pub mod pose_cache;
+pub mod quadruped;
+pub mod ride;
+pub mod skull;
+pub mod tracker;
+pub mod walk;

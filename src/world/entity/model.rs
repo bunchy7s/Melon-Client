@@ -1,0 +1,516 @@
+//! Vanilla's entity model structure, as data: a [`PartDefinition`] tree
+
+use glam::{Mat4, Vec2, Vec3};
+
+use crate::renderer::WorldVertex as Vertex;
+use crate::world::geometry;
+use crate::world::model_part::{self, Cube, Part, Pose};
+
+/// A `PartDefinition`: a named part's pose, boxes and children.
+#[derive(Clone, Debug)]
+pub struct PartDefinition {
+    pub name: &'static str,
+    pub pose: Pose,
+    pub cubes: Vec<Cube>,
+    pub children: Vec<PartDefinition>,
+}
+
+impl PartDefinition {
+    /// `MeshDefinition.getRoot`: the unnamed root at the origin.
+    pub fn root() -> Self {
+        Self {
+            name: "root",
+            pose: Pose::ZERO,
+            cubes: Vec::new(),
+            children: Vec::new(),
+        }
+    }
+
+    /// `addOrReplaceChild`: a child of that name gets the new boxes and
+    pub fn add_or_replace_child(
+        &mut self,
+        name: &'static str,
+        cubes: Vec<Cube>,
+        pose: Pose,
+    ) -> &mut PartDefinition {
+        let child = PartDefinition {
+            name,
+            pose,
+            cubes,
+            children: Vec::new(),
+        };
+        let index = match self.children.iter().position(|c| c.name == name) {
+            Some(index) => {
+                let old = std::mem::replace(&mut self.children[index], child);
+                self.children[index].children = old.children;
+                index
+            }
+            None => {
+                self.children.push(child);
+                self.children.len() - 1
+            }
+        };
+        &mut self.children[index]
+    }
+
+    /// Keeps the boxes of the parts named in `keep` (and, if `children`,
+    pub fn retain_cubes(&mut self, keep: &[&str], children: bool) {
+        if keep.contains(&self.name) {
+            if !children {
+                for child in &mut self.children {
+                    child.clear_cubes();
+                }
+            }
+            return;
+        }
+        self.cubes.clear();
+        for child in &mut self.children {
+            child.retain_cubes(keep, children);
+        }
+    }
+
+    /// `clearRecursively`: no boxes here or below.
+    pub fn clear_cubes(&mut self) {
+        self.cubes.clear();
+        for child in &mut self.children {
+            child.clear_cubes();
+        }
+    }
+
+    /// `getChild`.
+    pub fn child_mut(&mut self, name: &str) -> &mut PartDefinition {
+        self.children
+            .iter_mut()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("model part {name} is missing"))
+    }
+}
+
+/// `LayerDefinition`: the part tree and the texture's size in texels.
+#[derive(Clone, Debug)]
+pub struct LayerDefinition {
+    pub root: PartDefinition,
+    pub texture_width: f32,
+    pub texture_height: f32,
+}
+
+impl LayerDefinition {
+    /// `LayerDefinition.create(mesh, width, height)`.
+    pub fn new(root: PartDefinition, texture_width: f32, texture_height: f32) -> Self {
+        Self {
+            root,
+            texture_width,
+            texture_height,
+        }
+    }
+}
+
+/// A part of a [`Model`], by index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PartId(pub usize);
+
+#[derive(Clone, Debug)]
+struct Node {
+    name: &'static str,
+    parent: Option<usize>,
+    initial: Pose,
+    cubes: Vec<Cube>,
+}
+
+/// A baked `ModelPart` tree: parents before their children.
+#[derive(Clone, Debug)]
+pub struct Model {
+    nodes: Vec<Node>,
+    texture_size: Vec2,
+}
+
+/// One part's pose for this frame: `ModelPart`'s `x`/`y`/`z`, `xRot`/
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PartState {
+    pub pose: Pose,
+    pub visible: bool,
+    /// `ModelPart.skipDraw`: this part's boxes stay hidden while children
+    pub skip_draw: bool,
+}
+
+/// Every part's [`PartState`], by [`PartId`].
+#[derive(Debug, Default, PartialEq)]
+pub struct ModelPose {
+    parts: Vec<PartState>,
+}
+
+impl Clone for ModelPose {
+    fn clone(&self) -> Self {
+        Self {
+            parts: self.parts.clone(),
+        }
+    }
+
+    /// Into the parts already there: no new allocation for a pose of the
+    fn clone_from(&mut self, source: &Self) {
+        self.parts.clone_from(&source.parts);
+    }
+}
+
+impl ModelPose {
+    pub fn get(&self, part: PartId) -> &PartState {
+        &self.parts[part.0]
+    }
+
+    pub fn get_mut(&mut self, part: PartId) -> &mut PartState {
+        &mut self.parts[part.0]
+    }
+
+    /// Two different parts at once, for animations that move a pair.
+    pub fn get_two_mut(&mut self, a: PartId, b: PartId) -> [&mut PartState; 2] {
+        self.parts
+            .get_disjoint_mut([a.0, b.0])
+            .expect("two different parts")
+    }
+}
+
+impl std::ops::Index<PartId> for ModelPose {
+    type Output = PartState;
+
+    fn index(&self, part: PartId) -> &PartState {
+        self.get(part)
+    }
+}
+
+impl std::ops::IndexMut<PartId> for ModelPose {
+    fn index_mut(&mut self, part: PartId) -> &mut PartState {
+        self.get_mut(part)
+    }
+}
+
+impl Model {
+    /// `LayerDefinition.bakeRoot`.
+    pub fn bake(layer: &LayerDefinition) -> Self {
+        let mut nodes = Vec::new();
+        fn walk(def: &PartDefinition, parent: Option<usize>, nodes: &mut Vec<Node>) {
+            let index = nodes.len();
+            nodes.push(Node {
+                name: def.name,
+                parent,
+                initial: def.pose,
+                cubes: def.cubes.clone(),
+            });
+            for child in &def.children {
+                walk(child, Some(index), nodes);
+            }
+        }
+        walk(&layer.root, None, &mut nodes);
+        Self {
+            nodes,
+            texture_size: Vec2::new(layer.texture_width, layer.texture_height),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
+    pub fn root(&self) -> PartId {
+        PartId(0)
+    }
+
+    /// The part named `name` anywhere in the tree (`getChild` down the
+    pub fn part(&self, name: &str) -> PartId {
+        self.find(name)
+            .unwrap_or_else(|| panic!("model part {name} is missing"))
+    }
+
+    /// The part named `name`, if the model has one (a baby chicken has no
+    pub fn find(&self, name: &str) -> Option<PartId> {
+        self.nodes.iter().position(|n| n.name == name).map(PartId)
+    }
+
+    pub fn name(&self, part: PartId) -> &'static str {
+        self.nodes[part.0].name
+    }
+
+    /// The definition's pose, every part visible (`resetPose`).
+    pub fn initial_pose(&self) -> ModelPose {
+        ModelPose {
+            parts: self
+                .nodes
+                .iter()
+                .map(|n| PartState {
+                    pose: n.initial,
+                    visible: true,
+                    skip_draw: false,
+                })
+                .collect(),
+        }
+    }
+
+    /// The definition's pose of `part`.
+    pub fn initial(&self, part: PartId) -> Pose {
+        self.nodes[part.0].initial
+    }
+
+    /// `ModelPart.resetPose` for one part.
+    pub fn reset_part(&self, pose: &mut ModelPose, part: PartId) {
+        pose.parts[part.0].pose = self.nodes[part.0].initial;
+    }
+
+    /// Whether `part` is `ancestor` or below it.
+    pub fn is_within(&self, part: PartId, ancestor: PartId) -> bool {
+        let mut at = Some(part.0);
+        while let Some(index) = at {
+            if index == ancestor.0 {
+                return true;
+            }
+            at = self.nodes[index].parent;
+        }
+        false
+    }
+
+    /// Each part's matrix from model pixels to the world, `None` for the
+    pub fn part_matrices(&self, pose: &ModelPose, root: Mat4) -> Vec<Option<Mat4>> {
+        let mut out = Vec::with_capacity(self.nodes.len());
+        self.part_matrices_into(pose, root, &mut out);
+        out
+    }
+
+    /// [`Self::part_matrices`] into `out`, replacing what it held and
+    pub fn part_matrices_into(&self, pose: &ModelPose, root: Mat4, out: &mut Vec<Option<Mat4>>) {
+        out.clear();
+        for (node, state) in self.nodes.iter().zip(&pose.parts) {
+            let parent = match node.parent {
+                Some(parent) => out[parent],
+                None => Some(root),
+            };
+            out.push(
+                parent
+                    .filter(|_| state.visible)
+                    .map(|parent| state.pose.placed_in(parent)),
+            );
+        }
+        for (matrix, state) in out.iter_mut().zip(&pose.parts) {
+            if state.skip_draw {
+                *matrix = None;
+            }
+        }
+    }
+
+    /// Whether `other`'s parts hang off each other the way this model's
+    pub fn shares_tree(&self, other: &Model) -> bool {
+        self.nodes.len() == other.nodes.len()
+            && self
+                .nodes
+                .iter()
+                .zip(&other.nodes)
+                .all(|(a, b)| a.parent == b.parent)
+    }
+
+    /// The matrices of `part` and the parts below it only, `part` placed
+    pub fn subtree_matrices(
+        &self,
+        pose: &ModelPose,
+        part: PartId,
+        base: Mat4,
+    ) -> Vec<Option<Mat4>> {
+        let mut out: Vec<Option<Mat4>> = vec![None; self.nodes.len()];
+        for (index, node) in self.nodes.iter().enumerate() {
+            if !self.is_within(PartId(index), part) {
+                continue;
+            }
+            let state = &pose.parts[index];
+            let parent = if index == part.0 {
+                Some(base)
+            } else {
+                node.parent.and_then(|p| out[p])
+            };
+            out[index] = parent
+                .filter(|_| state.visible)
+                .map(|parent| state.pose.placed_in(parent));
+        }
+        for (index, state) in pose.parts.iter().enumerate() {
+            if state.skip_draw {
+                out[index] = None;
+            }
+        }
+        out
+    }
+
+    /// The matrix `translateAndRotate` leaves for `part` and its ancestors:
+    pub fn part_transform(&self, pose: &ModelPose, part: PartId, root: Mat4) -> Mat4 {
+        pose[part]
+            .pose
+            .placed_in(self.parent_transform(pose, part, root))
+    }
+
+    /// The matrix `part`'s own pose is applied in: its parent's
+    pub fn parent_transform(&self, pose: &ModelPose, part: PartId, root: Mat4) -> Mat4 {
+        match self.nodes[part.0].parent {
+            Some(parent) => self.part_transform(pose, PartId(parent), root),
+            None => root,
+        }
+    }
+
+    /// Every face of `part`'s own boxes in its space (blocks, Y down,
+    pub fn part_faces(&self, part: PartId, visit: &mut impl FnMut(ModelFace)) {
+        let node = &self.nodes[part.0];
+        if node.cubes.is_empty() {
+            return;
+        }
+        model_part::faces(
+            &Part::new(Pose::ZERO, node.cubes.clone()),
+            Mat4::IDENTITY,
+            &mut |face| {
+                let [a, b, c, _] = face.corners;
+                visit(ModelFace {
+                    corners: face.corners,
+                    uvs: face.texels.map(|t| t / self.texture_size),
+                    normal: (b - a).cross(c - a).normalize_or_zero(),
+                });
+            },
+        );
+    }
+
+    /// `part`'s own boxes as vertices in its space (blocks, Y down, before
+    pub fn part_vertices(&self, part: PartId) -> Vec<Vertex> {
+        let mut out = Vec::new();
+        self.part_faces(part, &mut |face| {
+            let n = face.normal;
+            let shade = geometry::shade(Vec3::new(-n.x, -n.y, n.z));
+            let corners = std::array::from_fn(|i| {
+                let [u, v] = face.uvs[i].to_array();
+                (
+                    face.corners[i].to_array(),
+                    geometry::atlas_uv([0.0, 0.0, 1.0, 1.0], u, v),
+                )
+            });
+            geometry::push_quad(&mut out, corners, [shade; 3], false);
+        });
+        out
+    }
+}
+
+/// One face of a part's boxes, in the part's space.
+#[derive(Clone, Copy, Debug)]
+pub struct ModelFace {
+    pub corners: [Vec3; 4],
+    /// Texture coordinates, `0..1` over the layer's texture.
+    pub uvs: [Vec2; 4],
+    /// Outward, in model space (Y down).
+    pub normal: Vec3,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn layer() -> LayerDefinition {
+        let mut root = PartDefinition::root();
+        let arm = root.add_or_replace_child(
+            "arm",
+            vec![Cube::new((0.0, 0.0), (0.0, 0.0, 0.0), (1.0, 1.0, 1.0))],
+            Pose::offset(16.0, 0.0, 0.0),
+        );
+        arm.add_or_replace_child("sleeve", Vec::new(), Pose::offset(0.0, 16.0, 0.0));
+        LayerDefinition {
+            root,
+            texture_width: 64.0,
+            texture_height: 64.0,
+        }
+    }
+
+    #[test]
+    fn children_follow_their_parent() {
+        let model = Model::bake(&layer());
+        let pose = model.initial_pose();
+        let matrices = model.part_matrices(&pose, Mat4::IDENTITY);
+        let sleeve = model.part("sleeve");
+        let at = matrices[sleeve.0].unwrap().transform_point3(Vec3::ZERO);
+        assert!((at - Vec3::new(1.0, 1.0, 0.0)).length() < 1e-6, "{at}");
+    }
+
+    #[test]
+    fn a_hidden_part_hides_its_children() {
+        let model = Model::bake(&layer());
+        let mut pose = model.initial_pose();
+        pose[model.part("arm")].visible = false;
+        let matrices = model.part_matrices(&pose, Mat4::IDENTITY);
+        assert!(matrices.iter().skip(1).all(Option::is_none));
+    }
+
+    #[test]
+    fn skip_draw_hides_a_part_and_leaves_its_children() {
+        let model = Model::bake(&layer());
+        let mut pose = model.initial_pose();
+        pose[model.part("arm")].skip_draw = true;
+        let matrices = model.part_matrices(&pose, Mat4::IDENTITY);
+        assert!(matrices[model.part("arm").0].is_none());
+        assert!(matrices[model.part("sleeve").0].is_some());
+    }
+
+    #[test]
+    fn replacing_a_child_keeps_one_of_that_name_and_its_children() {
+        let mut def = layer();
+        def.root.add_or_replace_child("arm", Vec::new(), Pose::ZERO);
+        assert_eq!(def.root.children.len(), 1);
+        assert!(def.root.children[0].cubes.is_empty());
+        assert_eq!(def.root.children[0].children[0].name, "sleeve");
+    }
+
+    #[test]
+    fn retaining_cubes_keeps_the_tree() {
+        let mut def = layer();
+        def.root.retain_cubes(&["sleeve"], false);
+        let model = Model::bake(&def);
+        assert_eq!(model.len(), 3);
+        assert!(model.part_vertices(model.part("arm")).is_empty());
+    }
+
+    #[test]
+    fn a_subtree_starts_at_its_own_part() {
+        let model = Model::bake(&layer());
+        let pose = model.initial_pose();
+        let matrices = model.subtree_matrices(&pose, model.part("arm"), Mat4::IDENTITY);
+        assert!(matrices[0].is_none());
+        let at = matrices[model.part("arm").0]
+            .unwrap()
+            .transform_point3(Vec3::ZERO);
+        assert!((at - Vec3::new(1.0, 0.0, 0.0)).length() < 1e-6);
+    }
+
+    #[test]
+    fn tops_are_shaded_bright_once_upright() {
+        let model = Model::bake(&layer());
+        let vertices = model.part_vertices(model.part("arm"));
+        let top = vertices
+            .chunks(4)
+            .find(|quad| quad.iter().all(|v| v.pos[1] == 0.0))
+            .unwrap();
+        let bottom = vertices
+            .chunks(4)
+            .find(|quad| quad.iter().all(|v| v.pos[1] > 0.0))
+            .unwrap();
+        assert!(top[0].color[0] > bottom[0].color[0]);
+    }
+
+    #[test]
+    fn a_mirrored_box_still_faces_out() {
+        let mut root = PartDefinition::root();
+        root.add_or_replace_child(
+            "box",
+            vec![Cube::new((0.0, 0.0), (-1.0, -1.0, -1.0), (2.0, 2.0, 2.0)).mirrored()],
+            Pose::ZERO,
+        );
+        let model = Model::bake(&LayerDefinition {
+            root,
+            texture_width: 64.0,
+            texture_height: 64.0,
+        });
+        model.part_faces(model.part("box"), &mut |face| {
+            let center = face.corners.iter().sum::<Vec3>() / 4.0;
+            assert!(face.normal.dot(center) > 0.0, "{face:?}");
+        });
+    }
+}

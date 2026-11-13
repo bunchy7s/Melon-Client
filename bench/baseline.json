@@ -1,0 +1,199 @@
+{
+  "machine": {
+    "cpu": "AMD Ryzen 7 9800X3D 8-Core Processor",
+    "threads": 8
+  },
+  "git": "7881f31+lokal",
+  "chunks": "3a4e98a8774db371",
+  "stages": [
+    {
+      "name": "startup.block_models_bake",
+      "per": "pass",
+      "n": 3,
+      "median_us": 147566.543,
+      "p90_us": 156944.739,
+      "max_us": 156944.739,
+      "total_ms": 449.639075
+    },
+    {
+      "name": "startup.item_icon_bake",
+      "per": "item",
+      "n": 300,
+      "median_us": 81.34100000000001,
+      "p90_us": 103.132,
+      "max_us": 154.512,
+      "total_ms": 23.913662
+    },
+    {
+      "name": "parse.decode",
+      "per": "chunk",
+      "n": 867,
+      "median_us": 28.119999999999997,
+      "p90_us": 31.831,
+      "max_us": 55.340999999999994,
+      "total_ms": 22.807279
+    },
+    {
+      "name": "parse.chunk_scan",
+      "per": "chunk",
+      "n": 867,
+      "median_us": 36.85,
+      "p90_us": 37.339999999999996,
+      "max_us": 80.78099999999999,
+      "total_ms": 32.206102
+    },
+    {
+      "name": "level.insert",
+      "per": "chunk",
+      "n": 289,
+      "median_us": 2.02,
+      "p90_us": 2.69,
+      "max_us": 75.80999999999999,
+      "total_ms": 0.719
+    },
+    {
+      "name": "mesh.mesh_chunk",
+      "per": "chunk",
+      "n": 578,
+      "median_us": 1095.434,
+      "p90_us": 1491.689,
+      "max_us": 1941.4530000000002,
+      "total_ms": 652.6597079999999
+    },
+    {
+      "name": "mesh.section_visibility",
+      "per": "chunk",
+      "n": 578,
+      "median_us": 33.699999999999996,
+      "p90_us": 41.83,
+      "max_us": 53.199999999999996,
+      "total_ms": 19.401938
+    },
+    {
+      "name": "mesh.parallel_1t",
+      "per": "pass",
+      "n": 3,
+      "median_us": 326751.274,
+      "p90_us": 326784.664,
+      "max_us": 326784.664,
+      "total_ms": 978.427719
+    },
+    {
+      "name": "mesh.parallel_2t",
+      "per": "pass",
+      "n": 3,
+      "median_us": 162620.35799999998,
+      "p90_us": 163655.471,
+      "max_us": 163655.471,
+      "total_ms": 488.328379
+    },
+    {
+      "name": "mesh.parallel_4t",
+      "per": "pass",
+      "n": 3,
+      "median_us": 83290.07800000001,
+      "p90_us": 83514.071,
+      "max_us": 83514.071,
+      "total_ms": 249.690382
+    },
+    {
+      "name": "mesh.parallel_8t",
+      "per": "pass",
+      "n": 3,
+      "median_us": 45110.241,
+      "p90_us": 46626.96,
+      "max_us": 46626.96,
+      "total_ms": 136.062513
+    },
+    {
+      "name": "mesh.pipeline_until_done",
+      "per": "pass",
+      "n": 1,
+      "median_us": 69160.466,
+      "p90_us": 69160.466,
+      "max_us": 69160.466,
+      "total_ms": 69.160466
+    },
+    {
+      "name": "mesh.pipeline_main_per_frame",
+      "per": "frame",
+      "n": 180,
+      "median_us": 59.53,
+      "p90_us": 99.972,
+      "max_us": 3140.1290000000004,
+      "total_ms": 14.29298
+    },
+    {
+      "name": "cull.occlusion_walk",
+      "per": "walk",
+      "n": 120,
+      "median_us": 70.061,
+      "p90_us": 75.841,
+      "max_us": 116.241,
+      "total_ms": 7.832733999999999
+    },
+    {
+      "name": "cull.visible_sections",
+      "per": "frame",
+      "n": 300,
+      "median_us": 19.23,
+      "p90_us": 39.371,
+      "max_us": 68.871,
+      "total_ms": 6.412349000000001
+    },
+    {
+      "name": "edit.set_block_with_light",
+      "per": "edit",
+      "n": 21,
+      "median_us": 1.0899999999999999,
+      "p90_us": 11.450999999999999,
+      "max_us": 34.39,
+      "total_ms": 0.10709099999999999
+    },
+    {
+      "name": "edit.urgent_remesh",
+      "per": "edit",
+      "n": 21,
+      "median_us": 489.266,
+      "p90_us": 586.2769999999999,
+      "max_us": 631.687,
+      "total_ms": 7.976557000000001
+    }
+  ],
+  "counts": {
+    "cull.down.draws": 1719,
+    "cull.down.reached": 4584,
+    "cull.down.sections_drawn": 397,
+    "cull.down.vertices": 900444,
+    "cull.east.draws": 237,
+    "cull.east.reached": 4396,
+    "cull.east.sections_drawn": 53,
+    "cull.east.vertices": 139104,
+    "cull.north.draws": 741,
+    "cull.north.reached": 4396,
+    "cull.north.sections_drawn": 163,
+    "cull.north.vertices": 439852,
+    "cull.south.draws": 672,
+    "cull.south.reached": 4396,
+    "cull.south.sections_drawn": 155,
+    "cull.south.vertices": 391440,
+    "cull.underground.draws": 828,
+    "cull.underground.reached": 1614,
+    "cull.underground.sections_drawn": 195,
+    "cull.underground.vertices": 301396,
+    "cull.west.draws": 937,
+    "cull.west.reached": 4396,
+    "cull.west.sections_drawn": 211,
+    "cull.west.vertices": 532272,
+    "edit.light_fingerprint": 18932,
+    "mesh.gpu_bytes": 56551804,
+    "mesh.pipeline_meshed_sections": 5400,
+    "mesh.section_slices": 26381,
+    "mesh.vertices_cutout": 2255464,
+    "mesh.vertices_solid": 5809972,
+    "mesh.vertices_translucent": 562536,
+    "parse.block_entities": 24,
+    "parse.packet_bytes": 20357975,
+    "world.chunks": 289
+  }
+}

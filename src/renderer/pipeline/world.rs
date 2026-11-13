@@ -1,0 +1,382 @@
+//! 3D pass: terrain, fluids, entities and the sky bodies, depth-tested.
+
+use ash::vk;
+
+use super::{Pass, PipelineDesc};
+use crate::renderer::{TerrainQuad, WorldVertex as Vertex};
+use crate::world::lightmap::LightmapParams;
+
+const VERT_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/world.vert.spv"));
+const TERRAIN_VERT_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/terrain.vert.spv"));
+const TERRAIN_INDIRECT_VERT_SPV: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/terrain_indirect.vert.spv"));
+const FRAG_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/world.frag.spv"));
+const SKY_DISC_VERT_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/skydisc.vert.spv"));
+const SKY_DISC_FRAG_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/skydisc.frag.spv"));
+/// `world.frag` without `discard`.
+const SOLID_FRAG_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/world_solid.frag.spv"));
+const CRUMBLING_FRAG_SPV: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/world_crumbling.frag.spv"));
+const WEATHER_FRAG_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/world_weather.frag.spv"));
+const CLOUDS_FRAG_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/world_clouds.frag.spv"));
+const OUTLINE_FRAG_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/world_outline.frag.spv"));
+const WATER_MASK_FRAG_SPV: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/world_water_mask.frag.spv"));
+const GLINT_FRAG_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/world_glint.frag.spv"));
+
+/// `mat4 view_proj`, `vec4 ambient`, `vec4 params` (sky light RGB, gamma),
+pub const PUSH_CONSTANT_SIZE: u32 = VIEW_AT + 16;
+/// Where the per-draw mesh offset starts: everything before it is the same
+pub const OFFSET_AT: u32 = 96;
+/// Where how the fog finds a model's distance is.
+pub const VIEW_AT: u32 = 112;
+/// The size of the offset and of the view constants: a `vec4` each.
+pub const OFFSET_SIZE: u32 = 16;
+
+/// How `world.vert` finds a vertex's distance from the camera, for the fog.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FogInput {
+    /// Not at all: the vertex is not fogged (sky bodies).
+    None,
+    /// Its position plus the push constants' offset is relative to the
+    Chunk,
+    /// From where `view_proj` puts it: a model. `1 / m00` and `1 / m11` of
+    Model([f32; 2]),
+}
+
+impl FogInput {
+    /// The `vec4 view` constants.
+    pub fn bytes(self) -> [f32; 4] {
+        match self {
+            Self::None => [0.0; 4],
+            Self::Chunk => [0.0, 0.0, 1.0, 0.0],
+            Self::Model([x, y]) => [x, y, 2.0, 0.0],
+        }
+    }
+}
+/// The lightmap's inputs are read where it runs, per fragment, and the rest
+pub const PUSH_STAGES: vk::ShaderStageFlags = vk::ShaderStageFlags::from_raw(
+    vk::ShaderStageFlags::VERTEX.as_raw() | vk::ShaderStageFlags::FRAGMENT.as_raw(),
+);
+
+/// How one world/celestial draw is lit and fogged.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DrawLight {
+    /// Multiplied onto sentinel-lit vertices (entities, celestials,
+    pub ambient: [f32; 4],
+    /// The lightmap's sky light and gamma, for vertices that carry their
+    pub lightmap: LightmapParams,
+    /// How the fog finds the draw's distance from the camera.
+    pub fog: FogInput,
+    /// Vanilla's entity overlay (`OverlayTexture`) on sentinel-lit
+    pub overlay: f32,
+    /// `TextureTransform` scale for the glint overlay pass; 0 skips it.
+    pub glint_scale: f32,
+}
+
+impl DrawLight {
+    /// Only a tint: for meshes without vertex light (celestials, shadows).
+    pub const fn tint(ambient: [f32; 4]) -> Self {
+        Self {
+            ambient,
+            lightmap: LightmapParams::overworld([1.0; 3], 0.0),
+            fog: FogInput::None,
+            overlay: 0.0,
+            glint_scale: 0.0,
+        }
+    }
+
+    /// The same, fogged as `fog` says.
+    pub const fn fogged(mut self, fog: FogInput) -> Self {
+        self.fog = fog;
+        self
+    }
+
+    /// The same, with an entity overlay (see [`Self::overlay`]).
+    pub const fn overlaid(mut self, overlay: f32) -> Self {
+        self.overlay = overlay;
+        self
+    }
+
+    /// The same, with a glint overlay of this scale (see [`Self::glint_scale`]).
+    pub const fn glinted(mut self, scale: f32) -> Self {
+        self.glint_scale = scale;
+        self
+    }
+}
+
+/// Bytes for one world/celestial draw: `view_proj`, `ambient`, then
+pub fn push_bytes(view_proj: &glam::Mat4, light: &DrawLight) -> [f32; 24] {
+    let mut data = [0.0; 24];
+    data[..16].copy_from_slice(&view_proj.to_cols_array());
+    data[16..20].copy_from_slice(&light.ambient);
+    data[20..23].copy_from_slice(&light.lightmap.sky);
+    data[23] = light.lightmap.gamma;
+    data
+}
+
+/// Which world-shaped pipeline to build.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Fully opaque terrain (vanilla's `SOLID` chunk layer): no `discard`,
+    Solid,
+    /// Terrain with holes (leaves, plants; vanilla `CUTOUT`) and entities.
+    Opaque,
+    /// Blob shadows and see-through items: blended, depth-tested, no depth
+    Translucent,
+    /// Water, glass and ice (vanilla `TRANSLUCENT_TERRAIN`): blended, drawn
+    TranslucentTerrain,
+    /// Fancy clouds (`RenderPipelines.CLOUDS`): translucent, depth written
+    Clouds,
+    /// Rain and snow (`RenderPipelines.WEATHER`): blended over the world,
+    Weather,
+    /// Sun, moon and stars: no depth, vanilla `BlendFunction.OVERLAY`.
+    Celestial,
+    /// The sky's flat colour (`RenderPipelines.SKY`): no depth, faded into
+    SkyDisc,
+    /// What lies over the sky and under the sun: the glow of dusk, the
+    SkyGlow,
+    /// The cracks on a block being broken (`RenderPipelines.CRUMBLING`):
+    Crumbling,
+    /// The boat's water patch (`RenderPipelines.WATER_MASK`): depth only,
+    WaterMask,
+    /// A glowing entity's flat outline colour, into the entity outline
+    Outline,
+    /// Enchantment glint overlay (`RenderPipelines.GLINT`): the scrolling
+    Glint,
+}
+
+/// What a pipeline draws.
+#[derive(Clone, Copy)]
+pub enum Geometry {
+    /// [`Vertex`] quads through the shared index buffer.
+    Vertices,
+    /// [`TerrainQuad`]s, read from the mesh buffer (set 4) by
+    Quads { indirect: bool },
+}
+
+/// The descriptor sets after the texture's that every world pipeline
+#[derive(Clone, Copy)]
+pub struct Layouts {
+    /// Set 1: the quad table.
+    pub table: vk::DescriptorSetLayout,
+    /// Set 2: the multi-draws' offsets.
+    pub draws: vk::DescriptorSetLayout,
+    /// Set 3: the frame's globals.
+    pub globals: vk::DescriptorSetLayout,
+}
+
+impl Layouts {
+    fn sets(&self) -> [vk::DescriptorSetLayout; 3] {
+        [self.table, self.draws, self.globals]
+    }
+}
+
+/// `BlendFunction.TRANSLUCENT`: src α, dst 1-α.
+fn translucent_blend() -> vk::PipelineColorBlendAttachmentState {
+    vk::PipelineColorBlendAttachmentState::default()
+        .color_write_mask(vk::ColorComponentFlags::RGBA)
+        .blend_enable(true)
+        .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+        .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+        .color_blend_op(vk::BlendOp::ADD)
+        .src_alpha_blend_factor(vk::BlendFactor::ONE)
+        .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+        .alpha_blend_op(vk::BlendOp::ADD)
+}
+
+/// The world pipeline. [`Mode::TranslucentTerrain`] is water and glass
+pub unsafe fn create(
+    device: &ash::Device,
+    render_pass: vk::RenderPass,
+    descriptor_set_layout: vk::DescriptorSetLayout,
+    layouts: &Layouts,
+    mode: Mode,
+    geometry: Geometry,
+) -> anyhow::Result<Pass> {
+    let (cull, depth, blend) = match mode {
+        Mode::Solid | Mode::Opaque => (
+            vk::CullModeFlags::BACK,
+            vk::PipelineDepthStencilStateCreateInfo::default()
+                .depth_test_enable(true)
+                .depth_write_enable(true)
+                .depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL),
+            vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::RGBA)
+                .blend_enable(false),
+        ),
+        Mode::Translucent => (
+            vk::CullModeFlags::BACK,
+            vk::PipelineDepthStencilStateCreateInfo::default()
+                .depth_test_enable(true)
+                .depth_write_enable(false)
+                .depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL),
+            translucent_blend(),
+        ),
+        Mode::Weather => (
+            vk::CullModeFlags::NONE,
+            vk::PipelineDepthStencilStateCreateInfo::default()
+                .depth_test_enable(true)
+                .depth_write_enable(false)
+                .depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL),
+            translucent_blend(),
+        ),
+        Mode::Clouds | Mode::TranslucentTerrain => (
+            vk::CullModeFlags::BACK,
+            vk::PipelineDepthStencilStateCreateInfo::default()
+                .depth_test_enable(true)
+                .depth_write_enable(true)
+                .depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL),
+            translucent_blend(),
+        ),
+        Mode::Celestial => (
+            vk::CullModeFlags::NONE,
+            super::depth_disabled(),
+            vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::RGBA)
+                .blend_enable(true)
+                .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+                .dst_color_blend_factor(vk::BlendFactor::ONE)
+                .color_blend_op(vk::BlendOp::ADD)
+                .src_alpha_blend_factor(vk::BlendFactor::ONE)
+                .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+                .alpha_blend_op(vk::BlendOp::ADD),
+        ),
+        Mode::SkyDisc => (
+            vk::CullModeFlags::NONE,
+            super::depth_disabled(),
+            vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::RGBA)
+                .blend_enable(false),
+        ),
+        Mode::SkyGlow => (
+            vk::CullModeFlags::NONE,
+            super::depth_disabled(),
+            translucent_blend(),
+        ),
+        Mode::Outline => (
+            vk::CullModeFlags::NONE,
+            super::depth_disabled(),
+            vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::RGBA)
+                .blend_enable(false),
+        ),
+        Mode::WaterMask => (
+            vk::CullModeFlags::BACK,
+            vk::PipelineDepthStencilStateCreateInfo::default()
+                .depth_test_enable(true)
+                .depth_write_enable(true)
+                .depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL),
+            vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::empty())
+                .blend_enable(false),
+        ),
+        Mode::Crumbling => (
+            vk::CullModeFlags::BACK,
+            vk::PipelineDepthStencilStateCreateInfo::default()
+                .depth_test_enable(true)
+                .depth_write_enable(false)
+                .depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL),
+            vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::RGBA)
+                .blend_enable(true)
+                .src_color_blend_factor(vk::BlendFactor::DST_COLOR)
+                .dst_color_blend_factor(vk::BlendFactor::SRC_COLOR)
+                .color_blend_op(vk::BlendOp::ADD)
+                .src_alpha_blend_factor(vk::BlendFactor::ONE)
+                .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+                .alpha_blend_op(vk::BlendOp::ADD),
+        ),
+        Mode::Glint => (
+            vk::CullModeFlags::BACK,
+            vk::PipelineDepthStencilStateCreateInfo::default()
+                .depth_test_enable(true)
+                .depth_write_enable(false)
+                .depth_compare_op(vk::CompareOp::EQUAL),
+            vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::RGBA)
+                .blend_enable(true)
+                .src_color_blend_factor(vk::BlendFactor::SRC_COLOR)
+                .dst_color_blend_factor(vk::BlendFactor::ONE)
+                .color_blend_op(vk::BlendOp::ADD)
+                .src_alpha_blend_factor(vk::BlendFactor::ZERO)
+                .dst_alpha_blend_factor(vk::BlendFactor::ONE)
+                .alpha_blend_op(vk::BlendOp::ADD),
+        ),
+    };
+    let vertex_attributes = [
+        (vk::Format::R32G32B32_SFLOAT, 0),
+        (
+            vk::Format::R32G32_SFLOAT,
+            std::mem::offset_of!(Vertex, uv) as u32,
+        ),
+        (
+            vk::Format::R8G8B8A8_UNORM,
+            std::mem::offset_of!(Vertex, color) as u32,
+        ),
+        (
+            vk::Format::R8G8_UINT,
+            std::mem::offset_of!(Vertex, light) as u32,
+        ),
+    ];
+    let (vert, vertex_stride, attributes): (_, _, &[_]) = match geometry {
+        Geometry::Vertices => (
+            if mode == Mode::SkyDisc {
+                SKY_DISC_VERT_SPV
+            } else {
+                VERT_SPV
+            },
+            std::mem::size_of::<Vertex>(),
+            if mode == Mode::SkyDisc {
+                &vertex_attributes[..1]
+            } else {
+                &vertex_attributes
+            },
+        ),
+        Geometry::Quads { indirect } => (
+            if indirect {
+                TERRAIN_INDIRECT_VERT_SPV
+            } else {
+                TERRAIN_VERT_SPV
+            },
+            std::mem::size_of::<TerrainQuad>(),
+            &[],
+        ),
+    };
+    let quad_sets = [layouts.table, layouts.draws, layouts.globals, layouts.table];
+    let glint_sets = [descriptor_set_layout, layouts.draws, layouts.globals];
+    let extra_sets: &[vk::DescriptorSetLayout] = match (mode, geometry) {
+        (Mode::Glint, Geometry::Vertices) => &glint_sets,
+        (_, Geometry::Vertices) => &layouts.sets(),
+        (_, Geometry::Quads { .. }) => &quad_sets,
+    };
+    PipelineDesc {
+        vert,
+        frag: match mode {
+            Mode::Solid => SOLID_FRAG_SPV,
+            Mode::Clouds => CLOUDS_FRAG_SPV,
+            Mode::Weather => WEATHER_FRAG_SPV,
+            Mode::SkyDisc => SKY_DISC_FRAG_SPV,
+            Mode::Crumbling => CRUMBLING_FRAG_SPV,
+            Mode::Outline => OUTLINE_FRAG_SPV,
+            Mode::WaterMask => WATER_MASK_FRAG_SPV,
+            Mode::Glint => GLINT_FRAG_SPV,
+            _ => FRAG_SPV,
+        },
+        push_constant_size: PUSH_CONSTANT_SIZE,
+        push_stages: PUSH_STAGES,
+        vertex_stride: vertex_stride as u32,
+        attributes,
+        used_locations: None,
+        cull,
+        depth,
+        blend,
+        extra_sets,
+        depth_bias: match mode {
+            Mode::Crumbling => Some((40.0, 3.0)),
+            Mode::Opaque | Mode::Translucent => Some((16.0, 2.0)),
+            _ => None,
+        },
+    }
+    .build(device, render_pass, descriptor_set_layout)
+}

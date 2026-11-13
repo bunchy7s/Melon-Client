@@ -1,0 +1,162 @@
+//! The Escape menu (vanilla `client/gui/screens/PauseScreen`, the
+
+use crate::gui::screen::{CursorKind, Screen, ScreenAction, ScreenContext, TextEvent};
+use crate::gui::screens::options::OptionsScreen;
+use crate::gui::widgets::Ui;
+use crate::gui::widgets::button::{Button, IconSprite};
+use crate::gui::widgets::set::{KeyResult, WidgetSet};
+
+/// `PauseScreen.BUTTON_WIDTH_FULL` / `BUTTON_WIDTH_HALF`, and the 20px
+const BUTTON_W: f32 = 204.0;
+const HALF_BUTTON_W: f32 = 98.0;
+const BUTTON_H: f32 = 20.0;
+/// `PauseScreen.BUTTON_PADDING`, the grid's horizontal/top cell padding.
+const PADDING: f32 = 4.0;
+/// `PauseScreen.MENU_PADDING_TOP`: the first row's extra top padding.
+const MENU_PADDING_TOP: f32 = 50.0;
+/// `SpriteIconButton.builder(...).width(20)` with a 15x15 sprite, four of
+const ICON_BUTTON: f32 = 20.0;
+const ICON_SPACING: f32 = 4.0;
+const ICON_ROW_W: f32 = ICON_BUTTON * 4.0 + ICON_SPACING * 3.0;
+
+/// Grid width: one full-width cell is `204 + 4 + 4`, and the two half-width
+const GRID_W: f32 = BUTTON_W + PADDING * 2.0;
+/// Row heights: `20 + 50` for the first row (top padding, no bottom), then
+const GRID_H: f32 = (BUTTON_H + MENU_PADDING_TOP) + (BUTTON_H + PADDING) * 4.0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Id {
+    ReturnToGame,
+    Advancements,
+    Statistics,
+    /// Report Bugs / Give Feedback / Friends / Player Reporting, in
+    Icon(usize),
+    Options,
+    Disconnect,
+}
+
+const ICONS: [Id; 4] = [Id::Icon(0), Id::Icon(1), Id::Icon(2), Id::Icon(3)];
+
+pub struct PauseScreen {
+    widgets: WidgetSet<Id>,
+}
+
+impl PauseScreen {
+    pub fn new(local_server: bool) -> Self {
+        let icons: [(&str, IconSprite); 4] = [
+            ("menu.reportBugs", |a| a.bug_icon),
+            ("menu.sendFeedback", |a| a.feedback_icon),
+            ("gui.friends.open", |a| a.friends_icon),
+            ("menu.playerReporting", |a| a.player_reporting_icon),
+        ];
+        let mut widgets = WidgetSet::new()
+            .with_button(
+                Id::ReturnToGame,
+                Button::sized("menu.returnToGame", BUTTON_W, BUTTON_H),
+            )
+            .with_button(
+                Id::Advancements,
+                Button::sized("gui.advancements", HALF_BUTTON_W, BUTTON_H),
+            )
+            .with_button(
+                Id::Statistics,
+                Button::sized("gui.stats", HALF_BUTTON_W, BUTTON_H),
+            );
+        for (id, (label, icon)) in ICONS.into_iter().zip(icons) {
+            widgets = widgets.with_button(id, Button::icon(label, icon, ICON_BUTTON));
+        }
+        let widgets = widgets
+            .with_button(
+                Id::Options,
+                Button::sized("menu.options", BUTTON_W, BUTTON_H),
+            )
+            .with_button(
+                Id::Disconnect,
+                Button::sized(
+                    if local_server {
+                        "menu.returnToMenu"
+                    } else {
+                        "menu.disconnect"
+                    },
+                    BUTTON_W,
+                    BUTTON_H,
+                ),
+            );
+        Self { widgets }
+    }
+
+    /// What a button does; the inert ones do nothing.
+    fn press(id: Id, ctx: &ScreenContext) -> ScreenAction {
+        match id {
+            Id::ReturnToGame => ScreenAction::Back,
+            Id::Options => ScreenAction::open(OptionsScreen::new(ctx)),
+            Id::Disconnect => ScreenAction::LeaveWorld,
+            Id::Advancements | Id::Statistics | Id::Icon(_) => ScreenAction::None,
+        }
+    }
+}
+
+impl Screen for PauseScreen {
+    fn resize(&mut self, ctx: &ScreenContext) {
+        let (width, height) = ctx.size();
+        let grid_x = ((width - GRID_W) * 0.5).round();
+        let grid_y = ((height - GRID_H) * 0.25).round();
+        let left = grid_x + PADDING;
+        let w = &mut self.widgets;
+
+        let mut row_y = grid_y + MENU_PADDING_TOP;
+        w.set_position(Id::ReturnToGame, left, row_y);
+
+        row_y += BUTTON_H + PADDING;
+        w.set_position(Id::Advancements, left, row_y);
+        w.set_position(Id::Statistics, left + HALF_BUTTON_W + PADDING * 2.0, row_y);
+
+        row_y += BUTTON_H + PADDING;
+        let icon_x = left + ((BUTTON_W - ICON_ROW_W) / 2.0).round();
+        w.row(&ICONS, icon_x, row_y, ICON_SPACING);
+
+        row_y += BUTTON_H + PADDING;
+        w.column(
+            &[Id::Options, Id::Disconnect],
+            left,
+            row_y,
+            BUTTON_H + PADDING,
+        );
+    }
+
+    fn on_mouse_move(&mut self, x: f32, y: f32) {
+        self.widgets.hover(x, y);
+    }
+
+    fn cursor(&self) -> CursorKind {
+        self.widgets.cursor().unwrap_or_default()
+    }
+
+    fn on_click(&mut self, x: f32, y: f32, ctx: &ScreenContext) -> ScreenAction {
+        let Some(id) = self.widgets.click(x, y) else {
+            return ScreenAction::None;
+        };
+        let action = Self::press(id, ctx);
+        if !matches!(action, ScreenAction::None) {
+            ctx.click();
+        }
+        action
+    }
+
+    fn on_text_event(&mut self, event: TextEvent, ctx: &ScreenContext) -> ScreenAction {
+        match self.widgets.key(&event) {
+            KeyResult::Pressed(id) => {
+                ctx.click();
+                Self::press(id, ctx)
+            }
+            _ => ScreenAction::None,
+        }
+    }
+
+    fn draw(&self, ui: &mut Ui, _ctx: &ScreenContext) {
+        ui.menu_background();
+        let title = ui.tr("menu.game");
+        ui.title(title, 40.0);
+        self.widgets.draw(ui);
+    }
+}

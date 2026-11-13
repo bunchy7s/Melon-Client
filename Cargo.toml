@@ -1,0 +1,96 @@
+[package]
+name = "melon"
+version = "0.7.8+mc26.3"
+authors = ["Zinedin Polic"]
+edition = "2024"
+rust-version = "1.99.1"
+description = "Minecraft Client in Rust with Vulkan"
+readme = "README.md"
+repository = "https://github.com/zinedinp/Melon"
+license = "GPL-3.0"
+default-run = "melon"
+
+[dependencies]
+aes = "0.9.4"
+anyhow = "1.0.104"
+chrono = { version = "0.4.45", default-features = false, features = ["std", "clock"] }
+arboard = { version = "3.7.0", features = ["wayland-data-control"] }
+ash = "0.38.0"
+ash-window = "0.13.0"
+cfb8 = "0.9.1"
+crossbeam-channel = "0.5.17"
+flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
+glam = "0.34.3"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+# Pack PNGs with wrong checksums, which `image` refuses and vanilla reads.
+png = "0.18.1"
+num-bigint = "0.5.1"
+open = "5.4.5"
+# The integrated server: Pumpkin, checked out next to this repository.
+pumpkin = { package = "pumpkin-core", git = "https://github.com/zinedinp/Pumpkin", branch = "mod-zip" }
+pumpkin-config = { git = "https://github.com/zinedinp/Pumpkin", branch = "mod-zip" }
+pumpkin-mod = { git = "https://github.com/zinedinp/pumpkin-mod", branch = "main" }
+pumpkin-data = { git = "https://github.com/zinedinp/Pumpkin", branch = "mod-zip" }
+pumpkin-nbt = { git = "https://github.com/zinedinp/Pumpkin", branch = "mod-zip" }
+pumpkin-protocol = { git = "https://github.com/zinedinp/Pumpkin", branch = "mod-zip" }
+pumpkin-util = { git = "https://github.com/zinedinp/Pumpkin", branch = "mod-zip" }
+pumpkin-wasm-host = { git = "https://github.com/zinedinp/Pumpkin", branch = "mod-zip" }
+pumpkin-world = { git = "https://github.com/zinedinp/Pumpkin", branch = "mod-zip" }
+rand = "0.10.3"
+raw-window-handle = "0.6.2"
+rodio = { version = "0.23.0", default-features = false, features = ["playback", "vorbis"] }
+rsa = { version = "0.10", default-features = false, features = ["std", "encoding"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+sha1 = "0.11.0"
+sha2 = "0.11.1"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "io-util", "macros", "time"] }
+tokio-util = { version = "0.7.20", features = ["rt", "io-util"] }
+ureq = { version = "3.5.2", default-features = false, features = ["rustls", "json"] }
+uuid = { version = "1.29.2", features = ["v3", "v4", "v5"] }
+winit = "0.30.13"
+# Resource packs: their `filter` patterns.
+regex = { version = "1.13", default-features = false, features = ["std", "perf", "unicode"] }
+# Resource packs' core shaders, compiled at runtime as vanilla does: the
+# system's shaderc library, from the same install `glslc` comes from.
+shaderc = "0.10.1"
+zip = { version = "9.5.1", default-features = false, features = ["deflate-flate2"] }
+
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+incremental = true
+codegen-units = 256
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev.package.pumpkin-world]
+opt-level = 3
+debug-assertions = false
+overflow-checks = false
+
+[profile.release]
+lto = "thin"
+
+# `cargo build --profile fast`
+[profile.fast]
+inherits = "release"
+lto = false
+incremental = true
+codegen-units = 64
+
+# `tools/build-dist.sh --quick`: a dist build to try out, not to ship.
+[profile.dist-quick]
+inherits = "release"
+lto = "thin"
+incremental = true
+codegen-units = 64
+strip = "symbols"
+
+# Fat LTO for CDN binaries.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"

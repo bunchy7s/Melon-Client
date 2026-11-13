@@ -1,0 +1,181 @@
+//! The binary's command line: no flags opens the launcher; `--game`,
+
+/// Which process this invocation is.
+pub enum Invocation {
+    /// Account picker; Play re-execs this binary with `--game`.
+    Launcher { validation: bool },
+    /// The game, or the windowless `--connect` test.
+    Game(Command),
+}
+
+/// What the command line asks for.
+pub enum Command {
+    /// The game, with these options.
+    Play(LaunchOptions),
+    /// `--connect <address>`: join, print what the server sent, exit.
+    Connect(String),
+    /// `--packets <file>`: a capture (`MELON_PACKET_CAPTURE`) through the
+    Packets(String),
+}
+
+pub struct LaunchOptions {
+    /// `--vulkan-validation`: the Vulkan validation layers.
+    pub validation: bool,
+    /// `--join <address>`: connecting instead of the title screen.
+    pub join: Option<String>,
+    /// `--bench`: the benchmark instead of playing.
+    pub bench: Option<crate::game::bench::BenchOptions>,
+}
+
+/// Launcher unless the user asked for the game (`--game`, `--join`, `--connect`).
+pub fn invocation(args: &[String]) -> Result<Invocation, String> {
+    let validation = args.iter().any(|a| a == "--vulkan-validation");
+    if args.iter().any(|a| {
+        a == "--game" || a == "--join" || a == "--connect" || a == "--packets" || a == "--bench"
+    }) {
+        Ok(Invocation::Game(parse(args)?))
+    } else {
+        Ok(Invocation::Launcher { validation })
+    }
+}
+
+/// `--instance <name>`: the instance to play in, if given.
+pub fn instance(args: &[String]) -> Option<String> {
+    let pos = args.iter().position(|a| a == "--instance")?;
+    args.get(pos + 1).cloned()
+}
+
+/// Reads the command line. A flag missing its address is an error.
+pub fn parse(args: &[String]) -> Result<Command, String> {
+    let value_of =
+        |flag: &str| -> Result<Option<String>, String> {
+            match args.iter().position(|a| a == flag) {
+                None => Ok(None),
+                Some(pos) => args.get(pos + 1).cloned().map(Some).ok_or_else(|| {
+                    format!("{flag} braucht eine Adresse, z.B. {flag} 127.0.0.1:25565")
+                }),
+            }
+        };
+    if let Some(address) = value_of("--connect")? {
+        return Ok(Command::Connect(address));
+    }
+    if let Some(file) = args.iter().position(|a| a == "--packets") {
+        return args
+            .get(file + 1)
+            .cloned()
+            .map(Command::Packets)
+            .ok_or_else(|| "--packets braucht eine Datei".to_owned());
+    }
+    Ok(Command::Play(LaunchOptions {
+        validation: args.iter().any(|a| a == "--vulkan-validation"),
+        join: value_of("--join")?,
+        bench: bench_options(args)?,
+    }))
+}
+
+/// `--bench` and the flags that go with it.
+fn bench_options(args: &[String]) -> Result<Option<crate::game::bench::BenchOptions>, String> {
+    if !args.iter().any(|a| a == "--bench") {
+        return Ok(None);
+    }
+    let value_of = |flag: &str| -> Result<Option<&String>, String> {
+        match args.iter().position(|a| a == flag) {
+            None => Ok(None),
+            Some(pos) => args
+                .get(pos + 1)
+                .map(Some)
+                .ok_or_else(|| format!("{flag} braucht einen Wert")),
+        }
+    };
+    let fps_cap = match value_of("--fps-cap")? {
+        None => None,
+        Some(value) => Some(
+            value
+                .parse::<u32>()
+                .ok()
+                .filter(|&fps| fps > 0)
+                .ok_or_else(|| format!("--fps-cap braucht eine Zahl, nicht {value}"))?,
+        ),
+    };
+    Ok(Some(crate::game::bench::BenchOptions {
+        label: value_of("--label")?
+            .cloned()
+            .unwrap_or_else(|| "bench".to_owned()),
+        fps_cap,
+        compare: value_of("--compare")?.map(std::path::PathBuf::from),
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn reads_the_flags() {
+        let Ok(Command::Play(options)) = parse(&args(&["melon", "--join", "a:1"])) else {
+            panic!("expected Play");
+        };
+        assert_eq!(options.join.as_deref(), Some("a:1"));
+        assert!(!options.validation);
+        assert!(matches!(
+            parse(&args(&["melon", "--connect", "b"])),
+            Ok(Command::Connect(a)) if a == "b"
+        ));
+        assert!(parse(&args(&["melon", "--join"])).is_err());
+    }
+
+    #[test]
+    fn reads_the_bench_flags() {
+        let Ok(Invocation::Game(Command::Play(options))) = invocation(&args(&[
+            "melon",
+            "--bench",
+            "--label",
+            "base",
+            "--fps-cap",
+            "144",
+        ])) else {
+            panic!("expected Play");
+        };
+        let bench = options.bench.expect("bench");
+        assert_eq!(bench.label, "base");
+        assert_eq!(bench.fps_cap, Some(144));
+        assert!(bench.compare.is_none());
+        assert!(parse(&args(&["melon", "--bench", "--fps-cap", "x"])).is_err());
+        let Ok(Command::Play(plain)) = parse(&args(&["melon", "--game"])) else {
+            panic!("expected Play");
+        };
+        assert!(plain.bench.is_none());
+    }
+
+    #[test]
+    fn no_flags_open_the_launcher() {
+        assert!(matches!(
+            invocation(&args(&["melon"])),
+            Ok(Invocation::Launcher { validation: false })
+        ));
+        assert!(matches!(
+            invocation(&args(&["melon", "--vulkan-validation"])),
+            Ok(Invocation::Launcher { validation: true })
+        ));
+    }
+
+    #[test]
+    fn game_flags_skip_the_launcher() {
+        assert!(matches!(
+            invocation(&args(&["melon", "--game"])),
+            Ok(Invocation::Game(Command::Play(_)))
+        ));
+        assert!(matches!(
+            invocation(&args(&["melon", "--join", "a:1"])),
+            Ok(Invocation::Game(Command::Play(_)))
+        ));
+        assert!(matches!(
+            invocation(&args(&["melon", "--connect", "b"])),
+            Ok(Invocation::Game(Command::Connect(_)))
+        ));
+    }
+}

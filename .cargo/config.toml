@@ -1,0 +1,8 @@
+# Pumpkin's generated data tables can overflow rustc's default stack when
+# they are optimized.
+[env]
+RUST_MIN_STACK = "268435456"
+
+# lld links much faster than the default linker
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
