@@ -141,12 +141,17 @@ impl App {
         else {
             return Ok(());
         };
-        let window = crate::platform::create_centered_window(
-            event_loop,
-            Window::default_attributes()
-                .with_title("Melon")
-                .with_inner_size(LogicalSize::new(854.0, 480.0)),
-        )?;
+        let mut attributes = Window::default_attributes()
+            .with_title("Melon")
+            .with_inner_size(LogicalSize::new(854.0, 480.0));
+        if options.bench.is_some() {
+            // Fullscreen from the first frame: the window manager takes its
+            // time with a switch made later, and the run would start small.
+            let largest = bench::largest_monitor(event_loop.available_monitors());
+            attributes =
+                attributes.with_fullscreen(Some(winit::window::Fullscreen::Borderless(largest)));
+        }
+        let window = crate::platform::create_centered_window(event_loop, attributes)?;
 
         let mut renderer = Renderer::new(&window, options.validation)?;
         reload::activate_packs(&assets, &config);
@@ -217,6 +222,9 @@ impl App {
             state.bench = Some(bench::BenchRun::new(bench_options));
         }
         state.apply_display_options();
+        if state.bench.is_some() {
+            bench::fullscreen_on_largest(&state.window);
+        }
         self.state = Some(state);
         Ok(())
     }

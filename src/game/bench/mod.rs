@@ -54,17 +54,6 @@ const SPAWNED: [&str; 12] = [
     "minecraft:armor_stand",
     "minecraft:item",
 ];
-/// The particles the `crowd` phase bursts, in turn, every
-/// [`BURST_EVERY`] ticks.
-const BURSTS: [&str; 6] = [
-    "minecraft:flame",
-    "minecraft:smoke",
-    "minecraft:heart",
-    "minecraft:happy_villager",
-    "minecraft:cloud",
-    "minecraft:end_rod",
-];
-const BURST_EVERY: u32 = 4;
 
 /// Which world the benchmark plays: `--scene`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -72,8 +61,8 @@ pub enum Scene {
     /// Terrain alone: no mobs, no weather, the time standing still.
     #[default]
     Calm,
-    /// Thunder, time running, 150 summoned mobs and items, and particle
-    /// bursts, looked at from among them before the calm phases.
+    /// Thunder, time running and 150 summoned mobs and items, looked at
+    /// from among them before the calm phases.
     Active,
 }
 
@@ -276,9 +265,6 @@ impl BenchDriver {
                 // Looking a little down, around once: the crowd, the
                 // ground it stands on and the sky over it.
                 player.set_rotation(self.yaw + 360.0 * t, 15.0);
-                if self.ticks.is_multiple_of(BURST_EVERY) {
-                    commands.push(burst_command(self.ticks / BURST_EVERY));
-                }
             }
             Phase::Rise => {
                 if self.ticks == 0 {
@@ -341,14 +327,6 @@ fn summon_command(index: u32) -> String {
         ""
     };
     format!("summon {entity} ~{x:.1} ~1 ~{z:.1}{nbt}")
-}
-
-/// The `index`th particle burst of the `crowd` phase, 3 to 9 blocks away,
-/// shown whatever the particle setting (`force`).
-fn burst_command(index: u32) -> String {
-    let particle = BURSTS[index as usize % BURSTS.len()];
-    let (x, z) = around(index, 3.0 + (index % 7) as f32);
-    format!("particle {particle} ~{x:.1} ~1.5 ~{z:.1} 1.5 1 1.5 0.02 120 force")
 }
 
 /// The `index`th point of a golden-angle spiral, `radius` from the centre.
@@ -437,10 +415,8 @@ mod tests {
     }
 
     #[test]
-    fn spawn_and_burst_commands_read_as_vanilla_syntax() {
+    fn spawn_commands_read_as_vanilla_syntax() {
         assert_eq!(summon_command(0), "summon minecraft:cow ~4.0 ~1 ~0.0");
         assert!(summon_command(11).ends_with(r#"{Item:{id:"minecraft:diamond",count:1}}"#));
-        assert!(burst_command(1).starts_with("particle minecraft:smoke ~"));
-        assert!(burst_command(1).ends_with(" 1.5 1 1.5 0.02 120 force"));
     }
 }

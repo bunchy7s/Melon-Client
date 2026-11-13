@@ -117,6 +117,16 @@ impl Recorder {
         }
     }
 
+    /// The framebuffer size the summary states.
+    pub fn resolution(&self) -> (u32, u32) {
+        self.setup.resolution
+    }
+
+    /// The framebuffer changed size (a fullscreen switch landing late).
+    pub fn set_resolution(&mut self, size: (u32, u32)) {
+        self.setup.resolution = size;
+    }
+
     /// The phase `phase` begins; the one before ends.
     pub fn enter(&mut self, phase: Phase, now: Snapshot) {
         if let Some(last) = self.phases.last_mut() {

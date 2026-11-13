@@ -502,6 +502,75 @@ impl From<WorldVertex> for QuadCorner {
 
 const _: () = assert!(std::mem::size_of::<QuadCorner>() == 24);
 
+// A 16-byte corner (one `uvec4` load in `terrain.vert`), tried 2026-11-13 and
+// left off: on an RTX 3080 at 4K it made no measurable difference, at
+// render distance 8 or 32 (solid and cutout terrain within ±1 %, see
+// `performance/c16-*`, `fab-c16-*` against `c24-*`, `fab-c24-*`), and it
+// rounds rotated elements to 1/4096 of a block where floats keep them
+// exact. The commented-out shader half is in `terrain.vert`.
+//
+// pub struct QuadCorner {
+//     /// x, y, z in fixed point, [`QuadCorner::POS_SCALE`] steps per block.
+//     pub pos: [i16; 3],
+//     /// [`WorldVertex::face`].
+//     pub face: u16,
+//     pub uv: [u16; 2],
+//     pub color: [u8; 4],
+// }
+//
+// impl QuadCorner {
+//     /// Fixed-point steps per block: every 1/16 of a model is exact, and
+//     /// rotated elements are off by at most 1/8192 of a block. Reaches
+//     /// ±8 blocks; models reach -1..2 (`BlockElement`'s -16..32).
+//     pub const POS_SCALE: f32 = 4096.0;
+//
+//     /// Whether `pos` fits the fixed point without clamping.
+//     pub fn fits(pos: [f32; 3]) -> bool {
+//         pos.iter()
+//             .all(|&p| (p * Self::POS_SCALE).round().abs() <= f32::from(i16::MAX))
+//     }
+// }
+//
+// impl From<WorldVertex> for QuadCorner {
+//     fn from(v: WorldVertex) -> Self {
+//         let unorm16 = |t: f32| (t.clamp(0.0, 1.0) * 65535.0).round() as u16;
+//         let fixed = |p: f32| {
+//             (p * Self::POS_SCALE)
+//                 .round()
+//                 .clamp(f32::from(i16::MIN), f32::from(i16::MAX)) as i16
+//         };
+//         Self {
+//             pos: v.pos.map(fixed),
+//             face: u16::from(v.face),
+//             uv: v.uv.map(unorm16),
+//             color: v.color,
+//         }
+//     }
+// }
+//
+// const _: () = assert!(std::mem::size_of::<QuadCorner>() == 16);
+//
+// In `Renderer::set_quad_table`, before converting:
+//     let outside = corners.iter().filter(|v| !QuadCorner::fits(v.pos)).count();
+//     if outside > 0 {
+//         eprintln!("Quad-Tabelle: {outside} Ecken ausserhalb von ±8 Bloecken, abgeschnitten");
+//     }
+//
+// Its test:
+//     #[test]
+//     fn quad_corners_keep_sixteenths_exact_and_rotations_close() {
+//         let back = |c: QuadCorner| c.pos.map(|p| f32::from(p) / QuadCorner::POS_SCALE);
+//         let model = WorldVertex::new([-1.0, 2.0, 0.0625 * 7.0], [0.5, 0.25], [1.0; 3]);
+//         assert_eq!(back(model.into()), [-1.0, 2.0, 0.4375]);
+//         let rotated = 0.5 + 0.5 * std::f32::consts::FRAC_1_SQRT_2;
+//         let corner = QuadCorner::from(WorldVertex::new([rotated; 3], [0.0; 2], [1.0; 3]));
+//         for p in back(corner) {
+//             assert!((p - rotated).abs() <= 0.5 / QuadCorner::POS_SCALE);
+//         }
+//         assert!(QuadCorner::fits([7.9, -7.9, 0.0]));
+//         assert!(!QuadCorner::fits([8.5, 0.0, 0.0]));
+//     }
+
 /// The world camera's near plane, in blocks (vanilla `GameRenderer.PROJECTION_Z_NEAR`).
 pub const WORLD_Z_NEAR: f32 = 0.05;
 

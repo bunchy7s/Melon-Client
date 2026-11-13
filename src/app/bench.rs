@@ -75,6 +75,17 @@ impl BenchRun {
         };
         let net = world.net_stats();
         if self.phase != Some(phase) {
+            let size = renderer.framebuffer_size();
+            if size != recorder.resolution() {
+                println!(
+                    "Bench: Aufloesung jetzt {}x{} (war {}x{})",
+                    size.0,
+                    size.1,
+                    recorder.resolution().0,
+                    recorder.resolution().1
+                );
+                recorder.set_resolution(size);
+            }
             recorder.enter(phase, Snapshot::take(net, audio));
             self.phase = Some(phase);
             println!(
@@ -137,8 +148,39 @@ impl BenchRun {
 
 /// What the benchmark holds still for the run, in memory only: no VSync,
 pub(super) fn override_config(config: &mut Config) {
+    // The heaviest preset, whatever the player chose: render distance 32,
+    // fancy clouds out to 128, every particle.
+    config.graphics_preset = options::GraphicsPreset::Fabulous;
+    options::GraphicsPreset::Fabulous.apply(config);
     config.vsync = false;
+    config.fullscreen = true;
     config.max_fps = options::MAX_FPS_RANGE.1;
+}
+
+/// Borderless fullscreen on the monitor with the most pixels, so a run
+/// measures the largest resolution the machine has, whichever monitor the
+/// window opened on.
+pub(super) fn fullscreen_on_largest(window: &winit::window::Window) {
+    let largest = largest_monitor(window.available_monitors());
+    if let Some(monitor) = &largest {
+        println!(
+            "Bench: Vollbild auf {} ({}x{})",
+            monitor.name().unwrap_or_default(),
+            monitor.size().width,
+            monitor.size().height
+        );
+    }
+    window.set_fullscreen(Some(winit::window::Fullscreen::Borderless(largest)));
+}
+
+/// The monitor with the most pixels.
+pub(super) fn largest_monitor(
+    monitors: impl Iterator<Item = winit::monitor::MonitorHandle>,
+) -> Option<winit::monitor::MonitorHandle> {
+    monitors.max_by_key(|monitor| {
+        let size = monitor.size();
+        u64::from(size.width) * u64::from(size.height)
+    })
 }
 
 /// The benchmark's world, made the first time: creative, fixed seed, no

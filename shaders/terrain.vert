@@ -45,6 +45,16 @@ layout(std430, set = 1, binding = 0) readonly buffer QuadTable {
     Corner corners[];
 } table;
 
+// The 16-byte corner, left off (see `QuadCorner` in `renderer/frame.rs`):
+// [0] x and y, [1] z and the direction, each a 16-bit field, the position
+// signed fixed point in 1/4096 blocks; [2] UV; [3] colour. One load each.
+//
+// layout(std430, set = 1, binding = 0) readonly buffer QuadTable {
+//     uvec4 corners[];
+// } table;
+//
+// const float CORNER_POS_STEP = 1.0 / 4096.0;
+
 #ifdef INDIRECT
 // Multi-draw: the section's origin relative to the camera per draw. The
 // first entry of the run comes in `offset.w` (as `uint` bits), `gl_DrawID`
@@ -81,8 +91,17 @@ void main() {
     vec4 in_tint = unpackUnorm4x8(quads.words[word + 4u]);
     uint index = in_quad.x & 0x1FFFFFu;
     Corner corner = table.corners[index * 4u + vertex];
+    uint face = corner.face;
     uint at = in_quad.y;
     vec3 pos = vec3(corner.x, corner.y, corner.z)
+    // 16-byte corner:
+    // uvec4 corner = table.corners[index * 4u + vertex];
+    // uint face = corner.y >> 16;
+    // uint at = in_quad.y;
+    // vec3 pos = vec3(
+    //         bitfieldExtract(int(corner.x), 0, 16),
+    //         bitfieldExtract(int(corner.x), 16, 16),
+    //         bitfieldExtract(int(corner.y), 0, 16)) * CORNER_POS_STEP
         + vec3(float(at & 15u), float((at >> 8) & 0xFFFu), float((at >> 4) & 15u));
     uint kind = (in_quad.x >> 21) & 7u;
     if (kind != 0u) {
@@ -95,7 +114,7 @@ void main() {
     vec3 relative = pos + chunk_offset();
     gl_Position = pc.view_proj * vec4(relative, 1.0);
     frag_fog = fog_distances(relative);
-    frag_uv = unpackUnorm2x16(corner.uv);
+    frag_uv = unpackUnorm2x16(corner.uv); // 16-byte: corner.z
 
     uint light = (vertex < 2u ? in_quad.z : in_quad.w) >> (12u * (vertex & 1u));
     // Quarter levels to levels: vanilla's smooth light coordinate / 16.
@@ -103,10 +122,10 @@ void main() {
     uint ao_field = (in_quad.x >> 24) | ((in_quad.z >> 24) << 8) | ((in_quad.w >> 24) << 16);
     // `ARGB.gray(ao)`: floor(ao * 255), with ao in sixtieths.
     uint gray = (((ao_field >> (6u * vertex)) & 63u) * 255u) / 60u;
-    vec4 color = unpackUnorm4x8(corner.color);
+    vec4 color = unpackUnorm4x8(corner.color); // 16-byte: corner.w
     // The dimension's own cardinal lighting (the nether's lit undersides),
     // as a factor on the default one the colour was baked with, then the
     // biome tint (`ClientLevel.calculateBlockTint`).
-    float cardinal = corner.face < 4u ? g.cardinal_a[corner.face] : g.cardinal_b[corner.face - 4u];
+    float cardinal = face < 4u ? g.cardinal_a[face] : g.cardinal_b[face - 4u];
     frag_color = vec4(color.rgb * in_tint.rgb * (float(gray) / 255.0 * cardinal), color.a * pc.ambient.a);
 }
