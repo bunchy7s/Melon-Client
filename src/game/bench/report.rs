@@ -25,6 +25,7 @@ pub struct FrameSample {
     pub gpu: Vec<(&'static str, f32)>,
     pub terrain_draws: usize,
     pub sections_drawn: usize,
+    pub entities: usize,
 }
 
 struct PhaseRecord {
@@ -43,6 +44,8 @@ struct PhaseRecord {
 #[derive(Clone, Debug, Default)]
 pub struct Setup {
     pub label: String,
+    /// `calm` or `active`.
+    pub scene: String,
     pub device: String,
     pub resolution: (u32, u32),
     pub render_distance: u8,
@@ -174,6 +177,7 @@ impl Recorder {
             };
             let draws: Vec<f32> = frames.iter().map(|f| f.terrain_draws as f32).collect();
             let sections: Vec<f32> = frames.iter().map(|f| f.sections_drawn as f32).collect();
+            let entities: Vec<f32> = frames.iter().map(|f| f.entities as f32).collect();
             let threads: Map<String, Value> = rates
                 .threads
                 .iter()
@@ -200,6 +204,7 @@ impl Recorder {
                     "gpu": mean_by_name(frames.iter().map(|f| f.gpu.as_slice())),
                     "terrain_draws": round(mean_of(&draws)),
                     "sections_drawn": round(mean_of(&sections)),
+                    "entities": round(mean_of(&entities)),
                     "net": {
                         "kib_s": round(rates.net_kib),
                         "packets_s": round(rates.net_packets),
@@ -226,6 +231,7 @@ impl Recorder {
         let setup = &self.setup;
         json!({
             "label": setup.label,
+            "scene": setup.scene,
             "device": setup.device,
             "resolution": [setup.resolution.0, setup.resolution.1],
             "render_distance": setup.render_distance,

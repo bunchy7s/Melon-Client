@@ -11,6 +11,9 @@ use crate::world::player::{MoveInput, PlayerState};
 
 /// The world the benchmark plays in, under `saves/`.
 pub const WORLD_FOLDER: &str = "melon-bench";
+/// The active scene's world, made anew for every run: the mobs it summons
+/// would otherwise pile up from run to run.
+pub const ACTIVE_WORLD_FOLDER: &str = "melon-bench-active";
 /// Its seed, so every machine generates the same terrain.
 pub const WORLD_SEED: &str = "melon-bench";
 
@@ -31,6 +34,73 @@ const SOUNDS: [&str; 5] = [
     "block.note_block.harp",
 ];
 
+/// How many mobs the `spawn` phase summons each tick, and for how many
+/// ticks: 150 in all.
+const SPAWNS_PER_TICK: u32 = 3;
+const SPAWN_TICKS: u32 = 50;
+/// What the `spawn` phase summons, in turn: animals that wander, monsters
+/// that burn in the daylight, and items that bob.
+const SPAWNED: [&str; 12] = [
+    "minecraft:cow",
+    "minecraft:sheep",
+    "minecraft:pig",
+    "minecraft:chicken",
+    "minecraft:villager",
+    "minecraft:zombie",
+    "minecraft:skeleton",
+    "minecraft:horse",
+    "minecraft:wolf",
+    "minecraft:rabbit",
+    "minecraft:armor_stand",
+    "minecraft:item",
+];
+/// The particles the `crowd` phase bursts, in turn, every
+/// [`BURST_EVERY`] ticks.
+const BURSTS: [&str; 6] = [
+    "minecraft:flame",
+    "minecraft:smoke",
+    "minecraft:heart",
+    "minecraft:happy_villager",
+    "minecraft:cloud",
+    "minecraft:end_rod",
+];
+const BURST_EVERY: u32 = 4;
+
+/// Which world the benchmark plays: `--scene`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Scene {
+    /// Terrain alone: no mobs, no weather, the time standing still.
+    #[default]
+    Calm,
+    /// Thunder, time running, 150 summoned mobs and items, and particle
+    /// bursts, looked at from among them before the calm phases.
+    Active,
+}
+
+impl Scene {
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "calm" => Some(Self::Calm),
+            "active" => Some(Self::Active),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Calm => "calm",
+            Self::Active => "active",
+        }
+    }
+
+    pub fn world_folder(self) -> &'static str {
+        match self {
+            Self::Calm => WORLD_FOLDER,
+            Self::Active => ACTIVE_WORLD_FOLDER,
+        }
+    }
+}
+
 /// The command line's `--bench` options.
 #[derive(Clone, Debug, Default)]
 pub struct BenchOptions {
@@ -40,11 +110,19 @@ pub struct BenchOptions {
     pub fps_cap: Option<u32>,
     /// `--compare <summary.json>`: an earlier run to hold this one against.
     pub compare: Option<PathBuf>,
+    /// `--scene calm|active`.
+    pub scene: Scene,
+    /// `--out <dir>`: where the CSV and summary go.
+    pub out: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
     Load,
+    /// Active scene: the mobs are summoned.
+    Spawn,
+    /// Active scene: the camera turns on the ground among them.
+    Crowd,
     Rise,
     Turn,
     Fly,
@@ -54,8 +132,10 @@ pub enum Phase {
 }
 
 impl Phase {
-    pub const MEASURED: [Phase; 6] = [
+    pub const MEASURED: [Phase; 8] = [
         Phase::Load,
+        Phase::Spawn,
+        Phase::Crowd,
         Phase::Rise,
         Phase::Turn,
         Phase::Fly,
@@ -66,6 +146,8 @@ impl Phase {
     pub fn name(self) -> &'static str {
         match self {
             Phase::Load => "load",
+            Phase::Spawn => "spawn",
+            Phase::Crowd => "crowd",
             Phase::Rise => "rise",
             Phase::Turn => "turn",
             Phase::Fly => "fly",
@@ -79,6 +161,8 @@ impl Phase {
     fn ticks(self) -> Option<u32> {
         match self {
             Phase::Load | Phase::Done => None,
+            Phase::Spawn => Some(SPAWN_TICKS),
+            Phase::Crowd => Some(300),
             Phase::Rise => Some(40),
             Phase::Turn => Some(200),
             Phase::Fly => Some(400),
@@ -87,9 +171,11 @@ impl Phase {
         }
     }
 
-    fn next(self) -> Phase {
+    fn next(self, scene: Scene) -> Phase {
         match self {
-            Phase::Load => Phase::Rise,
+            Phase::Load if scene == Scene::Active => Phase::Spawn,
+            Phase::Load | Phase::Crowd => Phase::Rise,
+            Phase::Spawn => Phase::Crowd,
             Phase::Rise => Phase::Turn,
             Phase::Turn => Phase::Fly,
             Phase::Fly => Phase::Sound,
@@ -107,7 +193,19 @@ pub struct LoadState {
     pub meshing: usize,
 }
 
+/// What the benchmark does in a tick in the player's place.
+#[derive(Default)]
+pub struct BenchStep {
+    pub input: MoveInput,
+    pub sound: Option<SoundInstance<'static>>,
+    /// Commands for the server, without their slash.
+    pub commands: Vec<String>,
+}
+
 pub struct BenchDriver {
+    scene: Scene,
+    /// Mobs summoned so far.
+    spawned: u32,
     phase: Phase,
     /// Ticks into the phase.
     ticks: u32,
@@ -122,9 +220,11 @@ pub struct BenchDriver {
 
 impl BenchDriver {
     /// A run at this render distance, which says how many chunks loading
-    pub fn new(render_distance: u8) -> Self {
+    pub fn new(render_distance: u8, scene: Scene) -> Self {
         let side = f32::from(render_distance) * 2.0 + 1.0;
         Self {
+            scene,
+            spawned: 0,
             phase: Phase::Load,
             ticks: 0,
             yaw: 0.0,
@@ -139,28 +239,47 @@ impl BenchDriver {
     }
 
     /// One tick: turns `player` and returns the keys held, and the sound to
-    pub fn tick(
-        &mut self,
-        player: &mut PlayerState,
-        load: LoadState,
-    ) -> (MoveInput, Option<SoundInstance<'static>>) {
+    pub fn tick(&mut self, player: &mut PlayerState, load: LoadState) -> BenchStep {
         self.ticks += 1;
         let done = match self.phase.ticks() {
             Some(ticks) => self.ticks >= ticks,
             None => self.phase == Phase::Load && self.loaded(load),
         };
         if done {
-            self.phase = self.phase.next();
+            let from = self.phase;
+            self.phase = self.phase.next(self.scene);
             self.ticks = 0;
-            if self.phase == Phase::Rise {
+            if from == Phase::Load {
                 self.yaw = player.yaw();
             }
         }
         let t = self.ticks as f32 / self.phase.ticks().unwrap_or(1) as f32;
-        let mut input = MoveInput::default();
-        let mut sound = None;
+        let mut step = BenchStep::default();
+        let BenchStep {
+            input,
+            sound,
+            commands,
+        } = &mut step;
         match self.phase {
             Phase::Load | Phase::Done => {}
+            Phase::Spawn => {
+                if self.ticks == 0 {
+                    commands.push("weather thunder 6000".to_owned());
+                    commands.push("time set 11500".to_owned());
+                }
+                for _ in 0..SPAWNS_PER_TICK {
+                    commands.push(summon_command(self.spawned));
+                    self.spawned += 1;
+                }
+            }
+            Phase::Crowd => {
+                // Looking a little down, around once: the crowd, the
+                // ground it stands on and the sky over it.
+                player.set_rotation(self.yaw + 360.0 * t, 15.0);
+                if self.ticks.is_multiple_of(BURST_EVERY) {
+                    commands.push(burst_command(self.ticks / BURST_EVERY));
+                }
+            }
             Phase::Rise => {
                 if self.ticks == 0 {
                     player.start_flying();
@@ -186,7 +305,7 @@ impl BenchDriver {
                     feet.y + 1.0,
                     feet.z + turn.sin() * SOUND_DISTANCE,
                 ];
-                sound = Some(
+                *sound = Some(
                     SoundInstance::of(event)
                         .on(SoundSource::Blocks)
                         .volume(0.5)
@@ -195,7 +314,7 @@ impl BenchDriver {
             }
             Phase::Idle => {}
         }
-        (input, sound)
+        step
     }
 
     /// Loading is done once the chunks around have come and nothing
@@ -209,6 +328,34 @@ impl BenchDriver {
         self.last_load = load;
         self.settled >= SETTLE_TICKS || self.ticks >= LOAD_TIMEOUT_TICKS
     }
+}
+
+/// The `index`th mob of the `spawn` phase, a block up so it lands on the
+/// ground: on a golden-angle spiral, 4 to 19 blocks from the player.
+fn summon_command(index: u32) -> String {
+    let entity = SPAWNED[index as usize % SPAWNED.len()];
+    let (x, z) = around(index, 4.0 + (index % 16) as f32);
+    let nbt = if entity == "minecraft:item" {
+        r#" {Item:{id:"minecraft:diamond",count:1}}"#
+    } else {
+        ""
+    };
+    format!("summon {entity} ~{x:.1} ~1 ~{z:.1}{nbt}")
+}
+
+/// The `index`th particle burst of the `crowd` phase, 3 to 9 blocks away,
+/// shown whatever the particle setting (`force`).
+fn burst_command(index: u32) -> String {
+    let particle = BURSTS[index as usize % BURSTS.len()];
+    let (x, z) = around(index, 3.0 + (index % 7) as f32);
+    format!("particle {particle} ~{x:.1} ~1.5 ~{z:.1} 1.5 1 1.5 0.02 120 force")
+}
+
+/// The `index`th point of a golden-angle spiral, `radius` from the centre.
+fn around(index: u32, radius: f32) -> (f32, f32) {
+    const GOLDEN_ANGLE: f32 = 2.399_963;
+    let angle = index as f32 * GOLDEN_ANGLE;
+    (angle.cos() * radius, angle.sin() * radius)
 }
 
 #[cfg(test)]
@@ -232,7 +379,7 @@ mod tests {
 
     #[test]
     fn phases_run_in_order_for_their_ticks() {
-        let mut driver = BenchDriver::new(1);
+        let mut driver = BenchDriver::new(1, Scene::Calm);
         let mut player = PlayerState::new(DVec3::ZERO);
         assert_eq!(
             run_until(&mut driver, &mut player, Phase::Rise),
@@ -247,7 +394,7 @@ mod tests {
 
     #[test]
     fn loading_waits_while_chunks_keep_coming() {
-        let mut driver = BenchDriver::new(1);
+        let mut driver = BenchDriver::new(1, Scene::Calm);
         let mut player = PlayerState::new(DVec3::ZERO);
         for chunks in 1..100 {
             let load = LoadState { chunks, meshing: 0 };
@@ -258,15 +405,42 @@ mod tests {
 
     #[test]
     fn flying_holds_forward_and_sprint() {
-        let mut driver = BenchDriver::new(1);
+        let mut driver = BenchDriver::new(1, Scene::Calm);
         let mut player = PlayerState::new(DVec3::ZERO);
         run_until(&mut driver, &mut player, Phase::Fly);
-        let (input, sound) = driver.tick(&mut player, LoadState::default());
-        assert_eq!(input.forward, 1.0);
-        assert!(input.sprint);
-        assert!(sound.is_none());
+        let step = driver.tick(&mut player, LoadState::default());
+        assert_eq!(step.input.forward, 1.0);
+        assert!(step.input.sprint);
+        assert!(step.sound.is_none());
         run_until(&mut driver, &mut player, Phase::Sound);
-        let (_, sound) = driver.tick(&mut player, LoadState::default());
-        assert!(sound.is_some_and(|s| s.position.is_some()));
+        let step = driver.tick(&mut player, LoadState::default());
+        assert!(step.sound.is_some_and(|s| s.position.is_some()));
+    }
+
+    #[test]
+    fn the_active_scene_spawns_then_looks_around_then_flies() {
+        let mut driver = BenchDriver::new(1, Scene::Active);
+        let mut player = PlayerState::new(DVec3::ZERO);
+        let load = LoadState {
+            chunks: 9,
+            meshing: 0,
+        };
+        let mut commands = Vec::new();
+        while driver.phase() != Phase::Crowd {
+            commands.extend(driver.tick(&mut player, load).commands);
+        }
+        let summons = commands.iter().filter(|c| c.starts_with("summon ")).count();
+        assert_eq!(summons as u32, SPAWNS_PER_TICK * SPAWN_TICKS);
+        assert!(commands.iter().any(|c| c.starts_with("weather thunder")));
+        assert_eq!(driver.phase(), Phase::Crowd);
+        assert_eq!(run_until(&mut driver, &mut player, Phase::Rise), 300);
+    }
+
+    #[test]
+    fn spawn_and_burst_commands_read_as_vanilla_syntax() {
+        assert_eq!(summon_command(0), "summon minecraft:cow ~4.0 ~1 ~0.0");
+        assert!(summon_command(11).ends_with(r#"{Item:{id:"minecraft:diamond",count:1}}"#));
+        assert!(burst_command(1).starts_with("particle minecraft:smoke ~"));
+        assert!(burst_command(1).ends_with(" 1.5 1 1.5 0.02 120 force"));
     }
 }

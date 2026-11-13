@@ -83,6 +83,12 @@ fn bench_options(args: &[String]) -> Result<Option<crate::game::bench::BenchOpti
             .unwrap_or_else(|| "bench".to_owned()),
         fps_cap,
         compare: value_of("--compare")?.map(std::path::PathBuf::from),
+        scene: match value_of("--scene")? {
+            None => crate::game::bench::Scene::Calm,
+            Some(name) => crate::game::bench::Scene::parse(name)
+                .ok_or_else(|| format!("--scene braucht calm oder active, nicht {name}"))?,
+        },
+        out: value_of("--out")?.map(std::path::PathBuf::from),
     }))
 }
 

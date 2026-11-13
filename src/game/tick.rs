@@ -31,9 +31,12 @@ impl InWorld {
                     chunks: self.level.chunk_count(),
                     meshing: stats.waiting + stats.in_flight,
                 };
-                let sound;
-                (input, sound) = driver.tick(&mut self.player, load);
-                self.sounds.extend(sound);
+                let step = driver.tick(&mut self.player, load);
+                input = step.input;
+                self.sounds.extend(step.sound);
+                for command in &step.commands {
+                    self.joined.session.send_command(command);
+                }
             }
             self.tick(input, ui, !blocked && self.bench.is_none());
         }

@@ -211,7 +211,7 @@ impl App {
             let connecting = ConnectingScreen::new(Target::Server(address), &ctx);
             state.screens.push(Box::new(connecting), &ctx);
         } else if let Some(bench_options) = options.bench {
-            let target = bench::prepare_world(state.env.assets.game_dir())?;
+            let target = bench::prepare_world(state.env.assets.game_dir(), bench_options.scene)?;
             let connecting = ConnectingScreen::new(target, &ctx);
             state.screens.push(Box::new(connecting), &ctx);
             state.bench = Some(bench::BenchRun::new(bench_options));
@@ -378,7 +378,7 @@ impl RunningState {
             );
         }
         if let Some(run) = &mut self.bench {
-            world.start_bench(self.env.config.render_distance);
+            world.start_bench(self.env.config.render_distance, run.options.scene);
             run.start(&self.renderer, &self.env.config);
         }
         self.screens.enter_world();

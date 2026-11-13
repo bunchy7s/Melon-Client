@@ -472,8 +472,8 @@ impl InWorld {
     }
 
     /// `--bench`: from now on the benchmark plays, at this render distance.
-    pub fn start_bench(&mut self, render_distance: u8) {
-        self.bench = Some(bench::BenchDriver::new(render_distance));
+    pub fn start_bench(&mut self, render_distance: u8, scene: bench::Scene) {
+        self.bench = Some(bench::BenchDriver::new(render_distance, scene));
     }
 
     /// The benchmark's phase, when it plays.
@@ -488,6 +488,11 @@ impl InWorld {
         }
         let path = self.joined.server.as_ref()?.save_path().join("icon.png");
         (!path.exists()).then_some(path)
+    }
+
+    /// Entities the client tracks, for the benchmark.
+    pub fn entity_count(&self) -> usize {
+        self.entities.len()
     }
 
     /// Chunks loaded, for the benchmark.

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use crate::audio::stats::AudioStats;
 use crate::game::InWorld;
 use crate::game::bench::report::{self, FrameSample, Recorder, Setup};
-use crate::game::bench::{BenchOptions, Phase, WORLD_FOLDER, WORLD_SEED};
+use crate::game::bench::{BenchOptions, Phase, Scene, WORLD_SEED};
 use crate::game::subsystems::Snapshot;
 use crate::gui::hud::debug::RenderStats;
 use crate::join::Target;
@@ -15,7 +15,8 @@ use crate::singleplayer::{
     self, Difficulty, WorldCreationMode, WorldSettings, rules, rules::Value,
 };
 
-/// Where the runs' CSV and summaries go, from the working directory.
+/// Where the runs' CSV and summaries go without `--out`, from the working
+/// directory.
 const OUT_DIR: &str = "target/melon-bench";
 
 pub(super) struct BenchRun {
@@ -38,6 +39,7 @@ impl BenchRun {
         let device = renderer.device_info();
         self.recorder = Some(Recorder::new(Setup {
             label: self.options.label.clone(),
+            scene: self.options.scene.name().to_owned(),
             device: format!("{}{}", device.name, device.type_suffix),
             resolution: renderer.framebuffer_size(),
             render_distance: config.render_distance,
@@ -45,8 +47,9 @@ impl BenchRun {
             present_mode: renderer.present_mode_name().to_owned(),
         }));
         println!(
-            "Bench '{}': {}{}, {}x{}, Sichtweite {}, FPS-Grenze {}",
+            "Bench '{}' ({}): {}{}, {}x{}, Sichtweite {}, FPS-Grenze {}",
             self.options.label,
+            self.options.scene.name(),
             device.name,
             device.type_suffix,
             renderer.framebuffer_size().0,
@@ -74,7 +77,11 @@ impl BenchRun {
         if self.phase != Some(phase) {
             recorder.enter(phase, Snapshot::take(net, audio));
             self.phase = Some(phase);
-            println!("Bench: Phase {}", phase.name());
+            println!(
+                "Bench: Phase {} ({} Entities)",
+                phase.name(),
+                world.entity_count()
+            );
         }
         if phase == Phase::Done {
             return true;
@@ -90,6 +97,7 @@ impl BenchRun {
                 gpu: gpu.to_vec(),
                 terrain_draws: render.terrain_draws,
                 sections_drawn: render.sections_drawn,
+                entities: world.entity_count(),
             },
             world.server_mspt(),
             net.totals().backlog,
@@ -106,7 +114,8 @@ impl BenchRun {
             return;
         };
         let summary = recorder.summary();
-        match recorder.write(Path::new(OUT_DIR)) {
+        let dir = self.options.out.as_deref().unwrap_or(Path::new(OUT_DIR));
+        match recorder.write(dir) {
             Ok(path) => println!("Bench: {} (und .csv)", path.display()),
             Err(e) => eprintln!("Bench: konnte nicht schreiben: {e:#}"),
         }
@@ -133,21 +142,38 @@ pub(super) fn override_config(config: &mut Config) {
 }
 
 /// The benchmark's world, made the first time: creative, fixed seed, no
-pub(super) fn prepare_world(game_dir: &Path) -> anyhow::Result<Target> {
+pub(super) fn prepare_world(game_dir: &Path, scene: Scene) -> anyhow::Result<Target> {
+    let folder = scene.world_folder();
+    let active = scene == Scene::Active;
+    if active {
+        // Made anew: what the last run summoned would still be there.
+        let old = singleplayer::world_dir(game_dir, folder);
+        if old.is_dir() {
+            std::fs::remove_dir_all(&old)?;
+        }
+    }
     let settings = WorldSettings {
         name: "Melon Bench".to_owned(),
         game_mode: WorldCreationMode::Creative,
         seed: WORLD_SEED.to_owned(),
-        difficulty: Difficulty::Peaceful,
+        // Monsters stay in the active world (and burn in its daylight).
+        difficulty: if active {
+            Difficulty::Normal
+        } else {
+            Difficulty::Peaceful
+        },
         allow_cheats: true,
         ..WorldSettings::default()
     };
-    singleplayer::save_world(game_dir, WORLD_FOLDER, &settings)?;
-    let world_dir = singleplayer::world_dir(game_dir, WORLD_FOLDER);
+    singleplayer::save_world(game_dir, folder, &settings)?;
+    let world_dir = singleplayer::world_dir(game_dir, folder);
+    // The active scene lets the time run into the dusk; the weather it sets
+    // itself, and only its own mobs come, so runs stay comparable.
     let rules: rules::Changes = [
-        ("advance_time", Value::Bool(false)),
+        ("advance_time", Value::Bool(active)),
         ("advance_weather", Value::Bool(false)),
         ("spawn_mobs", Value::Bool(false)),
+        ("send_command_feedback", Value::Bool(false)),
     ]
     .into_iter()
     .map(|(name, value)| (name.to_owned(), value))
