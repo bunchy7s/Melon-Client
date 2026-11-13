@@ -487,8 +487,11 @@ mod tests {
         assert!(books(&ingredients.search_items) > books(&ingredients.items));
     }
 
+    /// A zip-mod's `data/<ns>/creative_tab.json` orders a tab, and Melon
+    /// makes it from what the file says. What the mod's blocks are like is
+    /// the mod's business (`pumpkin-melon-mod-example` tests its own).
     #[test]
-    fn mod_creative_tab_carries_stealframe() {
+    fn a_mods_creative_tab_json_makes_a_tab() {
         let dir = std::env::temp_dir().join(format!(
             "melon-mod-tab-{}-{}",
             std::process::id(),
@@ -497,24 +500,24 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let ns = dir.join("data/hello");
+        let ns = dir.join("data/example");
         std::fs::create_dir_all(ns.join("blocks")).unwrap();
         std::fs::write(
-            ns.join("blocks/stealframe.json"),
-            r#"{"id":"hello:stealframe","name":"Stealframe","hardness":5.0,"blast_resistance":6.0,"requires_tool":true}"#,
+            ns.join("blocks/thing.json"),
+            r#"{"id":"example:thing","name":"Thing","hardness":1.0,"blast_resistance":1.0}"#,
         )
         .unwrap();
         pumpkin_data::mod_registry::load_extracted_dir(&dir);
         std::fs::write(
             ns.join("creative_tab.json"),
             r#"{
-              "id": "industrial",
-              "title": "itemGroup.industrial",
-              "icon": "hello:stealframe",
+              "id": "example_things",
+              "title": "itemGroup.example_things",
+              "icon": "example:thing",
               "row": "bottom",
               "column": 5,
               "aligned_right": true,
-              "items": ["hello:stealframe"]
+              "items": ["example:thing", "minecraft:stone"]
             }"#,
         )
         .unwrap();
@@ -522,26 +525,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(tabs.len(), 1);
         let tab = &tabs[0];
-        assert_eq!(tab.id, "industrial");
-        assert_eq!(tab.title, "itemGroup.industrial");
-        assert_eq!(tab.row, Row::Bottom);
-        assert_eq!(tab.column, 5);
-        assert!(tab.aligned_right);
-        assert_eq!(tab.icon.item.registry_key, "hello:stealframe");
-        assert_eq!(tab.items.len(), 1);
-        assert_eq!(tab.items[0].item.registry_key, "hello:stealframe");
+        assert_eq!(tab.id, "example_things");
+        assert_eq!(tab.title, "itemGroup.example_things");
         assert_eq!(
-            pumpkin_data::Block::from_item_id(tab.items[0].item.id).map(|b| b.name),
-            Some("hello:stealframe")
+            (tab.row, tab.column, tab.aligned_right),
+            (Row::Bottom, 5, true)
         );
-        assert_eq!(
-            pumpkin_data::Block::from_registry_key("hello:stealframe").map(|b| b.name),
-            Some("hello:stealframe")
-        );
-        let state = tab.items[0].item;
-        let block = pumpkin_data::Block::from_item_id(state.id).unwrap();
-        let state_id = block.default_state.id.as_u16();
-        assert!(crate::world::block::state_flags::is_solid(state_id));
-        assert!(crate::world::block::state_flags::is_drawn(state_id));
+        assert_eq!(tab.kind, TabType::Category);
+        assert!(tab.show_title && tab.scrollbar);
+        assert_eq!(tab.icon.item.registry_key, "example:thing");
+        let items: Vec<_> = tab.items.iter().map(|s| s.item.registry_key).collect();
+        assert_eq!(items, ["example:thing", "stone"]);
+    }
+
+    #[test]
+    fn a_mod_without_creative_tab_json_adds_no_tab() {
+        let dir = std::env::temp_dir().join(format!("melon-mod-notab-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("data/example")).unwrap();
+        let tabs = collect_mod_tabs(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(tabs.is_empty());
     }
 }
