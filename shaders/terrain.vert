@@ -90,18 +90,18 @@ void main() {
     // Biome tint, unorm8 RGB.
     vec4 in_tint = unpackUnorm4x8(quads.words[word + 4u]);
     uint index = in_quad.x & 0x1FFFFFu;
-    Corner corner = table.corners[index * 4u + vertex];
-    uint face = corner.face;
-    uint at = in_quad.y;
-    vec3 pos = vec3(corner.x, corner.y, corner.z)
     // 16-byte corner:
     // uvec4 corner = table.corners[index * 4u + vertex];
     // uint face = corner.y >> 16;
-    // uint at = in_quad.y;
-    // vec3 pos = vec3(
-    //         bitfieldExtract(int(corner.x), 0, 16),
-    //         bitfieldExtract(int(corner.x), 16, 16),
-    //         bitfieldExtract(int(corner.y), 0, 16)) * CORNER_POS_STEP
+    // vec3 corner_pos = vec3(
+    //     bitfieldExtract(int(corner.x), 0, 16),
+    //     bitfieldExtract(int(corner.x), 16, 16),
+    //     bitfieldExtract(int(corner.y), 0, 16)) * CORNER_POS_STEP;
+    Corner corner = table.corners[index * 4u + vertex];
+    uint face = corner.face;
+    vec3 corner_pos = vec3(corner.x, corner.y, corner.z);
+    uint at = in_quad.y;
+    vec3 pos = corner_pos
         + vec3(float(at & 15u), float((at >> 8) & 0xFFFu), float((at >> 4) & 15u));
     uint kind = (in_quad.x >> 21) & 7u;
     if (kind != 0u) {
