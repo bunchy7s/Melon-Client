@@ -3,8 +3,8 @@
 use ash::vk;
 use glam::Mat4;
 
-use super::create_buffer;
 use super::frame::WorldDraw;
+use super::vk_util::{MAPPED_FOR_GPU, create_buffer_in};
 use crate::world::fog::FogData;
 
 /// `Globals` in `globals.glsl`, std140: eight `vec4`s.
@@ -150,12 +150,12 @@ impl GlobalBuffers {
         let size = std::mem::size_of::<Globals>() as u64;
         let mut out = Vec::with_capacity(frames);
         for set in sets {
-            let (buffer, memory) = create_buffer(
+            let (buffer, memory) = create_buffer_in(
                 device,
                 mem_props,
                 size,
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                &MAPPED_FOR_GPU,
             )?;
             let ptr = device.map_memory(memory, 0, size, vk::MemoryMapFlags::empty())? as *mut u8;
             ptr.cast::<Globals>().write(Globals::plain());

@@ -28,6 +28,36 @@ pub(super) unsafe fn create_sampler(
     )?)
 }
 
+/// Memory for buffers the CPU writes through a mapping and the GPU reads
+/// every frame: VRAM the CPU can map (resizable BAR, or the 256 MiB window
+/// most GPUs expose) where there is one, else host memory over PCIe. The
+/// mapping is write-combined either way, so it's only ever written.
+pub(super) const MAPPED_FOR_GPU: [vk::MemoryPropertyFlags; 2] = [
+    vk::MemoryPropertyFlags::from_raw(
+        vk::MemoryPropertyFlags::DEVICE_LOCAL.as_raw()
+            | vk::MemoryPropertyFlags::HOST_VISIBLE.as_raw()
+            | vk::MemoryPropertyFlags::HOST_COHERENT.as_raw(),
+    ),
+    vk::MemoryPropertyFlags::from_raw(
+        vk::MemoryPropertyFlags::HOST_VISIBLE.as_raw()
+            | vk::MemoryPropertyFlags::HOST_COHERENT.as_raw(),
+    ),
+];
+
+/// Memory for buffers the GPU writes and the CPU reads back: cached, as
+/// reading uncached (write-combined) memory costs the CPU many times more.
+pub(super) const READBACK: [vk::MemoryPropertyFlags; 2] = [
+    vk::MemoryPropertyFlags::from_raw(
+        vk::MemoryPropertyFlags::HOST_VISIBLE.as_raw()
+            | vk::MemoryPropertyFlags::HOST_COHERENT.as_raw()
+            | vk::MemoryPropertyFlags::HOST_CACHED.as_raw(),
+    ),
+    vk::MemoryPropertyFlags::from_raw(
+        vk::MemoryPropertyFlags::HOST_VISIBLE.as_raw()
+            | vk::MemoryPropertyFlags::HOST_COHERENT.as_raw(),
+    ),
+];
+
 /// A buffer with its own memory, bound.
 pub(super) unsafe fn create_buffer(
     device: &ash::Device,
@@ -35,6 +65,19 @@ pub(super) unsafe fn create_buffer(
     size: u64,
     usage: vk::BufferUsageFlags,
     flags: vk::MemoryPropertyFlags,
+) -> anyhow::Result<(vk::Buffer, vk::DeviceMemory)> {
+    create_buffer_in(device, mem_props, size, usage, &[flags])
+}
+
+/// A buffer with its own memory, bound, from the first of `choices` that a
+/// memory type has and whose heap has room: a small heap such as the BAR
+/// window can run out where host memory still has plenty.
+pub(super) unsafe fn create_buffer_in(
+    device: &ash::Device,
+    mem_props: &vk::PhysicalDeviceMemoryProperties,
+    size: u64,
+    usage: vk::BufferUsageFlags,
+    choices: &[vk::MemoryPropertyFlags],
 ) -> anyhow::Result<(vk::Buffer, vk::DeviceMemory)> {
     let buffer = device.create_buffer(
         &vk::BufferCreateInfo::default()
@@ -44,18 +87,34 @@ pub(super) unsafe fn create_buffer(
         None,
     )?;
     let requirements = device.get_buffer_memory_requirements(buffer);
-    let memory = device.allocate_memory(
-        &vk::MemoryAllocateInfo::default()
-            .allocation_size(requirements.size)
-            .memory_type_index(find_memory_type(
-                mem_props,
-                requirements.memory_type_bits,
-                flags,
-            )?),
-        None,
-    )?;
-    device.bind_buffer_memory(buffer, memory, 0)?;
-    Ok((buffer, memory))
+    let mut last = anyhow::anyhow!("kein passender Vulkan-Speichertyp gefunden");
+    for &flags in choices {
+        let index = match find_memory_type(mem_props, requirements.memory_type_bits, flags) {
+            Ok(index) => index,
+            Err(e) => {
+                last = e;
+                continue;
+            }
+        };
+        match device.allocate_memory(
+            &vk::MemoryAllocateInfo::default()
+                .allocation_size(requirements.size)
+                .memory_type_index(index),
+            None,
+        ) {
+            Ok(memory) => {
+                if let Err(e) = device.bind_buffer_memory(buffer, memory, 0) {
+                    device.free_memory(memory, None);
+                    device.destroy_buffer(buffer, None);
+                    return Err(e.into());
+                }
+                return Ok((buffer, memory));
+            }
+            Err(e) => last = e.into(),
+        }
+    }
+    device.destroy_buffer(buffer, None);
+    Err(last)
 }
 
 pub(super) fn choose_surface_format(

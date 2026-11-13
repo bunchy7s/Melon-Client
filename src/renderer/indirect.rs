@@ -2,7 +2,7 @@
 
 use ash::vk;
 
-use super::create_buffer;
+use super::vk_util::{MAPPED_FOR_GPU, create_buffer_in};
 
 /// Bytes of one `VkDrawIndexedIndirectCommand`.
 pub const COMMAND_SIZE: u32 = std::mem::size_of::<vk::DrawIndexedIndirectCommand>() as u32;
@@ -26,13 +26,7 @@ impl Mapped {
         size: u64,
         usage: vk::BufferUsageFlags,
     ) -> anyhow::Result<Self> {
-        let (buffer, memory) = create_buffer(
-            device,
-            mem_props,
-            size,
-            usage,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-        )?;
+        let (buffer, memory) = create_buffer_in(device, mem_props, size, usage, &MAPPED_FOR_GPU)?;
         let ptr = device.map_memory(memory, 0, size, vk::MemoryMapFlags::empty())? as *mut u8;
         Ok(Self {
             buffer,

@@ -1,7 +1,7 @@
 //! A one-off copy of a finished frame to the CPU: the world's `icon.png`
 
 use super::Renderer;
-use super::vk_util::create_buffer;
+use super::vk_util::{READBACK, create_buffer_in};
 use ash::vk;
 
 #[derive(Default)]
@@ -59,12 +59,12 @@ impl Renderer {
         let device = &self.device;
         let extent = self.swapchain.extent;
         let size = u64::from(extent.width) * u64::from(extent.height) * 4;
-        let (buffer, memory) = create_buffer(
+        let (buffer, memory) = create_buffer_in(
             device,
             &self.mem_props,
             size,
             vk::BufferUsageFlags::TRANSFER_DST,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            &READBACK,
         )
         .ok()?;
         let image = self.swapchain.images[image_index];

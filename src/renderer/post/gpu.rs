@@ -11,7 +11,7 @@ use super::shader::Compiled;
 use super::uniform::Std140;
 use crate::renderer::blur::{Image, create_image};
 use crate::renderer::texture::Texture;
-use crate::renderer::vk_util::{self, create_buffer};
+use crate::renderer::vk_util::{self, MAPPED_FOR_GPU, create_buffer_in};
 use crate::renderer::{pipeline, post::config::Pass};
 
 /// Most inputs a pass may have, and uniform blocks.
@@ -441,12 +441,12 @@ impl Post {
                 }
             };
             let size = BLOCK_STRIDE * block_count as u64;
-            let (ubo, ubo_memory) = create_buffer(
+            let (ubo, ubo_memory) = create_buffer_in(
                 device,
                 mem_props,
                 size,
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                &MAPPED_FOR_GPU,
             )?;
             let ubo_ptr =
                 device.map_memory(ubo_memory, 0, size, vk::MemoryMapFlags::empty())? as *mut u8;

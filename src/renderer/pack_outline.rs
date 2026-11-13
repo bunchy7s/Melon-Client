@@ -7,7 +7,8 @@ use glam::Mat4;
 
 use super::gui_uniforms::BLOCKS;
 use super::pipeline::{Pass, PipelineDesc, depth_disabled};
-use super::{Renderer, WorldVertex, create_buffer};
+use super::vk_util::{MAPPED_FOR_GPU, create_buffer_in};
+use super::{Renderer, WorldVertex};
 use crate::assets::shaders::{self, Interface, Stage};
 
 /// Glowing entities that write pack-outline markers this frame. A lobby's
@@ -259,12 +260,12 @@ unsafe fn uniforms(
         }
     };
     let size = STRIDE * (BLOCKS_N + SLOTS as u64);
-    let (buffer, memory) = create_buffer(
+    let (buffer, memory) = create_buffer_in(
         device,
         mem_props,
         size,
         vk::BufferUsageFlags::UNIFORM_BUFFER,
-        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        &MAPPED_FOR_GPU,
     )?;
     let ptr = match device.map_memory(memory, 0, size, vk::MemoryMapFlags::empty()) {
         Ok(ptr) => ptr as *mut u8,

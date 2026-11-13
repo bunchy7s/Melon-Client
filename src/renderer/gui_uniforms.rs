@@ -2,7 +2,7 @@
 
 use ash::vk;
 
-use super::create_buffer;
+use super::vk_util::{MAPPED_FOR_GPU, create_buffer_in};
 
 /// Each block's binding in set 1, by the name a shader declares it with.
 pub const BLOCKS: [&str; 3] = ["DynamicTransforms", "Projection", "Globals"];
@@ -157,12 +157,12 @@ impl GuiUniforms {
         let size = STRIDE * u64::from(blocks);
         let mut out = Vec::with_capacity(frames);
         for set in sets {
-            let (buffer, memory) = create_buffer(
+            let (buffer, memory) = create_buffer_in(
                 device,
                 mem_props,
                 size,
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                &MAPPED_FOR_GPU,
             )?;
             let ptr = device.map_memory(memory, 0, size, vk::MemoryMapFlags::empty())? as *mut u8;
             let infos: Vec<[vk::DescriptorBufferInfo; 1]> = (0..u64::from(blocks))

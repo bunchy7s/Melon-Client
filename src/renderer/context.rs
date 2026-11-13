@@ -1,9 +1,10 @@
 //! Bringing Vulkan up: instance, device, queues, the long-lived pools,
 
+use super::vk_util;
 use super::{
     MAX_FRAMES_IN_FLIGHT, MAX_TEXTURES, PassStart, Renderer, TextureId, VERTEX_CAPACITY, blur,
-    choose_surface_format, create_buffer, create_render_pass, create_sampler, debug_callback,
-    find_depth_format, mesh_arena, pipeline, quad, read_device_info,
+    choose_surface_format, create_render_pass, create_sampler, debug_callback, find_depth_format,
+    mesh_arena, pipeline, quad, read_device_info,
 };
 use ash::vk;
 use image::RgbaImage;
@@ -309,12 +310,12 @@ impl Renderer {
         let mut ui_vertex_mapped = Vec::new();
         for _ in 0..MAX_FRAMES_IN_FLIGHT {
             let size = (VERTEX_CAPACITY * std::mem::size_of::<quad::Vertex>()) as vk::DeviceSize;
-            let (buffer, memory) = create_buffer(
+            let (buffer, memory) = vk_util::create_buffer_in(
                 &device,
                 &mem_props,
                 size,
                 vk::BufferUsageFlags::VERTEX_BUFFER,
-                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                &vk_util::MAPPED_FOR_GPU,
             )?;
             let mapped =
                 device.map_memory(memory, 0, size, vk::MemoryMapFlags::empty())? as *mut u8;
@@ -326,12 +327,12 @@ impl Renderer {
 
         let cube = &pipeline::sky::CUBE_VERTICES;
         let cube_size = std::mem::size_of_val(cube) as vk::DeviceSize;
-        let (sky_vertex_buffer, sky_vertex_memory) = create_buffer(
+        let (sky_vertex_buffer, sky_vertex_memory) = vk_util::create_buffer_in(
             &device,
             &mem_props,
             cube_size,
             vk::BufferUsageFlags::VERTEX_BUFFER,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            &vk_util::MAPPED_FOR_GPU,
         )?;
         let cube_mapped =
             device.map_memory(sky_vertex_memory, 0, cube_size, vk::MemoryMapFlags::empty())?
@@ -507,12 +508,12 @@ unsafe fn create_quad_indices(
         .flat_map(|quad| [0, 1, 2, 2, 3, 0].map(|corner| quad * 4 + corner))
         .collect();
     let size = std::mem::size_of_val(indices.as_slice()) as vk::DeviceSize;
-    let (buffer, memory) = create_buffer(
+    let (buffer, memory) = vk_util::create_buffer_in(
         device,
         mem_props,
         size,
         vk::BufferUsageFlags::INDEX_BUFFER,
-        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+        &vk_util::MAPPED_FOR_GPU,
     )?;
     let mapped = device.map_memory(memory, 0, size, vk::MemoryMapFlags::empty())?;
     std::ptr::copy_nonoverlapping(indices.as_ptr(), mapped.cast::<u32>(), indices.len());
