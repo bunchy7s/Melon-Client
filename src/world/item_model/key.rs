@@ -127,19 +127,20 @@ fn model_count(
 ) -> u8 {
     let definition_key = definition_id(stack.item.registry_key, variant);
     let mut known = COUNT_CUTS.lock().unwrap_or_else(|e| e.into_inner());
-    let cuts = known
-        .get_or_insert_with(HashMap::new)
-        .entry(definition_key.to_owned())
-        .or_insert_with(|| {
-            let definition = crate::assets::json_resource(assets_root, "items", definition_key);
-            let mut cuts = Vec::new();
-            if let Some(definition) = definition {
-                count_cuts(&definition["model"], i32::from(max_stack), &mut cuts);
-            }
-            cuts.sort_unstable();
-            cuts.dedup();
-            cuts
-        });
+    let known = known.get_or_insert_with(HashMap::new);
+    // Looked up by `&str` first: the key is only allocated the first time
+    // an item's definition is read, not on every call.
+    if !known.contains_key(definition_key) {
+        let definition = crate::assets::json_resource(assets_root, "items", definition_key);
+        let mut cuts = Vec::new();
+        if let Some(definition) = definition {
+            count_cuts(&definition["model"], i32::from(max_stack), &mut cuts);
+        }
+        cuts.sort_unstable();
+        cuts.dedup();
+        known.insert(definition_key.to_owned(), cuts);
+    }
+    let cuts = &known[definition_key];
     let count = i32::from(stack.item_count);
     cuts.iter()
         .rev()
@@ -147,23 +148,40 @@ fn model_count(
         .map_or(1, |&cut| cut.clamp(1, 255) as u8)
 }
 
+/// `(present, patched)`: the components the stack has (`ItemStack.has`,
+/// its patch over its item's defaults) and those its patch sets
+/// (`hasNonDefault`), one bit per [`DataComponent::to_id`].
+///
+/// One pass over the patch and one over the defaults, where asking
+/// `has_data_component` for every component scanned both lists per id.
 fn component_bits(stack: &ItemStack) -> (u128, u128) {
     let mut present = 0u128;
     let mut patched = 0u128;
-    for id in 0u8..=DataComponent::CushionColor.to_id() {
-        let Some(component) = DataComponent::try_from_id(id) else {
-            continue;
-        };
-        if stack.has_data_component(component) {
-            present |= 1u128 << id;
+    // What the patch decided: `has_data_component` answers from the first
+    // patch entry for an id and only then asks the defaults.
+    let mut decided = 0u128;
+    for (id, data) in &stack.patch {
+        let bit = component_bit(*id);
+        if decided & bit == 0 {
+            decided |= bit;
+            if data.is_some() {
+                present |= bit;
+            }
+        }
+        if data.is_some() {
+            patched |= bit;
         }
     }
-    for (id, data) in &stack.patch {
-        if data.is_some() {
-            patched |= 1u128 << id.to_id();
-        }
+    for &(id, _) in stack.item.components {
+        present |= component_bit(id) & !decided;
     }
     (present, patched)
+}
+
+/// The bit of `id`; every vanilla component (up to `CushionColor`, 121)
+/// fits a `u128`.
+fn component_bit(id: DataComponent) -> u128 {
+    1u128 << id.to_id()
 }
 
 /// `ItemStack.nextDamageWillBreak`: one more hit and the stack is gone.
@@ -176,4 +194,76 @@ fn next_damage_will_break(stack: &ItemStack) -> bool {
                 .map_or(0, |d| d.damage);
             damage >= max.max_damage - 1
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pumpkin_data::data_component_impl::{DataComponentImpl, DyedColorImpl};
+    use pumpkin_data::item::Item;
+
+    /// What `component_bits` worked out before: ask every component.
+    fn component_bits_by_asking(stack: &ItemStack) -> (u128, u128) {
+        let mut present = 0u128;
+        let mut patched = 0u128;
+        for id in 0u8..=DataComponent::CushionColor.to_id() {
+            let Some(component) = DataComponent::try_from_id(id) else {
+                continue;
+            };
+            if stack.has_data_component(component) {
+                present |= 1u128 << id;
+            }
+        }
+        for (id, data) in &stack.patch {
+            if data.is_some() {
+                patched |= 1u128 << id.to_id();
+            }
+        }
+        (present, patched)
+    }
+
+    fn set(
+        component: DataComponent,
+        data: impl DataComponentImpl + 'static,
+    ) -> (DataComponent, Option<Box<dyn DataComponentImpl>>) {
+        (component, Some(Box::new(data)))
+    }
+
+    #[test]
+    fn component_bits_match_asking_for_every_component() {
+        let plain = ItemStack::new(1, &Item::DIAMOND_SWORD);
+        let mut damaged = ItemStack::new(1, &Item::DIAMOND_SWORD);
+        damaged
+            .patch
+            .push(set(DataComponent::Damage, DamageImpl { damage: 3 }));
+        let mut unbreakable = ItemStack::new(1, &Item::DIAMOND_SWORD);
+        unbreakable.patch.push((DataComponent::MaxDamage, None));
+        let mut twice = ItemStack::new(1, &Item::LEATHER_HELMET);
+        twice.patch.push(set(
+            DataComponent::DyedColor,
+            DyedColorImpl { rgb: 0x00FF_0000 },
+        ));
+        twice.patch.push((DataComponent::DyedColor, None));
+        let mut removed_then_set = ItemStack::new(1, &Item::LEATHER_HELMET);
+        removed_then_set
+            .patch
+            .push((DataComponent::MaxStackSize, None));
+        removed_then_set
+            .patch
+            .push(set(DataComponent::DyedColor, DyedColorImpl { rgb: 7 }));
+        for stack in [&plain, &damaged, &unbreakable, &twice, &removed_then_set] {
+            assert_eq!(
+                component_bits(stack),
+                component_bits_by_asking(stack),
+                "{}",
+                stack.item.registry_key
+            );
+        }
+        let max_damage = component_bit(DataComponent::MaxDamage);
+        assert_ne!(component_bits(&plain).0 & max_damage, 0);
+        assert_eq!(component_bits(&unbreakable).0 & max_damage, 0);
+        let dyed = component_bit(DataComponent::DyedColor);
+        assert_ne!(component_bits(&twice).0 & dyed, 0);
+        assert_ne!(component_bits(&twice).1 & dyed, 0);
+    }
 }
