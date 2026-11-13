@@ -2630,7 +2630,7 @@ dependencies = [
  "pumpkin-config",
  "pumpkin-core",
  "pumpkin-data",
- "pumpkin-mod",
+ "pumpkin-mod 0.2.2+26.3-26.60 (git+https://github.com/zinedinp/pumpkin-mod?branch=main)",
  "pumpkin-nbt",
  "pumpkin-protocol",
  "pumpkin-util",
@@ -3858,7 +3858,7 @@ dependencies = [
  "pumpkin-gametest",
  "pumpkin-inventory",
  "pumpkin-macros",
- "pumpkin-mod",
+ "pumpkin-mod 0.2.2+26.3-26.60 (git+https://github.com/zinedinp/Pumpkin?branch=mod-zip)",
  "pumpkin-nbt",
  "pumpkin-protocol",
  "pumpkin-util",
@@ -3947,6 +3947,24 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.9",
+]
+
+[[package]]
+name = "pumpkin-mod"
+version = "0.2.2+26.3-26.60"
+source = "git+https://github.com/zinedinp/pumpkin-mod?branch=main#0b120d154812787abe429eb7d4837530f32e1bc8"
+dependencies = [
+ "flate2",
+ "hex",
+ "libloading 0.9.0",
+ "pumpkin-data",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "toml",
+ "tracing",
+ "zip",
 ]
 
 [[package]]

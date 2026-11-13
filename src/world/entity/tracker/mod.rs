@@ -245,6 +245,9 @@ pub struct ClientEntity {
     movement_speed: f32,
     jump_strength: f32,
     step_height: f32,
+    /// `Attributes.NAME_TAG_DISTANCE` and `BELOW_NAME_DISTANCE`, in blocks.
+    pub name_tag_distance: f32,
+    pub below_name_distance: f32,
     /// The body turn of the living vehicle it rides, last tick's and this
     vehicle_body: Option<(f32, f32)>,
 }
@@ -357,6 +360,16 @@ impl ClientEntity {
                 0.42,
             ),
             step_height: type_attr(ty, crate::network::play::game::ATTRIBUTE_STEP_HEIGHT, 0.6),
+            name_tag_distance: type_attr(
+                ty,
+                crate::network::play::game::ATTRIBUTE_NAME_TAG_DISTANCE,
+                64.0,
+            ),
+            below_name_distance: type_attr(
+                ty,
+                crate::network::play::game::ATTRIBUTE_BELOW_NAME_DISTANCE,
+                10.0,
+            ),
             vehicle_body: None,
         })
     }
@@ -456,6 +469,11 @@ impl ClientEntity {
                         self.jump_strength = value;
                     } else if attribute == crate::network::play::game::ATTRIBUTE_STEP_HEIGHT {
                         self.step_height = value;
+                    } else if attribute == crate::network::play::game::ATTRIBUTE_NAME_TAG_DISTANCE {
+                        self.name_tag_distance = value;
+                    } else if attribute == crate::network::play::game::ATTRIBUTE_BELOW_NAME_DISTANCE
+                    {
+                        self.below_name_distance = value;
                     }
                 }
             }

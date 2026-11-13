@@ -1,4 +1,4 @@
-//! One binary, two modes: no flags opens the launcher; `--game` (and
+//! The game client. The launcher is the separate `melon-launcher` binary.
 
 use melon::app::{self, cli};
 use melon::assets::Assets;
@@ -8,16 +8,11 @@ use melon::settings::options::Config;
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    match cli::invocation(&args).unwrap_or_else(|message| {
+    let command = cli::parse(&args).unwrap_or_else(|message| {
         eprintln!("{message}");
         std::process::exit(1);
-    }) {
-        cli::Invocation::Launcher { .. } => {
-            eprintln!("the launcher is the separate melon-launcher binary");
-            std::process::exit(1);
-        }
-        cli::Invocation::Game(command) => run_game(command),
-    }
+    });
+    run_game(command)
 }
 
 fn run_game(command: cli::Command) -> anyhow::Result<()> {

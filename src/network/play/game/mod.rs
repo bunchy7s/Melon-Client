@@ -12,7 +12,7 @@ pub mod sound;
 pub use decode::{GameEvent, PlayerInfoUpdate, decode};
 pub use entity::{
     ATTRIBUTE_ARMOR, ATTRIBUTE_JUMP_STRENGTH, ATTRIBUTE_MAX_HEALTH, ATTRIBUTE_MOVEMENT_SPEED,
-    ATTRIBUTE_STEP_HEIGHT, AddEntity, AttributeSnapshot, DataValue, EVENT_DEATH, EntityFlags,
+    ATTRIBUTE_BELOW_NAME_DISTANCE, ATTRIBUTE_NAME_TAG_DISTANCE, ATTRIBUTE_STEP_HEIGHT, AddEntity, AttributeSnapshot, DataValue, EVENT_DEATH, EntityFlags,
     EntityPacket, EquipmentSlot, FLAG_ON_FIRE, LIVING_OFF_HAND, LIVING_USING_ITEM, MoveEntity,
     NAUSEA_ID, SetPosition, relative,
 };

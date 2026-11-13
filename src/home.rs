@@ -16,10 +16,10 @@ pub fn dir() -> PathBuf {
     platform_data()
 }
 
-/// A Melon git checkout: `Cargo.toml` plus `src/launcher.rs` in the cwd.
+/// A source checkout of the client or the launcher: `Cargo.toml` plus `src/main.rs` in the cwd.
 fn checkout() -> Option<PathBuf> {
     let cwd = std::env::current_dir().ok()?;
-    (cwd.join("Cargo.toml").is_file() && cwd.join("src/launcher.rs").is_file()).then_some(cwd)
+    (cwd.join("Cargo.toml").is_file() && cwd.join("src/main.rs").is_file()).then_some(cwd)
 }
 
 /// OS personal data folder for Melon (`%APPDATA%/melon`, XDG, Application Support).

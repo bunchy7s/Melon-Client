@@ -3,7 +3,7 @@
 use glam::{DVec3, Mat4, Vec3, Vec4Swizzles};
 
 use super::InWorld;
-use super::camera::{Camera, CameraMode};
+use super::camera::Camera;
 use crate::component::Component;
 use crate::gui::hud::item_slot::ItemPainter;
 use crate::gui::text::{self, StyledText};
@@ -16,10 +16,12 @@ use crate::world::scoreboard::Visibility;
 
 /// `EntityRenderer.submitNameTag`'s `scale(0.025)`: blocks a text pixel.
 const PIXEL: f32 = 0.025;
-/// `EntityRenderDispatcher.distanceToSqr < 64 * 64`.
-const RANGE: f32 = 64.0;
-/// `Attributes.BELOW_NAME_DISTANCE` default.
-const BELOW_NAME_RANGE: f32 = 10.0;
+/// `LivingEntityRenderer.shouldShowName`: a sneaking entity's name reaches 32 blocks.
+const DISCRETE_RANGE: f32 = 32.0;
+/// `submitNameTag`: text alpha of a sneaking entity's tag and of a tag behind blocks.
+const DIM_ALPHA: f32 = 0.5;
+/// `AvatarRenderer.submitNameDisplay`: tag pixels the ears of `deadmau5` push the tag up.
+const EARS_OFFSET: f32 = -10.0;
 /// `submitNameDisplay`: 9 * 1.15 after the score, in tag pixels.
 const SCORE_GAP: f32 = 9.0 * 1.15;
 /// `Options.getBackgroundColor(0.25F)`.
@@ -81,28 +83,33 @@ impl InWorld {
             return;
         };
         let partial = self.tick_time / crate::world::player::TICK;
+        let viewer_spectator = self.game_mode.current.is_spectator();
+        let looked_at = self.hit_entity().map(|hit| hit.id);
         for entity in self.entities.iter() {
-            let name = self.name_tag_component(entity);
-            let holder = self.score_holder(entity);
             let feet = entity.pos(partial);
-            let height = f64::from(entity.size().1);
-            let anchor = (feet + DVec3::new(0.0, height + 0.5, 0.0)).as_vec3();
-            let dist_sq = anchor.distance_squared(view.position);
-            if dist_sq >= RANGE * RANGE {
-                continue;
-            }
-            let score = if dist_sq < BELOW_NAME_RANGE * BELOW_NAME_RANGE {
-                holder.and_then(|holder| self.scoreboard.below_name_display(holder))
+            let dist_sq = feet.as_vec3().distance_squared(view.position);
+            let discrete = entity.appearance.crouching();
+            let name = if dist_sq < entity.name_tag_distance * entity.name_tag_distance
+                && !(entity.is_living() && discrete && dist_sq >= DISCRETE_RANGE * DISCRETE_RANGE)
+            {
+                self.name_tag_component(entity, looked_at == Some(entity.id), viewer_spectator)
+            } else {
+                None
+            };
+            let score = if dist_sq < entity.below_name_distance * entity.below_name_distance {
+                self.scoreboard
+                    .below_name_display(&self.score_holder(entity))
             } else {
                 None
             };
             if name.is_none() && score.is_none() {
                 continue;
             }
+            let height = f64::from(entity.size().1);
+            let anchor = (feet + DVec3::new(0.0, height + 0.5, 0.0)).as_vec3();
             let Some((at, depth)) = view.project(anchor, size) else {
                 continue;
             };
-            let discrete = entity.appearance.crouching();
             let occluded = pick::clip_blocks_for_nametag(
                 &self.level,
                 view.position.as_dvec3(),
@@ -112,7 +119,14 @@ impl InWorld {
             if discrete && occluded {
                 continue;
             }
+            let dim = discrete || occluded;
             let scale = view.text_scale(depth, size);
+            let ears = entity.kind == EntityKind::Player
+                && self
+                    .players
+                    .get(&entity.uuid)
+                    .is_some_and(|p| &*p.name == "deadmau5");
+            let at = [at[0], at[1] + if ears { EARS_OFFSET * scale } else { 0.0 }];
             if let Some(score) = score {
                 let styled = StyledText::from_component(&score, lang);
                 if !styled.is_empty() {
@@ -122,7 +136,7 @@ impl InWorld {
                         &styled,
                         [at[0], at[1] + SCORE_GAP * scale],
                         scale,
-                        false,
+                        dim,
                     );
                 }
             }
@@ -131,7 +145,7 @@ impl InWorld {
                 if styled.is_empty() {
                     continue;
                 }
-                self.draw_tag(draw_list, painter, &styled, at, scale, false);
+                self.draw_tag(draw_list, painter, &styled, at, scale, dim);
             }
         }
     }
@@ -261,60 +275,80 @@ impl InWorld {
         }
     }
 
-    /// `EntityRenderer.getNameTag` / `LivingEntityRenderer.shouldShowName`.
-    fn name_tag_component(&self, entity: &ClientEntity) -> Option<Component> {
+    /// `EntityRenderer.getNameTag`, if the renderer's `shouldShowName` lets it show.
+    fn name_tag_component(
+        &self,
+        entity: &ClientEntity,
+        looked_at: bool,
+        viewer_spectator: bool,
+    ) -> Option<Component> {
         if entity.kind == EntityKind::Other {
             return None;
         }
-        if entity.kind == EntityKind::Player {
-            return self.player_name_tag(entity);
+        let player = entity.kind == EntityKind::Player;
+        if entity.kind == EntityKind::ArmorStand {
+            if !entity.appearance.name_visible {
+                return None;
+            }
+        } else {
+            let shown = player
+                || entity.appearance.name_visible
+                || entity.custom_name.is_some() && looked_at;
+            if !shown || entity.is_living() && !self.living_shows_name(entity, viewer_spectator) {
+                return None;
+            }
         }
-        if !entity.appearance.name_visible {
-            return None;
-        }
-        entity.custom_name.as_deref().cloned()
-    }
-
-    /// `ScoreHolder.getScoreboardName`: a player's profile name.
-    fn score_holder<'a>(&'a self, entity: &'a ClientEntity) -> Option<&'a str> {
-        if entity.kind != EntityKind::Player {
-            return None;
-        }
-        self.players.get(&entity.uuid).map(|p| p.name.as_str())
-    }
-
-    /// `Player.shouldShowName` is always true; the tag is the team-coloured
-    fn player_name_tag(&self, entity: &ClientEntity) -> Option<Component> {
-        if entity.uuid == self.uuid && self.camera_mode == CameraMode::FirstPerson {
-            return None;
-        }
-        let player = self.players.get(&entity.uuid)?;
-        if player.game_mode.is_spectator() {
-            return None;
-        }
-        if !self.team_shows_name_tag(&player.name, entity.appearance.invisible()) {
-            return None;
-        }
+        let name = if player {
+            Component::text(self.players.get(&entity.uuid)?.name.to_string())
+        } else {
+            match entity.custom_name.as_deref() {
+                Some(name) => without_click(name),
+                None => Component::translatable(
+                    format!("entity.minecraft.{}", entity.ty.resource_name),
+                    Vec::new(),
+                ),
+            }
+        };
         Some(
             self.scoreboard
-                .format_name(&player.name, Component::text(player.name.clone())),
+                .format_name(&self.score_holder(entity), name),
         )
     }
 
-    /// `LivingEntityRenderer.shouldShowName`'s team branch.
-    fn team_shows_name_tag(&self, holder: &str, invisible: bool) -> bool {
+    /// `Entity.getScoreboardName`: a player's profile name, else the UUID.
+    fn score_holder(&self, entity: &ClientEntity) -> String {
+        if entity.kind == EntityKind::Player
+            && let Some(player) = self.players.get(&entity.uuid)
+        {
+            return player.name.to_string();
+        }
+        entity.uuid.hyphenated().to_string()
+    }
+
+    /// `LivingEntityRenderer.shouldShowName` past the sneak range.
+    fn living_shows_name(&self, entity: &ClientEntity, viewer_spectator: bool) -> bool {
+        if entity.uuid == self.uuid {
+            return false;
+        }
         let own = self
             .players
             .get(&self.uuid)
             .and_then(|p| self.scoreboard.team_of(&p.name));
-        let theirs = self.scoreboard.team_of(holder);
-        let visible = !invisible
-            || (own.is_some_and(|(_, team)| team.look.sees_friendly_invisibles())
-                && own.is_some_and(|(name, _)| theirs.is_some_and(|(theirs, _)| theirs == name)));
-        let Some((_, team)) = theirs else {
-            return visible;
-        };
+        let holder = self.score_holder(entity);
+        let theirs = self.scoreboard.team_of(&holder);
         let same = matches!((own, theirs), (Some((a, _)), Some((b, _))) if a == b);
+        let spectator = entity.kind == EntityKind::Player
+            && self
+                .players
+                .get(&entity.uuid)
+                .is_some_and(|p| p.game_mode.is_spectator());
+        let invisible = entity.appearance.invisible() || spectator;
+        let visible = viewer_spectator
+            || !invisible
+            || same && theirs.is_some_and(|(_, team)| team.look.sees_friendly_invisibles());
+        let Some((_, team)) = theirs else {
+            return visible && entity.passengers.is_empty();
+        };
         match team.look.name_tags {
             Visibility::Always => visible,
             Visibility::Never => false,
@@ -342,7 +376,7 @@ impl InWorld {
         styled: &StyledText,
         at: [f32; 2],
         scale: f32,
-        hidden: bool,
+        dim: bool,
     ) {
         let width = text::width(painter.font, styled);
         let (left, top) = (-width / 2.0 - 1.0, -1.0);
@@ -361,7 +395,7 @@ impl InWorld {
             pages: painter.font_textures,
             white: painter.white,
             color: [1.0; 3],
-            alpha: if hidden { BEHIND_ALPHA } else { 1.0 },
+            alpha: if dim { DIM_ALPHA } else { 1.0 },
             shadow: false,
             obfuscation_seed: 0,
         };
@@ -369,6 +403,14 @@ impl InWorld {
         draw_list.scale_since(start, scale);
         draw_list.offset_since(start, at);
     }
+}
+
+/// `Entity.removeAction`: the name without its click events.
+fn without_click(name: &Component) -> Component {
+    let mut out = name.clone();
+    out.style.click_event = None;
+    out.extra = name.extra.iter().map(without_click).collect();
+    out
 }
 
 #[cfg(test)]

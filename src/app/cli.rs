@@ -1,12 +1,4 @@
-//! The binary's command line: no flags opens the launcher; `--game`,
-
-/// Which process this invocation is.
-pub enum Invocation {
-    /// Account picker; Play re-execs this binary with `--game`.
-    Launcher { validation: bool },
-    /// The game, or the windowless `--connect` test.
-    Game(Command),
-}
+//! The game's command line. `--game` is accepted and ignored: the launcher passes it.
 
 /// What the command line asks for.
 pub enum Command {
@@ -25,18 +17,6 @@ pub struct LaunchOptions {
     pub join: Option<String>,
     /// `--bench`: the benchmark instead of playing.
     pub bench: Option<crate::game::bench::BenchOptions>,
-}
-
-/// Launcher unless the user asked for the game (`--game`, `--join`, `--connect`).
-pub fn invocation(args: &[String]) -> Result<Invocation, String> {
-    let validation = args.iter().any(|a| a == "--vulkan-validation");
-    if args.iter().any(|a| {
-        a == "--game" || a == "--join" || a == "--connect" || a == "--packets" || a == "--bench"
-    }) {
-        Ok(Invocation::Game(parse(args)?))
-    } else {
-        Ok(Invocation::Launcher { validation })
-    }
 }
 
 /// `--instance <name>`: the instance to play in, if given.
@@ -130,7 +110,7 @@ mod tests {
 
     #[test]
     fn reads_the_bench_flags() {
-        let Ok(Invocation::Game(Command::Play(options))) = invocation(&args(&[
+        let Ok(Command::Play(options)) = parse(&args(&[
             "melon",
             "--bench",
             "--label",
@@ -149,33 +129,5 @@ mod tests {
             panic!("expected Play");
         };
         assert!(plain.bench.is_none());
-    }
-
-    #[test]
-    fn no_flags_open_the_launcher() {
-        assert!(matches!(
-            invocation(&args(&["melon"])),
-            Ok(Invocation::Launcher { validation: false })
-        ));
-        assert!(matches!(
-            invocation(&args(&["melon", "--vulkan-validation"])),
-            Ok(Invocation::Launcher { validation: true })
-        ));
-    }
-
-    #[test]
-    fn game_flags_skip_the_launcher() {
-        assert!(matches!(
-            invocation(&args(&["melon", "--game"])),
-            Ok(Invocation::Game(Command::Play(_)))
-        ));
-        assert!(matches!(
-            invocation(&args(&["melon", "--join", "a:1"])),
-            Ok(Invocation::Game(Command::Play(_)))
-        ));
-        assert!(matches!(
-            invocation(&args(&["melon", "--connect", "b"])),
-            Ok(Invocation::Game(Command::Connect(_)))
-        ));
     }
 }
