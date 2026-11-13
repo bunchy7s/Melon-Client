@@ -13,10 +13,11 @@ use crate::gui::text::font::Font;
 use crate::gui::text::{self, Hover, StyledText, TextStyle, colors};
 use crate::gui::widgets::text_input::{Edit, TextInput};
 use crate::i18n::Lang;
+use crate::math::argb;
 use crate::network::play::chat::Suggestions;
 use crate::network::play::chat::command_suggestions::{self, SELECTOR_LEVEL, Source};
 use crate::network::play::chat::commands::{CommandTree, SpanKind};
-use crate::renderer::quad::{DrawList, argb};
+use crate::renderer::quad::DrawList;
 use crate::settings::input::InputBind;
 use crate::settings::options::{ChatSettings, ChatVisibility};
 

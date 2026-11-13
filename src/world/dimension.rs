@@ -1,5 +1,6 @@
 //! Dimension types (vanilla `DimensionType`): how tall a level is, whether
 
+use crate::math::argb;
 use anyhow::Result;
 use serde_json::Value;
 
@@ -364,16 +365,6 @@ pub const fn rgb(hex: u32) -> Rgb {
         ((hex >> 16) & 0xff) as f32 / 255.0,
         ((hex >> 8) & 0xff) as f32 / 255.0,
         (hex & 0xff) as f32 / 255.0,
-    ]
-}
-
-/// `0xAARRGGBB` as `0..1` channels, red first.
-pub const fn argb(hex: u32) -> [f32; 4] {
-    [
-        ((hex >> 16) & 0xff) as f32 / 255.0,
-        ((hex >> 8) & 0xff) as f32 / 255.0,
-        (hex & 0xff) as f32 / 255.0,
-        ((hex >> 24) & 0xff) as f32 / 255.0,
     ]
 }
 

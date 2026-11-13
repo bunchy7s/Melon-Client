@@ -22,7 +22,7 @@ use crate::assets::Assets;
 use crate::gui::screen::TextEvent;
 use crate::gui::sprite::GuiSprite;
 use crate::gui::text::font::Font;
-use crate::renderer::quad::argb;
+use crate::math::argb;
 use crate::renderer::{Renderer, TextureId};
 use crate::settings::input::InputBind;
 use crate::world::inventory::{ContainerKind, OpenContainer};

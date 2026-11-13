@@ -2,7 +2,8 @@
 
 use crate::assets::Assets;
 use crate::math::angle::{self, PI};
-use crate::renderer::quad::{BlendMode, DrawList, argb};
+use crate::math::argb;
+use crate::renderer::quad::{BlendMode, DrawList};
 use crate::renderer::{Renderer, TextureId};
 
 /// The field of view the hand and these overlays are drawn with

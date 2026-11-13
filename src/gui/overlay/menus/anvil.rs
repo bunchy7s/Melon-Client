@@ -9,7 +9,7 @@ use crate::gui::overlay::{OverlayAction, OverlayContext};
 use crate::gui::screen::TextEvent;
 use crate::gui::sprite::GuiSprite;
 use crate::gui::widgets::text_input::{Edit, TextInput};
-use crate::renderer::quad::argb;
+use crate::math::argb;
 use crate::settings::input::InputBind;
 use crate::world::inventory::{empty, stacks_equal};
 

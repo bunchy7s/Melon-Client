@@ -12,7 +12,7 @@ use crate::gui::screen::TextEvent;
 use crate::gui::sprite::GuiSprite;
 use crate::gui::text::StyledText;
 use crate::gui::widgets::text_input::TextInput;
-use crate::renderer::quad::argb;
+use crate::math::argb;
 use crate::renderer::{Renderer, TextureId};
 use crate::world::recipes::{BookType, Category, RecipeBook, RecipeDisplay, RecipeId, Stock, Tab};
 

@@ -2,9 +2,10 @@
 
 use glam::Vec3;
 
+use crate::math::argb;
 use crate::world::biome::{Biome, Biomes};
 use crate::world::clock::Environment as Day;
-use crate::world::dimension::{DimensionType, Rgb, Skybox, argb, rgb};
+use crate::world::dimension::{DimensionType, Rgb, Skybox, rgb};
 
 /// `EnvironmentAttributes` defaults, for what neither the dimension nor the
 const FOG_END: f32 = 1024.0;

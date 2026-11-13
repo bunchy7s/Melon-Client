@@ -192,7 +192,7 @@ impl MenuScreen for EnchantmentScreen {
                 &name,
                 left + ROW_X + 20.0,
                 top + y + 2.0,
-                crate::renderer::quad::argb(name_color),
+                crate::math::argb(name_color),
             );
             draw.text_shadowed(
                 &cost_text,

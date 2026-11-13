@@ -2,7 +2,7 @@
 
 use crate::gui::screen::ScreenAction;
 use crate::gui::widgets::dialog::DialogScreen;
-use crate::renderer::quad::argb;
+use crate::math::argb;
 
 /// `ConfirmLinkScreen`'s three buttons are narrower than the default.
 const BUTTON_W: f32 = 100.0;

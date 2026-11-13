@@ -8,7 +8,8 @@ use crate::gui::widgets::Ui;
 use crate::gui::widgets::button::Button;
 use crate::gui::widgets::layout::{BUTTON_H, WIDE_BUTTON_W, quarter, wide_column_left};
 use crate::gui::widgets::set::{KeyResult, WidgetSet};
-use crate::renderer::quad::{Transform2D, argb};
+use crate::math::argb;
+use crate::renderer::quad::Transform2D;
 
 const BUTTON_DELAY: Duration = Duration::from_secs(1);
 

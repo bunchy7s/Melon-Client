@@ -1,8 +1,9 @@
 //! Fallback menu background when the panorama cubemap is missing
 
 use crate::gui::assets::GuiAssets;
+use crate::math::argb;
 use crate::renderer::TextureId;
-use crate::renderer::quad::{DrawList, argb};
+use crate::renderer::quad::DrawList;
 
 /// Render-pass clear color. Hidden once a cubemap scene is present.
 pub const CLEAR_COLOR: [f32; 4] = [0.02, 0.02, 0.04, 1.0];

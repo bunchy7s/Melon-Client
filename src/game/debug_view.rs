@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 
 use super::InWorld;
 use super::camera::{Camera, CameraMode};
-use super::gizmos::{DEFAULT_WIDTH, GizmoMesh, Gizmos, argb};
+use super::gizmos::{DEFAULT_WIDTH, GizmoMesh, Gizmos};
+use crate::math::argb;
 use crate::renderer::{EntityDraw, Renderer};
 use crate::world::physics::Aabb;
 

@@ -5,7 +5,7 @@ use crate::gui::background;
 use crate::gui::effects::AtlasSprite;
 use crate::gui::screen::{Screen, ScreenAction, ScreenContext};
 use crate::gui::widgets::Ui;
-use crate::renderer::quad::argb;
+use crate::math::argb;
 
 pub struct LevelLoadingScreen {
     reason: LoadingReason,

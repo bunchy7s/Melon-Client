@@ -7,6 +7,20 @@ pub use std::f32::consts::SQRT_2;
 
 pub use angle::{DEG_TO_RAD, RAD_TO_DEG, cos, sin, sin_cos_deg as sin_cos_degrees, wrap_degrees};
 
+/// Vanilla's packed `0xAARRGGBB` colours (`ARGB`, the ints the decomp
+/// spells colours as) as `0..1` channels, red first.
+pub const fn argb(color: u32) -> [f32; 4] {
+    const fn channel(color: u32, shift: u32) -> f32 {
+        ((color >> shift) & 0xFF) as f32 / 255.0
+    }
+    [
+        channel(color, 16),
+        channel(color, 8),
+        channel(color, 0),
+        channel(color, 24),
+    ]
+}
+
 /// Blocks along each side of a section (`SectionPos.SECTION_SIZE`).
 pub const SECTION_SIZE: i32 = 16;
 
@@ -31,6 +45,13 @@ pub const fn section_to_block(section: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn argb_unpacks_vanillas_colours() {
+        assert_eq!(argb(0xFF00_00FF), [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(argb(0xFFFF_0000), [1.0, 0.0, 0.0, 1.0]);
+        assert_eq!(argb(0x8000_0000)[3], 128.0 / 255.0);
+    }
 
     #[test]
     fn wraps_and_splits_coordinates() {

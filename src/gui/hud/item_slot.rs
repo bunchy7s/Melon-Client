@@ -15,8 +15,9 @@ use crate::gui::text::font::Font;
 use crate::gui::text::{self, StyledText, TextPaint, TextStyle, colors};
 use crate::gui::widgets::tooltip;
 use crate::i18n::Lang;
+use crate::math::argb;
 use crate::renderer::TextureId;
-use crate::renderer::quad::{DrawList, Program, argb};
+use crate::renderer::quad::{DrawList, Program};
 
 /// Everything drawing an item needs, bundled so the HUD and the screens pass
 #[derive(Clone, Copy)]

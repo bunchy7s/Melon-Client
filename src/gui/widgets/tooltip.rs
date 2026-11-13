@@ -3,8 +3,9 @@
 use crate::gui::assets::TooltipSprites;
 use crate::gui::text::{self, StyledText, TextPaint};
 use crate::gui::widgets::Rect;
+use crate::math::argb;
 use crate::renderer::TextureId;
-use crate::renderer::quad::{DrawList, argb};
+use crate::renderer::quad::DrawList;
 
 /// `Tooltip.MAX_WIDTH`: option tooltips wrap at this width.
 pub const MAX_WIDTH: f32 = 170.0;

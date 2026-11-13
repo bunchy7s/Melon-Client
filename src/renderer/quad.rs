@@ -21,19 +21,6 @@ impl Transform2D {
     }
 }
 
-/// Vanilla's packed `0xAARRGGBB` colours (`ARGB`, the ints the decomp
-pub const fn argb(color: u32) -> [f32; 4] {
-    const fn channel(color: u32, shift: u32) -> f32 {
-        ((color >> shift) & 0xFF) as f32 / 255.0
-    }
-    [
-        channel(color, 16),
-        channel(color, 8),
-        channel(color, 0),
-        channel(color, 24),
-    ]
-}
-
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Vertex {

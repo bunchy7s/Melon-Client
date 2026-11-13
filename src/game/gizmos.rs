@@ -18,12 +18,6 @@ pub struct Line {
     pub width: f32,
 }
 
-/// `ARGB` ints as vanilla spells its colours, to floats.
-pub fn argb(color: u32) -> [f32; 4] {
-    let byte = |shift: u32| ((color >> shift) & 0xFF) as f32 / 255.0;
-    [byte(16), byte(8), byte(0), byte(24)]
-}
-
 /// The lines of one frame.
 #[derive(Default)]
 pub struct Gizmos {
@@ -249,11 +243,5 @@ mod tests {
             let width = f64::from(width_at(distance));
             assert!((width - expected).abs() < 1.0e-4, "{width} {expected}");
         }
-    }
-
-    #[test]
-    fn argb_unpacks_vanillas_colours() {
-        assert_eq!(argb(0xFF00_00FF), [0.0, 0.0, 1.0, 1.0]);
-        assert_eq!(argb(0xFFFF_0000), [1.0, 0.0, 0.0, 1.0]);
     }
 }

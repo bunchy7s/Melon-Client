@@ -9,7 +9,8 @@ use crate::gui::hud::item_slot::ItemPainter;
 use crate::gui::text::{self, StyledText};
 use crate::i18n::Lang;
 use crate::math::ChunkHash;
-use crate::renderer::quad::{DrawList, Vertex, argb};
+use crate::math::argb;
+use crate::renderer::quad::{DrawList, Vertex};
 use crate::renderer::{
     Blending, EntityDraw, Glint, MeshId, RenderLayer, Renderer, TextureId, WorldVertex,
 };
