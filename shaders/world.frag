@@ -85,11 +85,13 @@ void main() {
     return;
 #endif
 #ifdef CLOUDS
-    // Vanilla `core/clouds.fsh`: the face's shaded colour as it is, with no
-    // texture or lightmap, and the fog only fades it out by the clouds' end
-    // instead of mixing in its colour.
+    // Vanilla `core/clouds.fsh`: the face's shaded colour times the clouds'
+    // colour of the moment (`CloudColor`, here `pc.ambient`; world.vert has
+    // multiplied its alpha in already), with no texture or lightmap, and
+    // the fog only fades it out by the clouds' end instead of mixing in its
+    // colour.
     out_color = vec4(
-        frag_color.rgb,
+        frag_color.rgb * pc.ambient.rgb,
         frag_color.a * (1.0 - linear_fog_value(frag_fog.x, 0.0, g.fog_sky.y)));
     return;
 #endif

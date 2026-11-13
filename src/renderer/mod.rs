@@ -36,9 +36,9 @@ use vk_util::{
 };
 
 pub use frame::{
-    Blending, Blur, CelestialDraw, ChunkDraw, CornerLight, EntityDraw, Frame, Glint, QuadCorner,
-    RenderLayer, SceneFrame, Sky, SkyKind, TerrainMesh, TerrainQuad, WORLD_Z_NEAR, WorldDraw,
-    WorldVertex, world_projection,
+    Blending, Blur, CelestialDraw, ChunkDraw, CloudDraw, CornerLight, EntityDraw, Frame, Glint,
+    QuadCorner, RenderLayer, SceneFrame, Sky, SkyKind, TerrainMesh, TerrainQuad, WORLD_Z_NEAR,
+    WorldDraw, WorldVertex, world_projection,
 };
 
 use ash::vk;

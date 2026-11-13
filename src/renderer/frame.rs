@@ -33,7 +33,7 @@ pub struct SceneFrame {
     /// Extra meshes drawn with the same camera as `world` (terrain), each
     pub entities: Vec<EntityDraw>,
     /// Cloud boxes, camera-relative, white texture, vertex colour.
-    pub clouds: Option<EntityDraw>,
+    pub clouds: Option<CloudDraw>,
     /// Rain then snow columns, camera-relative, wrapping environment textures.
     pub weather: Vec<EntityDraw>,
     /// `textures/misc/enchanted_glint_{item,armor}.png`, for the overlay.
@@ -43,6 +43,15 @@ pub struct SceneFrame {
     pub glowing: Vec<(usize, [u8; 3])>,
     /// Post effect chains the scene asks for (`creeper`, `invert`...), by
     pub post_effects: Vec<String>,
+}
+
+/// The cloud mesh and the colour it is drawn in this frame. The mesh holds
+/// each cell's colour and face shade only, so it outlives the time of day
+/// and the weather, which only change `color` (vanilla `CloudColor`).
+pub struct CloudDraw {
+    pub draw: EntityDraw,
+    /// Multiplied onto the vertex colours, alpha included.
+    pub color: [f32; 4],
 }
 
 /// One non-terrain mesh in world space: `model` places [`EntityDraw::mesh`]

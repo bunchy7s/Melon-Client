@@ -146,7 +146,6 @@ pub fn build(texture: &CloudTexture, frame: CloudFrame) -> Vec<WorldVertex> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CloudKey {
     status: CloudStatus,
-    color: [u32; 4],
     bottom_y: u32,
     range_chunks: u8,
     cell: (i32, i32),
@@ -178,7 +177,6 @@ pub fn key(texture: &CloudTexture, frame: &CloudFrame) -> Option<CloudKey> {
     let (cell_x, cell_z, ..) = cell_of(texture, frame);
     Some(CloudKey {
         status: frame.status,
-        color: frame.color.map(f32::to_bits),
         bottom_y: frame.bottom_y.to_bits(),
         range_chunks: frame.range_chunks,
         cell: (cell_x, cell_z),
@@ -232,7 +230,6 @@ fn build_with(texture: &CloudTexture, frame: CloudFrame, anchored: bool) -> Vec<
                 push_cell(
                     &mut out,
                     texture,
-                    frame.color,
                     cell_x,
                     cell_z,
                     rel_x,
@@ -247,7 +244,6 @@ fn build_with(texture: &CloudTexture, frame: CloudFrame, anchored: bool) -> Vec<
             push_cell(
                 &mut out,
                 texture,
-                frame.color,
                 cell_x,
                 cell_z,
                 rel_x,
@@ -267,7 +263,6 @@ fn build_with(texture: &CloudTexture, frame: CloudFrame, anchored: bool) -> Vec<
 fn push_cell(
     out: &mut Vec<WorldVertex>,
     texture: &CloudTexture,
-    tint: [f32; 4],
     cell_x: i32,
     cell_z: i32,
     rel_x: i32,
@@ -295,7 +290,6 @@ fn push_cell(
             [x1, y0, z1],
             Direction::Down,
             color,
-            tint,
             SHADE_TOP,
             false,
         );
@@ -305,7 +299,6 @@ fn push_cell(
             [x1, y0, z1],
             Direction::Up,
             color,
-            tint,
             SHADE_TOP,
             false,
         );
@@ -318,7 +311,6 @@ fn push_cell(
             [x1, y1, z1],
             Direction::Up,
             color,
-            tint,
             SHADE_TOP,
             false,
         );
@@ -330,7 +322,6 @@ fn push_cell(
             [x1, y0, z1],
             Direction::Down,
             color,
-            tint,
             SHADE_BOTTOM,
             false,
         );
@@ -346,7 +337,6 @@ fn push_cell(
             [x1, y1, z0],
             Direction::North,
             color,
-            tint,
             SHADE_NORTH_SOUTH,
             false,
         );
@@ -358,7 +348,6 @@ fn push_cell(
             [x1, y1, z1],
             Direction::South,
             color,
-            tint,
             SHADE_NORTH_SOUTH,
             false,
         );
@@ -370,7 +359,6 @@ fn push_cell(
             [x0, y1, z1],
             Direction::West,
             color,
-            tint,
             SHADE_EAST_WEST,
             false,
         );
@@ -382,7 +370,6 @@ fn push_cell(
             [x1, y1, z1],
             Direction::East,
             color,
-            tint,
             SHADE_EAST_WEST,
             false,
         );
@@ -403,7 +390,7 @@ fn push_cell(
                 Direction::West => ([x0, y0, z0], [x0, y1, z1]),
                 Direction::East => ([x1, y0, z0], [x1, y1, z1]),
             };
-            push_face(out, min, max, dir, color, tint, shade, true);
+            push_face(out, min, max, dir, color, shade, true);
         }
     }
 }
@@ -415,20 +402,14 @@ fn push_face(
     max: [f32; 3],
     dir: Direction,
     cell: u32,
-    tint: [f32; 4],
     shade: f32,
     inside: bool,
 ) {
-    let cr = ((cell >> 16) & 0xFF) as f32 / 255.0;
-    let cg = ((cell >> 8) & 0xFF) as f32 / 255.0;
-    let cb = (cell & 0xFF) as f32 / 255.0;
-    let ca = (cell >> 24) as f32 / 255.0;
-    let color = [
-        cr * tint[0] * shade,
-        cg * tint[1] * shade,
-        cb * tint[2] * shade,
-        ca * tint[3],
-    ];
+    // The cell's colour and the face's shade only: the clouds' colour of
+    // the moment (time of day, weather) comes per draw, as vanilla's
+    // `CloudColor` uniform does, so the mesh outlives it.
+    let [r, g, b, a] = crate::math::argb(cell);
+    let color = [r * shade, g * shade, b * shade, a];
     let mut corners = match dir {
         Direction::Up => [
             [min[0], min[1], min[2]],
@@ -530,6 +511,47 @@ mod tests {
             ..frame
         };
         assert_eq!(key(&texture, &frame), key(&texture, &nearby));
+    }
+
+    #[test]
+    fn the_clouds_colour_changes_neither_key_nor_mesh() {
+        let texture = solid_cell();
+        let noon = CloudFrame {
+            status: CloudStatus::Fancy,
+            color: [1.0, 1.0, 1.0, 0.8],
+            bottom_y: 192.0,
+            range_chunks: 2,
+            camera: glam::Vec3::new(10.0, 64.0, 20.0),
+            game_time: 1200,
+            partial_tick: 0.3,
+        };
+        let dusk_in_rain = CloudFrame {
+            color: [0.4, 0.3, 0.35, 0.6],
+            ..noon
+        };
+        assert_eq!(key(&texture, &noon), key(&texture, &dusk_in_rain));
+        assert_eq!(
+            build_anchored(&texture, noon),
+            build_anchored(&texture, dusk_in_rain)
+        );
+        // The cell's own colour (0xCCFFFFFF) and the top's shade stay.
+        let top = build(&texture, noon);
+        assert!(top.iter().any(|v| v.color == [255, 255, 255, 0xCC]));
+    }
+
+    #[test]
+    fn clear_clouds_draw_nothing() {
+        let frame = CloudFrame {
+            status: CloudStatus::Fancy,
+            color: [1.0, 1.0, 1.0, 0.0],
+            bottom_y: 192.0,
+            range_chunks: 2,
+            camera: glam::Vec3::ZERO,
+            game_time: 0,
+            partial_tick: 0.0,
+        };
+        assert!(key(&solid_cell(), &frame).is_none());
+        assert!(build(&solid_cell(), frame).is_empty());
     }
 
     #[test]

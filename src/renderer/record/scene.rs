@@ -114,14 +114,15 @@ impl Renderer {
                     let view_proj = self.world_view_projection(world, layer);
                     let fog = FogInput::Chunk;
                     if let Some(clouds) = &scene.clouds
-                        && self.bind_world_pass(cmd, clouds.atlas, Mode::Clouds)
+                        && self.bind_world_pass(cmd, clouds.draw.atlas, Mode::Clouds)
                     {
+                        let at = world.relative(clouds.draw.model).w_axis.truncate();
                         self.draw_world_mesh(
                             cmd,
                             self.pipelines.clouds.layout,
-                            clouds.mesh,
-                            (view_proj, world.relative(clouds.model).w_axis.truncate()),
-                            &world.light([1.0, 1.0, 1.0, 1.0]).fogged(fog),
+                            clouds.draw.mesh,
+                            (view_proj, at),
+                            &world.light(clouds.color).fogged(fog),
                             None,
                         );
                     }

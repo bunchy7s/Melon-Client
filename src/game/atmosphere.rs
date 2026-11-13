@@ -4,7 +4,7 @@ use super::InWorld;
 use super::camera::Camera;
 use super::environment::FrameEnvironment;
 use super::world_resources::WorldResources;
-use crate::renderer::{EntityDraw, MeshId, Renderer, WorldVertex};
+use crate::renderer::{CloudDraw, EntityDraw, MeshId, Renderer, WorldVertex};
 use crate::settings::options::Config;
 use crate::world::clouds::{self, CloudFrame};
 use crate::world::weather::{self, WeatherQuery};
@@ -23,7 +23,7 @@ impl InWorld {
         lightmap_params: &crate::world::lightmap::LightmapParams,
         partial: f32,
         aspect: f32,
-    ) -> (Option<EntityDraw>, Vec<EntityDraw>) {
+    ) -> (Option<CloudDraw>, Vec<EntityDraw>) {
         let model = Mat4::from_translation(camera.position);
         let cloud_frame = CloudFrame {
             status: config.clouds,
@@ -40,16 +40,19 @@ impl InWorld {
             replace_mesh(renderer, &mut self.cloud_mesh, &verts);
             self.cloud_key = cloud_key;
         }
-        let clouds = self.cloud_mesh.map(|mesh| EntityDraw {
-            mesh,
-            atlas: renderer.white_texture(),
-            model: Mat4::from_translation(clouds::anchor(&assets.clouds, &cloud_frame)),
-            origin: glam::IVec3::ZERO,
-            layer: crate::renderer::RenderLayer::Atmosphere,
-            blend: crate::renderer::Blending::Translucent,
-            light: None,
-            overlay: 0.0,
-            glint: crate::renderer::Glint::None,
+        let clouds = self.cloud_mesh.map(|mesh| CloudDraw {
+            color: cloud_frame.color,
+            draw: EntityDraw {
+                mesh,
+                atlas: renderer.white_texture(),
+                model: Mat4::from_translation(clouds::anchor(&assets.clouds, &cloud_frame)),
+                origin: glam::IVec3::ZERO,
+                layer: crate::renderer::RenderLayer::Atmosphere,
+                blend: crate::renderer::Blending::Translucent,
+                light: None,
+                overlay: 0.0,
+                glint: crate::renderer::Glint::None,
+            },
         });
 
         let mut weather = Vec::new();
