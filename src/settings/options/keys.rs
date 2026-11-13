@@ -294,6 +294,11 @@ pub(super) const KEYS: &[OptionKey] = &[
         write: |c| c.chat.background_opacity.to_string(),
     },
     OptionKey {
+        name: "backgroundForChatOnly",
+        read: |c, v| c.chat.background_for_chat_only = flag(v),
+        write: |c| c.chat.background_for_chat_only.to_string(),
+    },
+    OptionKey {
         name: "chatScale",
         read: |c, v| c.chat.scale = unit(v).unwrap_or(c.chat.scale),
         write: |c| c.chat.scale.to_string(),

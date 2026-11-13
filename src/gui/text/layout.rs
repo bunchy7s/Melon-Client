@@ -87,13 +87,7 @@ fn draw_glyphs(
                 continue;
             }
             if style.obfuscated {
-                let pool = paint
-                    .font
-                    .glyphs_of_width_in(face, paint.font.advance_in(face, ch));
-                if !pool.is_empty() {
-                    seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
-                    ch = pool[(seed >> 33) as usize % pool.len()];
-                }
+                ch = paint.font.random_glyph_in(face, ch, &mut seed);
             }
             let glyph = paint.font.glyph_in(face, ch);
             let advance = paint.font.advance_in(face, ch)

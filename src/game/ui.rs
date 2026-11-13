@@ -24,8 +24,9 @@ impl InWorld {
         size: (f32, f32),
     ) {
         self.effects_frame.draw(draw_list, &assets.effects, size);
-        self.draw_text_displays(draw_list, painter, lang, size);
-        self.draw_name_tags(draw_list, painter, lang, size);
+        let tag_background = config.chat.world_background_opacity(0.25);
+        self.draw_text_displays(draw_list, painter, lang, size, tag_background);
+        self.draw_name_tags(draw_list, painter, lang, size, tag_background);
         let panel = self
             .overlay
             .as_ref()

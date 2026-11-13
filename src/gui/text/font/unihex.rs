@@ -205,6 +205,13 @@ impl Unihex {
         self.glyphs.is_empty()
     }
 
+    /// Every glyph with its pixel width.
+    pub fn widths(&self) -> impl Iterator<Item = (char, i32)> + '_ {
+        self.glyphs
+            .iter()
+            .map(|(&c, e)| (c, i32::from(e.right) - i32::from(e.left) + 1))
+    }
+
     /// The pixel width of `c`'s glyph (`right - left + 1`).
     pub fn width(&self, c: char) -> Option<i32> {
         self.glyphs

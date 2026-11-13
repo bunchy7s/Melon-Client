@@ -166,7 +166,34 @@ impl InWorld {
                 TextDisplayMeshes::free(renderer, old);
             }
             let mut parts = Vec::new();
-            for (texture, vertices) in build(state, painter, lang, entity.id as u64, style) {
+            let built = build(state, painter, lang, entity.id as u64, style);
+            if crate::probe::enabled() {
+                crate::probe::note("text_display", format!("#{} built", entity.id), || {
+                    let styled = StyledText::from_component(&state.text, lang);
+                    let fonts: Vec<&str> = styled
+                        .spans
+                        .iter()
+                        .filter_map(|s| s.style.font.as_deref())
+                        .collect();
+                    format!(
+                        "text={:?} fonts={fonts:?} width={} flags={:#x} opacity={} background={:#x} \
+                         line_width={} view_range={} billboard={} parts={:?} pos={:?} vehicle={:?} raw={:?}",
+                        styled.to_plain(),
+                        text::width(painter.font, &styled),
+                        state.flags,
+                        style.0,
+                        style.1,
+                        state.line_width,
+                        state.view_range,
+                        state.billboard,
+                        built.iter().map(|(_, v)| v.len()).collect::<Vec<_>>(),
+                        entity.pos(partial),
+                        entity.vehicle,
+                        state.text,
+                    )
+                });
+            }
+            for (texture, vertices) in built {
                 match renderer.upload_mesh(&vertices) {
                     Ok(mesh) => parts.push((mesh, texture)),
                     Err(e) => eprintln!("Text-Display-Mesh fehlgeschlagen: {e:#}"),
@@ -206,6 +233,39 @@ impl InWorld {
         params: &LightmapParams,
         out: &mut Vec<EntityDraw>,
     ) {
+        if crate::probe::enabled() {
+            for entity in self.entities.iter() {
+                if entity.kind != EntityKind::TextDisplay {
+                    continue;
+                }
+                let outcome = if entity.display.is_none() {
+                    "no data"
+                } else if !visible.contains(&entity.id) {
+                    "culled"
+                } else if !self.text_displays.kept.contains_key(&entity.id) {
+                    "no mesh"
+                } else {
+                    "submitted"
+                };
+                crate::probe::note(
+                    "text_display",
+                    format!("#{} {outcome}", entity.id),
+                    || {
+                        let feet = entity.pos(partial).as_vec3();
+                        let transform = entity
+                            .display
+                            .as_deref()
+                            .map(|s| s.transform(entity.age_in_ticks(0.0) as i32, partial));
+                        format!(
+                            "pos={feet:?} dist={:.1} translation={:?} scale={:?}",
+                            (feet - camera).length(),
+                            transform.as_ref().map(|t| t.translation),
+                            transform.as_ref().map(|t| t.scale),
+                        )
+                    },
+                );
+            }
+        }
         for entity in visible.iter().filter_map(|&id| self.entities.get(id)) {
             if entity.kind != EntityKind::TextDisplay {
                 continue;

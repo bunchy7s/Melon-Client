@@ -18,14 +18,19 @@ use crate::world::scoreboard::Visibility;
 const PIXEL: f32 = 0.025;
 /// `LivingEntityRenderer.shouldShowName`: a sneaking entity's name reaches 32 blocks.
 const DISCRETE_RANGE: f32 = 32.0;
-/// `submitNameTag`: text alpha of a sneaking entity's tag and of a tag behind blocks.
-const DIM_ALPHA: f32 = 0.5;
 /// `AvatarRenderer.submitNameDisplay`: tag pixels the ears of `deadmau5` push the tag up.
 const EARS_OFFSET: f32 = -10.0;
 /// `submitNameDisplay`: 9 * 1.15 after the score, in tag pixels.
 const SCORE_GAP: f32 = 9.0 * 1.15;
-/// `Options.getBackgroundColor(0.25F)`.
-const BACKGROUND: u32 = 0x4000_0000;
+/// `Options.getBackgroundColor`: black at the text background opacity.
+fn background(opacity: f32) -> u32 {
+    ((opacity.clamp(0.0, 1.0) * 255.0) as u32) << 24
+}
+
+/// `submitNameTag`: the text alpha of a sneaking entity's tag and of a tag behind blocks.
+fn dim_alpha(background: f32) -> f32 {
+    ((background + 0.75) * 0.5).max(0.5)
+}
 /// The see-through pass: white at `0x20` alpha.
 const BEHIND_ALPHA: f32 = 32.0 / 255.0;
 
@@ -33,7 +38,7 @@ const BEHIND_ALPHA: f32 = 32.0 / 255.0;
 #[derive(Clone, Copy, Debug)]
 pub struct NameView {
     position: Vec3,
-    /// `bobView * view`: the world as the camera sees it.
+    /// `bobView * view`: the world as the camera sees it, the camera's place included.
     view: Mat4,
     tan_half_fov: f32,
     aspect: f32,
@@ -51,7 +56,7 @@ impl NameView {
 
     /// Where `point` falls on a GUI screen of `size`, and how far in front
     pub fn project(&self, point: Vec3, size: (f32, f32)) -> Option<([f32; 2], f32)> {
-        let v = (self.view * (point - self.position).extend(1.0)).xyz();
+        let v = (self.view * point.extend(1.0)).xyz();
         let depth = -v.z;
         if depth < crate::renderer::WORLD_Z_NEAR {
             return None;
@@ -78,6 +83,7 @@ impl InWorld {
         painter: ItemPainter,
         lang: &Lang,
         size: (f32, f32),
+        background_opacity: f32,
     ) {
         let Some(view) = self.name_view else {
             return;
@@ -102,12 +108,28 @@ impl InWorld {
             } else {
                 None
             };
+            let height = f64::from(entity.size().1);
+            let anchor = (feet + DVec3::new(0.0, height + 0.5, 0.0)).as_vec3();
+            let projected = view.project(anchor, size);
+            if crate::probe::enabled()
+                && entity.uuid != self.uuid
+                && (entity.kind == EntityKind::Player || entity.custom_name.is_some())
+            {
+                let outcome = match (&name, projected) {
+                    (Some(_), Some(_)) => "drawn",
+                    (Some(_), None) => "off screen",
+                    (None, _) => "hidden",
+                };
+                crate::probe::note(
+                    "nametag",
+                    format!("{} #{} {outcome}", entity.ty.resource_name, entity.id),
+                    || self.name_tag_detail(entity, name.as_ref(), dist_sq.sqrt(), lang),
+                );
+            }
             if name.is_none() && score.is_none() {
                 continue;
             }
-            let height = f64::from(entity.size().1);
-            let anchor = (feet + DVec3::new(0.0, height + 0.5, 0.0)).as_vec3();
-            let Some((at, depth)) = view.project(anchor, size) else {
+            let Some((at, depth)) = projected else {
                 continue;
             };
             let occluded = pick::clip_blocks_for_nametag(
@@ -136,7 +158,8 @@ impl InWorld {
                         &styled,
                         [at[0], at[1] + SCORE_GAP * scale],
                         scale,
-                        dim,
+                        dim.then(|| dim_alpha(background_opacity)),
+                        background_opacity,
                     );
                 }
             }
@@ -145,7 +168,15 @@ impl InWorld {
                 if styled.is_empty() {
                     continue;
                 }
-                self.draw_tag(draw_list, painter, &styled, at, scale, dim);
+                self.draw_tag(
+                    draw_list,
+                    painter,
+                    &styled,
+                    at,
+                    scale,
+                    dim.then(|| dim_alpha(background_opacity)),
+                    background_opacity,
+                );
             }
         }
     }
@@ -157,6 +188,7 @@ impl InWorld {
         painter: ItemPainter,
         lang: &Lang,
         size: (f32, f32),
+        background_opacity: f32,
     ) {
         use crate::world::entity::display::{
             FLAG_ALIGN_LEFT, FLAG_ALIGN_RIGHT, FLAG_DEFAULT_BACKGROUND, FLAG_SEE_THROUGH,
@@ -229,7 +261,7 @@ impl InWorld {
             let scale =
                 view.text_scale(depth, size) * transform.scale.y.abs().max(1e-3) / PIXEL * PIXEL;
             let background = if state.flags & FLAG_DEFAULT_BACKGROUND != 0 {
-                BACKGROUND
+                background(background_opacity)
             } else {
                 state.background as u32
             };
@@ -253,7 +285,7 @@ impl InWorld {
                 shadow: state.flags & FLAG_SHADOW != 0,
                 obfuscation_seed: 0,
             };
-            paint.obfuscation_seed = entity.id as u64;
+            paint.obfuscation_seed = (entity.id as u64) ^ self.ticks.wrapping_mul(0x9E37_79B9_7F4A_7C15);
             for (i, (line, width)) in lines.iter().zip(&widths).enumerate() {
                 let x = if state.flags & FLAG_ALIGN_LEFT != 0 {
                     0.0
@@ -285,6 +317,10 @@ impl InWorld {
         if entity.kind == EntityKind::Other {
             return None;
         }
+        if matches!(entity.kind, EntityKind::ItemFrame | EntityKind::GlowItemFrame) {
+            let name = entity.item.get_custom_name().filter(|_| looked_at)?;
+            return Some(crate::component::pumpkin::from_pumpkin(name));
+        }
         let player = entity.kind == EntityKind::Player;
         if entity.kind == EntityKind::ArmorStand {
             if !entity.appearance.name_visible {
@@ -312,6 +348,44 @@ impl InWorld {
         Some(
             self.scoreboard
                 .format_name(&self.score_holder(entity), name),
+        )
+    }
+
+    /// What decides an entity's name tag, for the probe.
+    fn name_tag_detail(
+        &self,
+        entity: &ClientEntity,
+        name: Option<&Component>,
+        dist: f32,
+        lang: &Lang,
+    ) -> String {
+        let holder = self.score_holder(entity);
+        let team = self.scoreboard.team_of(&holder).map(|(name, team)| {
+            format!(
+                "{name:?} name_tags={:?} prefix={:?} suffix={:?}",
+                team.look.name_tags, team.look.prefix, team.look.suffix
+            )
+        });
+        let text = name.map(|name| {
+            let styled = StyledText::from_component(name, lang);
+            let fonts: Vec<&str> = styled
+                .spans
+                .iter()
+                .filter_map(|s| s.style.font.as_deref())
+                .collect();
+            format!("{:?} fonts={fonts:?}", styled.to_plain())
+        });
+        format!(
+            "text={text:?} dist={dist:.1} range={} holder={holder:?} in_tab={} team={team:?} \
+             invisible={} crouching={} name_visible={} custom_name={:?} passengers={} vehicle={:?}",
+            entity.name_tag_distance,
+            self.players.contains_key(&entity.uuid),
+            entity.appearance.invisible(),
+            entity.appearance.crouching(),
+            entity.appearance.name_visible,
+            entity.custom_name,
+            entity.passengers.len(),
+            entity.vehicle,
         )
     }
 
@@ -376,7 +450,8 @@ impl InWorld {
         styled: &StyledText,
         at: [f32; 2],
         scale: f32,
-        dim: bool,
+        dim: Option<f32>,
+        background_opacity: f32,
     ) {
         let width = text::width(painter.font, styled);
         let (left, top) = (-width / 2.0 - 1.0, -1.0);
@@ -387,7 +462,7 @@ impl InWorld {
             at[1] + top * scale - box_h * scale,
             box_w * scale,
             box_h * scale,
-            argb(BACKGROUND),
+            argb(background(background_opacity)),
         );
         let start = draw_list.vertices_len();
         let paint = text::TextPaint {
@@ -395,13 +470,23 @@ impl InWorld {
             pages: painter.font_textures,
             white: painter.white,
             color: [1.0; 3],
-            alpha: if dim { DIM_ALPHA } else { 1.0 },
+            alpha: dim.unwrap_or(1.0),
             shadow: false,
-            obfuscation_seed: 0,
+            obfuscation_seed: self.ticks.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                ^ u64::from(at[0].to_bits()),
         };
         text::draw(draw_list, &paint, styled, -width / 2.0, -9.0);
         draw_list.scale_since(start, scale);
         draw_list.offset_since(start, at);
+        if crate::probe::enabled() {
+            crate::probe::note("nametag.draw", styled.to_plain(), || {
+                format!(
+                    "at={at:?} scale={scale:.3} width={width} glyph_vertices={} alpha={:?} background={background_opacity}",
+                    draw_list.vertices_len() - start,
+                    dim,
+                )
+            });
+        }
     }
 }
 
@@ -435,6 +520,22 @@ mod tests {
         assert!(view().project(Vec3::new(0.0, 0.0, 5.0), size).is_none());
         let (above, _) = view().project(Vec3::new(0.0, 1.0, -5.0), size).unwrap();
         assert!(above[1] < 90.0);
+    }
+
+    /// The view matrix already moves the world by the camera's place.
+    #[test]
+    fn a_camera_away_from_the_origin_sees_a_point_at_its_real_distance() {
+        let eye = Vec3::new(8.0, 75.0, -44.0);
+        let camera = NameView {
+            position: eye,
+            view: crate::world::player::view_matrix_for(0.0, 0.0, eye),
+            ..view()
+        };
+        let size = (320.0, 180.0);
+        let forward = -Vec3::new(camera.view.x_axis.z, camera.view.y_axis.z, camera.view.z_axis.z);
+        let (at, depth) = camera.project(eye + forward * 4.0, size).unwrap();
+        assert!((at[0] - 160.0).abs() < 1e-2 && (at[1] - 90.0).abs() < 1e-2);
+        assert!((depth - 4.0).abs() < 1e-3);
     }
 
     #[test]

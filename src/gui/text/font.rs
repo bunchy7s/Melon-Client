@@ -14,6 +14,7 @@ pub mod unihex;
 
 use load::load_provider_file;
 use std::cell::RefCell;
+use std::rc::Rc;
 use unihex::Lazy;
 
 /// Standard Minecraft text line height in (unscaled) GUI pixels.
@@ -138,6 +139,8 @@ pub struct Font {
     /// Unifont: the glyphs for everything the bitmaps lack, made on use.
     unihex: Vec<Lazy>,
     dynamic: RefCell<Dynamic>,
+    /// [`Self::width_pools`] by font id, `""` for the default.
+    pools: RefCell<HashMap<String, Rc<HashMap<i32, Vec<char>>>>>,
     /// The pictures of `object` components, made on use like Unifont's.
     pub(super) objects: RefCell<super::objects::ObjectSprites>,
     pub pages: Vec<RgbaImage>,
@@ -202,6 +205,7 @@ impl Font {
             faces,
             unihex,
             dynamic: RefCell::default(),
+            pools: RefCell::default(),
             objects: RefCell::default(),
             pages,
             white: TextureId(0),
@@ -215,6 +219,7 @@ impl Font {
             faces: HashMap::new(),
             unihex: Vec::new(),
             dynamic: RefCell::default(),
+            pools: RefCell::default(),
             objects: RefCell::default(),
             pages,
             white: TextureId(0),
@@ -354,23 +359,68 @@ impl Font {
         work
     }
 
-    /// Every drawable glyph that is `advance` wide, for `§k` obfuscated
-    pub fn glyphs_of_width(&self, advance: f32) -> Vec<char> {
-        self.glyphs_of_width_in(None, advance)
+    /// `FontSet.glyphsByWidth`: the characters of `font` by `ceil(advance)`, Unifont's
+    /// and the advance-only ones included.
+    fn width_pools(&self, font: Option<&str>) -> Rc<HashMap<i32, Vec<char>>> {
+        let key = font.unwrap_or("");
+        if let Some(pools) = self.pools.borrow().get(key) {
+            return pools.clone();
+        }
+        let face = font.and_then(|id| self.face(id));
+        let glyphs = face.map_or(&self.glyphs, |face| &face.glyphs);
+        let mut pools: HashMap<i32, Vec<char>> = HashMap::new();
+        for (&c, glyph) in glyphs {
+            pools.entry(glyph.advance.ceil() as i32).or_default().push(c);
+        }
+        if face.is_none_or(|face| face.unihex) {
+            let mut seen = std::collections::HashSet::new();
+            for unihex in self.unihex.iter().filter_map(|u| u.get()) {
+                for (c, width) in unihex.widths() {
+                    if !glyphs.contains_key(&c) && seen.insert(c) {
+                        pools
+                            .entry(unihex::advance(width).ceil() as i32)
+                            .or_default()
+                            .push(c);
+                    }
+                }
+            }
+        }
+        for chars in pools.values_mut() {
+            chars.sort_unstable();
+        }
+        let pools = Rc::new(pools);
+        self.pools.borrow_mut().insert(key.to_owned(), pools.clone());
+        pools
     }
 
-    /// [`Self::glyphs_of_width`] in font `font`.
-    pub fn glyphs_of_width_in(&self, font: Option<&str>, advance: f32) -> Vec<char> {
+    /// `FontSet.getRandomGlyph` for `§k`: a character of `font` as wide as `c`,
+    /// picked by `seed`. A Unifont glyph not made yet is asked for and passed over.
+    pub fn random_glyph_in(&self, font: Option<&str>, c: char, seed: &mut u64) -> char {
+        if c == ' ' {
+            return c;
+        }
+        let pools = self.width_pools(font);
+        let Some(pool) = pools
+            .get(&(self.advance_in(font, c).ceil() as i32))
+            .filter(|pool| !pool.is_empty())
+        else {
+            return c;
+        };
         let glyphs = font
             .and_then(|id| self.face(id))
             .map_or(&self.glyphs, |face| &face.glyphs);
-        let mut chars: Vec<char> = glyphs
-            .iter()
-            .filter(|(_, g)| g.advance == advance && matches!(g.kind, GlyphKind::Bitmap { .. }))
-            .map(|(&c, _)| c)
-            .collect();
-        chars.sort_unstable();
-        chars
+        for _ in 0..8 {
+            *seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let pick = pool[(*seed >> 33) as usize % pool.len()];
+            let pending = !glyphs.contains_key(&pick)
+                && self
+                    .unihex_glyph(pick)
+                    .is_none_or(|g| matches!(g.kind, GlyphKind::Space));
+            if !pending {
+                return pick;
+            }
+        }
+        c
     }
 
     pub fn advance(&self, c: char) -> f32 {
@@ -764,6 +814,7 @@ mod unifont_tests {
             faces: HashMap::new(),
             unihex: vec![Lazy::ready(unihex)],
             dynamic: RefCell::default(),
+            pools: RefCell::default(),
             objects: RefCell::default(),
             pages: Vec::new(),
             white: TextureId(0),
@@ -791,6 +842,34 @@ mod unifont_tests {
         let alt = page(font.glyph_in(Some("minecraft:alt"), 'a')).unwrap();
         assert_ne!(default, alt);
         assert_eq!(page(font.glyph_in(Some("nope:font"), 'a')), Some(default));
+    }
+
+    /// `Font.getGlyph`: a space stays, anything else becomes a glyph of the same
+    /// `ceil(advance)`, a Unifont one only once it is made.
+    #[test]
+    fn an_obfuscated_character_becomes_one_of_its_width_from_every_provider() {
+        let mut font = font_with(&format!(
+            "0061:{}\n0062:{}\n4E2D:{}\n",
+            rows("38"),
+            rows("1C"),
+            rows("FFFF")
+        ));
+        font.glyphs
+            .insert(' ', Glyph::new(GlyphKind::Space, 4.0));
+        font.glyphs
+            .insert('\u{e000}', Glyph::new(GlyphKind::Space, 1.5));
+        let mut seed = 7;
+        assert_eq!(font.random_glyph_in(None, ' ', &mut seed), ' ');
+        assert_ne!(font.random_glyph_in(None, 'a', &mut seed), 'b');
+        for _ in 0..64 {
+            font.random_glyph_in(None, 'a', &mut seed);
+        }
+        font.bake_pending();
+        let picks: std::collections::HashSet<char> = (0..64)
+            .map(|_| font.random_glyph_in(None, 'a', &mut seed))
+            .collect();
+        assert_eq!(picks, std::collections::HashSet::from(['a', 'b', '\u{e000}']));
+        assert_eq!(font.random_glyph_in(None, '中', &mut seed), '中');
     }
 
     #[test]

@@ -651,6 +651,48 @@ mod tests {
     }
 
     #[test]
+    fn a_team_name_keeps_everything_a_prefix_and_suffix_can_carry() {
+        use crate::gui::text::StyledText;
+        use crate::i18n::Lang;
+        use serde_json::json;
+        let prefix = crate::component::decode::component(&json!([
+            {"text": "A", "color": "#12ab34", "bold": true, "font": "minecraft:alt"},
+            {"translate": "rank.%s", "with": [{"text": "x", "obfuscated": true}], "italic": true},
+            {"object": "atlas", "sprite": "minecraft:item/apple"},
+            "\u{a7}cR\u{a7}lB\u{a7}rN "
+        ]));
+        let look = TeamLook {
+            prefix,
+            suffix: Component::text(" \u{a7}7!"),
+            color: Some(TeamColor::from_id(12)),
+            ..TeamLook::default()
+        };
+        let text = StyledText::from_component(
+            &look.format_name(Component::text("Alex")),
+            &Lang::from_pairs(&[("rank.%s", "[%s]")]),
+        );
+        let span = |needle: &str| {
+            text.spans
+                .iter()
+                .find(|s| s.text.contains(needle))
+                .unwrap_or_else(|| panic!("no span with {needle}: {text:?}"))
+        };
+        let red = TextColor::RED.rgb();
+        let a = span("A");
+        assert_eq!(a.style.color, Some(TextColor([0x12, 0xab, 0x34]).rgb()));
+        assert!(a.style.bold);
+        assert_eq!(a.style.font.as_deref(), Some("minecraft:alt"));
+        assert!(span("[").style.italic && span("[").style.bold);
+        assert!(span("x").style.obfuscated);
+        assert!(text.spans.iter().any(|s| s.style.sprite.is_some()));
+        assert!(span("B").style.bold && span("B").style.color == Some(red));
+        assert_eq!(span("N").style.color, Some(TextColor([0x12, 0xab, 0x34]).rgb()));
+        assert_eq!(span("Alex").style.color, Some(red));
+        assert!(!span("Alex").style.bold);
+        assert_ne!(span("!").style.color, Some(red));
+    }
+
+    #[test]
     fn formats_fall_back_from_score_to_default() {
         let default = NumberFormat::player_list_default();
         let mut s = score(7);

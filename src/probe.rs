@@ -67,6 +67,15 @@ const CATEGORIES: &[(&str, &str)] = &[
         "decode.error",
         "Packets that failed in a decoder that exists",
     ),
+    ("entity.spawned", "Entity types the server spawned"),
+    (
+        "nametag",
+        "Players and named entities: whether the name tag was drawn, and why not",
+    ),
+    (
+        "nametag.draw",
+        "Name tags handed to the GUI: screen position, scale, glyph vertices",
+    ),
     (
         "entity.not_drawn",
         "Entity types Melon spawns but doesn't draw",
@@ -402,6 +411,23 @@ pub fn write_report() {
     if let Err(e) = std::fs::write(&state.path, text) {
         eprintln!("Tester: {} nicht geschrieben: {e}", state.path.display());
     }
+}
+
+/// Where the next screenshot goes, if one is due: every few seconds, three kept in turn.
+pub fn screenshot_due() -> Option<PathBuf> {
+    if !enabled() {
+        return None;
+    }
+    static SHOTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let guard = STATE.lock().unwrap_or_else(|e| e.into_inner());
+    let state = guard.as_ref()?;
+    let due = state.started.elapsed().as_secs() / 6;
+    let taken = SHOTS.load(Ordering::Relaxed);
+    if due < taken.max(1) {
+        return None;
+    }
+    SHOTS.store(due + 1, Ordering::Relaxed);
+    Some(state.path.with_extension(format!("{}.png", due % 3)))
 }
 
 /// The path the report is written to.

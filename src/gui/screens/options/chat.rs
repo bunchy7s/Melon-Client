@@ -1,4 +1,4 @@
-//! Vanilla `ChatOptionsScreen`: the eighteen chat options in an
+//! Vanilla `ChatOptionsScreen`: the chat options (and the accessibility screen's text background) in an
 
 use crate::cycle::Cycle;
 use crate::gui::screen::{ConfigChange, ScreenContext};
@@ -19,6 +19,7 @@ pub enum ChatOption {
     LinksPrompt,
     Opacity,
     BackgroundOpacity,
+    BackgroundWhere,
     Scale,
     LineSpacing,
     Delay,
@@ -40,6 +41,7 @@ const OPTIONS: &[ChatOption] = &[
     ChatOption::LinksPrompt,
     ChatOption::Opacity,
     ChatOption::BackgroundOpacity,
+    ChatOption::BackgroundWhere,
     ChatOption::Scale,
     ChatOption::LineSpacing,
     ChatOption::Delay,
@@ -104,6 +106,7 @@ impl ChatOption {
             }
             Self::Colors => &mut chat.colors,
             Self::Links => &mut chat.links,
+            Self::BackgroundWhere => &mut chat.background_for_chat_only,
             Self::LinksPrompt => &mut chat.links_prompt,
             Self::AutoSuggestions => &mut chat.auto_suggestions,
             Self::HideMatchedNames => &mut chat.hide_matched_names,
@@ -146,6 +149,15 @@ impl ChatOption {
             Self::BackgroundOpacity => percent(
                 "options.accessibility.text_background_opacity",
                 chat.background_opacity,
+            ),
+            Self::BackgroundWhere => value_label(
+                lang,
+                "options.accessibility.text_background",
+                lang.get(if chat.background_for_chat_only {
+                    "options.accessibility.text_background.chat"
+                } else {
+                    "options.accessibility.text_background.everywhere"
+                }),
             ),
             Self::Scale => {
                 if chat.scale == 0.0 {

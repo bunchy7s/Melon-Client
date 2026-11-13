@@ -233,6 +233,14 @@ impl RunningState {
             self.draw_list.clear();
             self.renderer.request_capture();
         }
+        let probe_shot = if icon_path.is_none() {
+            crate::probe::screenshot_due()
+        } else {
+            None
+        };
+        if probe_shot.is_some() {
+            self.renderer.request_capture();
+        }
 
         let frame = Frame {
             scene: Some(&scene),
@@ -245,7 +253,13 @@ impl RunningState {
             eprintln!("Render-Fehler: {e:#}");
         }
         world.recycle(scene);
-        if let (Some(path), Some(image)) = (icon_path, self.renderer.take_capture()) {
+        if let Some(path) = probe_shot {
+            if let Some(image) = self.renderer.take_capture()
+                && let Err(e) = image.save(&path)
+            {
+                eprintln!("Tester: {} nicht geschrieben: {e}", path.display());
+            }
+        } else if let (Some(path), Some(image)) = (icon_path, self.renderer.take_capture()) {
             super::world_icon::save(&path, &image);
         }
         let waits = self.renderer.last_waits();

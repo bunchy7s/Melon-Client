@@ -301,8 +301,8 @@ impl StyledText {
                 fallback,
                 args,
             } => self.push_translation(key, fallback.as_deref(), args, &style, lang),
-            Contents::Keybind(keybind) => self.push(&keybind_name(keybind, lang), &style),
-            Contents::Selector { selector, .. } => self.push(selector, &style),
+            Contents::Keybind(keybind) => self.push_formatted(&keybind_name(keybind, lang), &style),
+            Contents::Selector { selector, .. } => self.push_formatted(selector, &style),
             Contents::Score { .. } | Contents::Nbt { .. } => {
                 if crate::probe::enabled() {
                     let kind = if matches!(&*base.contents, Contents::Score { .. }) {
