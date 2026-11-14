@@ -261,6 +261,12 @@ impl ChatInput {
             Some(ClickEvent::OpenFile { path }) => {
                 return OverlayAction::OpenFile(path.to_string());
             }
+            // `ChatScreen.handleClickEvent` → `defaultHandleGameClickEvent`.
+            Some(event @ (ClickEvent::ShowDialog { .. } | ClickEvent::Custom { .. })) => {
+                return OverlayAction::Dialog(crate::dialog::DialogClick::from_event(
+                    event.clone(),
+                ));
+            }
             _ => {}
         }
         OverlayAction::None

@@ -13,6 +13,7 @@ use crate::world::biome::Biomes;
 use crate::world::dimension::DimensionTypes;
 use crate::world::game_mode::GameMode;
 use anyhow::{Context, Result, bail};
+use pumpkin_data::packet::clientbound::config;
 use std::io::Write;
 use std::net::{Shutdown, TcpStream};
 use std::sync::{Arc, Mutex};
@@ -158,6 +159,7 @@ pub(crate) fn join_over(
     let (mut reader, writer) = conn.into_split().context("splitting the connection")?;
     let writer: SharedWriter = Arc::new(Mutex::new(writer));
     crate::assets::packs::server::set_responder(pack_responder(&writer));
+    crate::dialog::connection::start(custom_action_sender(&writer));
     let (chat_types, registries, world) = configure(&mut reader, &writer, client)?;
     let mut listener = PlayListener::new(world.dimension_types.clone());
     let (mut info, events) = play(&mut reader, &writer, &mut listener)?;
@@ -185,6 +187,28 @@ fn pack_responder(writer: &SharedWriter) -> crate::assets::packs::server::Respon
             varint::write_var_int(buf, status as i32)?;
             Ok(())
         });
+    })
+}
+
+/// Sends `ServerboundCustomClickActionPacket` in the phase the connection
+/// is in, for a dialog's or a chat link's custom action.
+fn custom_action_sender(writer: &SharedWriter) -> crate::dialog::connection::Sender {
+    let writer = Arc::clone(writer);
+    Arc::new(move |action, payload| {
+        let mut writer = lock(&writer);
+        let pid = if writer.play {
+            pumpkin_data::packet::serverbound::play::CUSTOM_CLICK_ACTION.0
+        } else {
+            pumpkin_data::packet::serverbound::config::CUSTOM_CLICK_ACTION.0
+        };
+        let sent = writer.write_packet(pid, |buf| {
+            packet::write_string(buf, action)?;
+            crate::dialog::action::write_payload(buf, payload)
+                .ok_or_else(|| anyhow::anyhow!("payload too large"))
+        });
+        if let Err(e) = sent {
+            eprintln!("Benutzerdefinierte Aktion {action} nicht gesendet: {e:#}");
+        }
     })
 }
 
@@ -344,6 +368,7 @@ pub(crate) fn configure_loop(
             id::CB_CONFIG_RESOURCE_PACK_PUSH => read_pack_push(&body)?,
             id::CB_CONFIG_RESOURCE_PACK_POP => read_pack_pop(&body)?,
             id::CB_CONFIG_REGISTRY_DATA => {
+                crate::dialog::connection::read_registry(&body)?;
                 if let Some(types) = chat::ChatTypes::from_registry_packet(&body)? {
                     chat_types = types;
                 }
@@ -355,6 +380,12 @@ pub(crate) fn configure_loop(
                     Ok(varint::write_var_int(buf, 0)?)
                 })?;
             }
+            pid if pid == config::SHOW_DIALOG.0 => {
+                crate::dialog::connection::read_show(&body, false)?;
+            }
+            pid if pid == config::CLEAR_DIALOG.0 => crate::dialog::connection::clear(),
+            pid if pid == config::SERVER_LINKS.0 => crate::dialog::connection::read_links(&body)?,
+            pid if pid == config::UPDATE_TAGS.0 => crate::dialog::connection::read_tags(&body)?,
             id::CB_CONFIG_CODE_OF_CONDUCT => {
                 lock(writer).write_packet(id::SB_CONFIG_ACCEPT_CODE_OF_CONDUCT, |_| Ok(()))?;
             }

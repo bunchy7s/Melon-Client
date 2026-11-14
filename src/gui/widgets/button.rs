@@ -48,6 +48,8 @@ pub struct Button {
     pub enabled: bool,
     /// Has the keyboard focus (Tab): drawn highlighted like a hover.
     pub focused: bool,
+    /// A label with styles (a server's text) drawn in place of `label`.
+    pub styled: Option<StyledText>,
 }
 
 impl Button {
@@ -62,6 +64,7 @@ impl Button {
             hovered: false,
             enabled: true,
             focused: false,
+            styled: None,
         }
     }
 
@@ -214,6 +217,9 @@ impl Widget for Button {
     }
 
     fn draw(&self, ui: &mut Ui) {
+        if let Some(styled) = &self.styled {
+            return self.draw_styled(ui, styled);
+        }
         let lang = ui.lang;
         self.draw_labeled(ui, self.label.resolve(lang));
     }

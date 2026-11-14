@@ -1,9 +1,11 @@
 //! What every widget shares: its rectangle, its label, the painter it draws
 
 pub mod button;
+pub mod checkbox;
 pub mod dialog;
 pub mod edit_box;
 pub mod layout;
+pub mod multiline_edit;
 pub mod options_list;
 pub mod row_icon;
 pub mod scroll_list;
@@ -92,6 +94,9 @@ pub struct Ui<'a> {
     /// The GUI's size in GUI pixels.
     pub width: f32,
     pub height: f32,
+    /// What draws items, in a world (whose icons are prepared for the
+    /// stacks a screen shows, `Screen::visit_stacks`); `None` in the menus.
+    pub items: Option<crate::gui::hud::item_slot::ItemPainter<'a>>,
 }
 
 impl<'a> Ui<'a> {
@@ -107,7 +112,14 @@ impl<'a> Ui<'a> {
             lang,
             width: size.0,
             height: size.1,
+            items: None,
         }
+    }
+
+    /// With items drawn by `painter`.
+    pub fn with_items(mut self, painter: crate::gui::hud::item_slot::ItemPainter<'a>) -> Self {
+        self.items = Some(painter);
+        self
     }
 
     pub fn font(&self) -> &'a Font {

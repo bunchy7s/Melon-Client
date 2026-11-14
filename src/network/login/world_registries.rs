@@ -88,7 +88,7 @@ fn read_entry(r: &mut Reader) -> Result<Option<Value>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::network::protocol::{packet, varint};
     use crate::world::dimension::{Height, rgb};

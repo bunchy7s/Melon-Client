@@ -46,7 +46,7 @@ enum Row {
     Entry {
         entry: Entry,
         /// Off, in the overlay, always: left to right.
-        buttons: [Button; 3],
+        buttons: Box<[Button; 3]>,
     },
 }
 
@@ -113,7 +113,9 @@ impl DebugOptionsScreen {
             }
             self.rows.push(Row::Entry {
                 entry,
-                buttons: std::array::from_fn(|_| Button::sized("", STATUS_W, STATUS_H)),
+                buttons: Box::new(std::array::from_fn(|_| {
+                    Button::sized("", STATUS_W, STATUS_H)
+                })),
             });
         }
         self.list.set_len(self.rows.len());

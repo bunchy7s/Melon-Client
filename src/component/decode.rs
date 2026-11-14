@@ -294,6 +294,12 @@ fn shadow_color(value: &Value) -> Option<[u8; 4]> {
     }
 }
 
+/// `ClickEvent.CODEC`, the actions a server may send: `action` and the
+/// action's fields.
+pub fn click_event(value: &Value) -> Option<ClickEvent> {
+    click(value)
+}
+
 /// `ClickEvent.CODEC`, the actions a server may send.
 fn click(value: &Value) -> Option<ClickEvent> {
     let map = value.as_object()?;

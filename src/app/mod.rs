@@ -2,6 +2,7 @@
 
 mod bench;
 pub mod cli;
+mod dialogs;
 mod frame;
 pub mod input;
 mod reload;
@@ -334,6 +335,7 @@ impl RunningState {
                 self.close_top_screen();
                 self.answer_server_packs(accept);
             }
+            ScreenAction::Dialog(request) => self.apply_dialog(request),
         }
     }
 
@@ -415,6 +417,7 @@ impl RunningState {
             return;
         };
         crate::assets::packs::server::end();
+        crate::dialog::connection::end();
         world.release(&mut self.renderer);
         let integrated = world.is_integrated();
         drop(world);
@@ -444,7 +447,8 @@ impl RunningState {
     pub(super) fn open_pause_menu(&mut self) {
         let local_server = self.world.as_ref().is_some_and(InWorld::is_integrated);
         let scale = self.scale();
-        let pause = PauseScreen::new(local_server);
+        let addition = crate::dialog::connection::pause_screen_addition();
+        let pause = PauseScreen::new(local_server, addition, &self.env.lang);
         self.screens.push(Box::new(pause), &self.env.ctx(scale));
     }
 }

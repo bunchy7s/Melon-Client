@@ -45,6 +45,8 @@ pub enum ScreenAction {
     AnswerServerPacks(bool),
     /// F3 + T: the resource packs read again.
     ReloadResources,
+    /// A server dialog's button, link or Escape, or a dialog to open.
+    Dialog(crate::gui::screens::dialog::DialogRequest),
 }
 
 impl ScreenAction {
@@ -232,6 +234,14 @@ pub trait Screen {
     fn capturing_bind(&self) -> bool {
         false
     }
+    /// What a server's dialog showing up makes of this screen: a dialog or
+    /// the wait for one is replaced, the warning keeps it behind.
+    fn dialog_layer(&self) -> Option<crate::gui::screens::dialog::DialogLayer> {
+        None
+    }
+    /// The item stacks this screen draws, so their icons are made before the
+    /// frame (in a world; see [`crate::gui::widgets::Ui::items`]).
+    fn visit_stacks(&self, _visit: &mut dyn FnMut(&pumpkin_data::item_stack::ItemStack) -> bool) {}
     /// A physical key or mouse button while [`Self::capturing_bind`].
     fn on_bind(
         &mut self,

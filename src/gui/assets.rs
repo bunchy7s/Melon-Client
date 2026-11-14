@@ -72,6 +72,11 @@ pub struct GuiAssets {
     pub tab_textures: TabTextures,
     /// `AbstractSliderButton`'s track and handle.
     pub slider_textures: SliderTextures,
+    /// `Checkbox`'s `widget/checkbox[_selected][_highlighted]`, chosen as a
+    /// tab's are: selected or not, focused or not.
+    pub checkbox: TabTextures,
+    /// `DialogScreen.WARNING_BUTTON_SPRITES`: `dialog/warning_button*`.
+    pub dialog_warning: ButtonTextures,
     pub server_list: ServerListSprites,
     /// The arrows over a hovered world (`world_list/join`).
     pub world_row: RowIconSprites,
@@ -176,6 +181,18 @@ impl GuiAssets {
         let tooltip = TooltipSprites::load(renderer, assets);
         let tab_textures = load_tabs(renderer, assets)?;
         let slider_textures = load_sliders(renderer, assets)?;
+        let checkbox = load_checkbox(renderer, assets)?;
+        let dialog_warning = ButtonTextures {
+            normal: load(renderer, "minecraft:gui/sprites/dialog/warning_button.png")?,
+            highlighted: load(
+                renderer,
+                "minecraft:gui/sprites/dialog/warning_button_highlighted.png",
+            )?,
+            disabled: load(
+                renderer,
+                "minecraft:gui/sprites/dialog/warning_button_disabled.png",
+            )?,
+        };
         let server_list = load_server_list(renderer, assets)?;
         let world_row = load_row_icons(renderer, assets, "world_list", "join", false)?;
         let pack_row = load_row_icons(renderer, assets, "transferable_list", "select", true)?;
@@ -217,6 +234,8 @@ impl GuiAssets {
             tooltip,
             tab_textures,
             slider_textures,
+            checkbox,
+            dialog_warning,
             server_list,
             world_row,
             pack_row,
@@ -284,6 +303,17 @@ impl GuiAssets {
                 handle: solid,
                 handle_highlighted: solid,
             },
+            checkbox: TabTextures {
+                normal: solid,
+                highlighted: solid,
+                selected: solid,
+                selected_highlighted: solid,
+            },
+            dialog_warning: ButtonTextures {
+                normal: solid,
+                highlighted: solid,
+                disabled: solid,
+            },
             server_list: ServerListSprites {
                 ping: [solid; 5],
                 pinging: [solid; 5],
@@ -339,6 +369,23 @@ fn load_tabs(renderer: &mut Renderer, assets: &Assets) -> anyhow::Result<TabText
         normal: tab("tab")?,
         selected_highlighted: tab("tab_selected_highlighted")?,
         highlighted: tab("tab_highlighted")?,
+    })
+}
+
+/// `Checkbox`'s four sprites.
+fn load_checkbox(renderer: &mut Renderer, assets: &Assets) -> anyhow::Result<TabTextures> {
+    let mut sprite = |name: &str| {
+        load(
+            renderer,
+            assets,
+            &format!("minecraft:gui/sprites/widget/{name}.png"),
+        )
+    };
+    Ok(TabTextures {
+        normal: sprite("checkbox")?,
+        highlighted: sprite("checkbox_highlighted")?,
+        selected: sprite("checkbox_selected")?,
+        selected_highlighted: sprite("checkbox_selected_highlighted")?,
     })
 }
 

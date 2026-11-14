@@ -36,6 +36,56 @@ impl ScreenStack {
         self.push(screen, ctx);
     }
 
+    /// `Screen::poll` for the top screen, and while server dialogs cover
+    /// it, for the screen under them: a join goes on behind a dialog the
+    /// server shows while configuring.
+    pub fn poll(&mut self) -> Option<crate::gui::screen::ScreenAction> {
+        let top = self.screens.len().checked_sub(1)?;
+        let action = self.screens[top].poll();
+        if !matches!(action, crate::gui::screen::ScreenAction::None) {
+            return Some(action);
+        }
+        let under = self
+            .screens
+            .iter()
+            .rposition(|screen| screen.dialog_layer().is_none())?;
+        (under != top).then(|| self.screens[under].poll())
+    }
+
+    /// The screen under the top one, if any.
+    pub fn below_top(&self) -> Option<&dyn Screen> {
+        let len = self.screens.len();
+        (len >= 2).then(|| self.screens[len - 2].as_ref())
+    }
+
+    /// Puts `screen` under the top one: in place of the one there with
+    /// `replace`, else between them. A dialog the server shows while its
+    /// warning is open goes behind the warning (`WarningScreen.updateReturnScreen`).
+    pub fn set_below_top(
+        &mut self,
+        mut screen: Box<dyn Screen>,
+        replace: bool,
+        ctx: &ScreenContext,
+    ) {
+        let Some(top) = self.screens.pop() else {
+            return self.push(screen, ctx);
+        };
+        if replace {
+            self.screens.pop();
+        }
+        screen.resize(ctx);
+        self.screens.push(screen);
+        self.screens.push(top);
+    }
+
+    /// Drops the screen under the top one.
+    pub fn remove_below_top(&mut self) {
+        let len = self.screens.len();
+        if len >= 2 {
+            self.screens.remove(len - 2);
+        }
+    }
+
     /// Drops every open screen (death, respawn).
     pub fn clear(&mut self) {
         self.screens.clear();

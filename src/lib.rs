@@ -6,6 +6,7 @@ pub mod audio;
 pub mod auth;
 pub mod component;
 pub mod cycle;
+pub mod dialog;
 pub mod game;
 pub mod gui;
 pub mod home;

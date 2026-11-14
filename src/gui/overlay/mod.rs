@@ -57,6 +57,8 @@ pub enum ChatExit {
 /// What an overlay asks the world to do.
 pub enum OverlayAction {
     None,
+    /// A chat link's `show_dialog` or `custom`: for the app's dialogs.
+    Dialog(crate::dialog::DialogClick),
     /// Close the overlay.
     Close(ChatExit),
     /// Inventory clicks: the world predicts and sends each, `container` the

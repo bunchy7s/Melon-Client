@@ -112,6 +112,16 @@ impl TextInput {
         self.slice(range.start, range.end)
     }
 
+    /// `EditBox.setMaxLength`: the text is cut to fit.
+    pub fn set_max_len(&mut self, max_len: usize) {
+        self.max_len = max_len;
+        if self.chars.len() > max_len {
+            self.chars.truncate(max_len);
+            self.cursor = self.cursor.min(max_len);
+            self.highlight = self.highlight.min(max_len);
+        }
+    }
+
     /// Replaces the text, cursor at the end. Cut to the maximum length.
     pub fn set_value(&mut self, value: &str) {
         self.chars = value.chars().take(self.max_len).collect();

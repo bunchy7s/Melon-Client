@@ -4,7 +4,7 @@
 
 pub mod login;
 pub mod play;
-mod protocol;
+pub(crate) mod protocol;
 pub mod status;
 
 pub use login::{ClientInfo, Identity, JoinInfo, connect_and_join, join_server, join_stream};

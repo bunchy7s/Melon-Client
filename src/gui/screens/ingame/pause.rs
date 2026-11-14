@@ -1,10 +1,17 @@
 //! The Escape menu (vanilla `client/gui/screens/PauseScreen`, the
 
+use std::sync::Arc;
+
+use crate::dialog::Dialog;
 use crate::gui::screen::{CursorKind, Screen, ScreenAction, ScreenContext, TextEvent};
+use crate::gui::screens::dialog::DialogRequest;
 use crate::gui::screens::options::OptionsScreen;
+use crate::gui::text::StyledText;
 use crate::gui::widgets::Ui;
+use crate::gui::widgets::Widget;
 use crate::gui::widgets::button::{Button, IconSprite};
 use crate::gui::widgets::set::{KeyResult, WidgetSet};
+use crate::i18n::Lang;
 
 /// `PauseScreen.BUTTON_WIDTH_FULL` / `BUTTON_WIDTH_HALF`, and the 20px
 const BUTTON_W: f32 = 204.0;
@@ -31,6 +38,8 @@ enum Id {
     Statistics,
     /// Report Bugs / Give Feedback / Friends / Player Reporting, in
     Icon(usize),
+    /// `addCustomDialogButtons`: the server's links or options.
+    Custom,
     Options,
     Disconnect,
 }
@@ -39,10 +48,13 @@ const ICONS: [Id; 4] = [Id::Icon(0), Id::Icon(1), Id::Icon(2), Id::Icon(3)];
 
 pub struct PauseScreen {
     widgets: WidgetSet<Id>,
+    /// `getCustomAdditions`: the dialog the custom button opens.
+    custom: Option<Arc<Dialog>>,
+    mouse: (f32, f32),
 }
 
 impl PauseScreen {
-    pub fn new(local_server: bool) -> Self {
+    pub fn new(local_server: bool, custom: Option<Arc<Dialog>>, lang: &Lang) -> Self {
         let icons: [(&str, IconSprite); 4] = [
             ("menu.reportBugs", |a| a.bug_icon),
             ("menu.sendFeedback", |a| a.feedback_icon),
@@ -65,6 +77,14 @@ impl PauseScreen {
         for (id, (label, icon)) in ICONS.into_iter().zip(icons) {
             widgets = widgets.with_button(id, Button::icon(label, icon, ICON_BUTTON));
         }
+        if let Some(dialog) = &custom {
+            let mut button = Button::sized(String::new(), BUTTON_W, BUTTON_H);
+            button.styled = Some(StyledText::from_component(
+                dialog.common.external_title(),
+                lang,
+            ));
+            widgets = widgets.with_button(Id::Custom, button);
+        }
         let widgets = widgets
             .with_button(
                 Id::Options,
@@ -82,13 +102,31 @@ impl PauseScreen {
                     BUTTON_H,
                 ),
             );
-        Self { widgets }
+        Self {
+            widgets,
+            custom,
+            mouse: (0.0, 0.0),
+        }
+    }
+
+    /// The grid's height: one row more with the custom button.
+    fn grid_h(&self) -> f32 {
+        GRID_H
+            + if self.custom.is_some() {
+                BUTTON_H + PADDING
+            } else {
+                0.0
+            }
     }
 
     /// What a button does; the inert ones do nothing.
-    fn press(id: Id, ctx: &ScreenContext) -> ScreenAction {
+    fn press(&self, id: Id, ctx: &ScreenContext) -> ScreenAction {
         match id {
             Id::ReturnToGame => ScreenAction::Back,
+            Id::Custom => match &self.custom {
+                Some(dialog) => ScreenAction::Dialog(DialogRequest::Show(Arc::clone(dialog))),
+                None => ScreenAction::None,
+            },
             Id::Options => ScreenAction::open(OptionsScreen::new(ctx)),
             Id::Disconnect => ScreenAction::LeaveWorld,
             Id::Advancements | Id::Statistics | Id::Icon(_) => ScreenAction::None,
@@ -100,7 +138,7 @@ impl Screen for PauseScreen {
     fn resize(&mut self, ctx: &ScreenContext) {
         let (width, height) = ctx.size();
         let grid_x = ((width - GRID_W) * 0.5).round();
-        let grid_y = ((height - GRID_H) * 0.25).round();
+        let grid_y = ((height - self.grid_h()) * 0.25).round();
         let left = grid_x + PADDING;
         let w = &mut self.widgets;
 
@@ -116,6 +154,10 @@ impl Screen for PauseScreen {
         w.row(&ICONS, icon_x, row_y, ICON_SPACING);
 
         row_y += BUTTON_H + PADDING;
+        if self.custom.is_some() {
+            w.set_position(Id::Custom, left, row_y);
+            row_y += BUTTON_H + PADDING;
+        }
         w.column(
             &[Id::Options, Id::Disconnect],
             left,
@@ -125,6 +167,7 @@ impl Screen for PauseScreen {
     }
 
     fn on_mouse_move(&mut self, x: f32, y: f32) {
+        self.mouse = (x, y);
         self.widgets.hover(x, y);
     }
 
@@ -136,7 +179,7 @@ impl Screen for PauseScreen {
         let Some(id) = self.widgets.click(x, y) else {
             return ScreenAction::None;
         };
-        let action = Self::press(id, ctx);
+        let action = self.press(id, ctx);
         if !matches!(action, ScreenAction::None) {
             ctx.click();
         }
@@ -147,7 +190,7 @@ impl Screen for PauseScreen {
         match self.widgets.key(&event) {
             KeyResult::Pressed(id) => {
                 ctx.click();
-                Self::press(id, ctx)
+                self.press(id, ctx)
             }
             _ => ScreenAction::None,
         }
@@ -158,5 +201,13 @@ impl Screen for PauseScreen {
         let title = ui.tr("menu.game");
         ui.title(title, 40.0);
         self.widgets.draw(ui);
+        // `CUSTOM_OPTIONS_TOOLTIP`.
+        if self.custom.is_some() {
+            let button = self.widgets.button(Id::Custom);
+            if button.hovered || button.focused {
+                let text = ui.tr("menu.custom_options.tooltip");
+                ui.widget_tooltip(text, self.mouse, button.rect());
+            }
+        }
     }
 }

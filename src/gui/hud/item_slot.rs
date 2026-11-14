@@ -35,6 +35,21 @@ impl ItemPainter<'_> {
         self.stack_with_count(draw_list, stack, x, y, None);
     }
 
+    /// The item alone, without its count or durability bar.
+    pub fn icon(&self, draw_list: &mut DrawList, stack: &ItemStack, x: f32, y: f32) {
+        if stack.is_empty() {
+            return;
+        }
+        if let Some(icon) = self.icons.get(stack) {
+            let previous =
+                crate::world::glint::has_foil(stack).then(|| draw_list.set_program(Program::Glint));
+            icon.draw(draw_list, x, y, 16.0, 16.0);
+            if let Some(previous) = previous {
+                draw_list.set_program(previous);
+            }
+        }
+    }
+
     /// [`Self::stack`] with the count text replaced (`itemDecorations`'
     pub fn stack_with_count(
         &self,
@@ -47,14 +62,7 @@ impl ItemPainter<'_> {
         if stack.is_empty() {
             return;
         }
-        if let Some(icon) = self.icons.get(stack) {
-            let previous =
-                crate::world::glint::has_foil(stack).then(|| draw_list.set_program(Program::Glint));
-            icon.draw(draw_list, x, y, 16.0, 16.0);
-            if let Some(previous) = previous {
-                draw_list.set_program(previous);
-            }
-        }
+        self.icon(draw_list, stack, x, y);
 
         if let Some(max) = stack.get_max_damage().filter(|&max| max > 0) {
             let damage = stack.get_damage();

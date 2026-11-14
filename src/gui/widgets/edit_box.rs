@@ -73,6 +73,11 @@ impl EditBox {
         self.input.value()
     }
 
+    /// `EditBox.setMaxLength`, in characters.
+    pub fn set_max_length(&mut self, max: usize) {
+        self.input.set_max_len(max);
+    }
+
     /// Preset an initial value (e.g. an existing world's name when editing).
     pub fn set_value(&mut self, value: &str) {
         self.input.set_value(value);

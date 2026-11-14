@@ -99,10 +99,19 @@ impl InWorld {
         }
 
         let binds = &ui.config.input.binds;
+        let mut quick_actions = false;
         if let Some(bind) = bind {
             for action in binds.actions_for(bind) {
-                self.play_action(action, ui);
+                if action == Action::QuickActions {
+                    quick_actions = true;
+                } else {
+                    self.play_action(action, ui);
+                }
             }
+        }
+        if quick_actions {
+            // `Minecraft.handleKeybinds`: `keyQuickActions` shows the dialog.
+            return ScreenAction::Dialog(crate::gui::screens::dialog::DialogRequest::QuickActions);
         }
         ScreenAction::None
     }

@@ -250,6 +250,12 @@ impl InWorld {
                 };
             }
             OverlayAction::OpenFile(path) => return ScreenAction::OpenUrl(path),
+            OverlayAction::Dialog(click) => {
+                return ScreenAction::Dialog(crate::gui::screens::dialog::DialogRequest::Run {
+                    click: Some(click),
+                    then: crate::dialog::AfterAction::None,
+                });
+            }
             OverlayAction::Copy(text) => return ScreenAction::Copy(text),
             OverlayAction::SwitchGameMode(mode) => {
                 self.close_overlay_with(ChatExit::Interrupted, ui);

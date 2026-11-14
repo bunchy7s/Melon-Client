@@ -880,6 +880,22 @@ fn handle_play_packet(
             login::read_pack_pop(body)?;
             (None, Play::Nothing)
         }
+        pid if pid == cb::SHOW_DIALOG.0 => {
+            crate::dialog::connection::read_show(body, true)?;
+            (None, Play::Nothing)
+        }
+        pid if pid == cb::CLEAR_DIALOG.0 => {
+            crate::dialog::connection::clear();
+            (None, Play::Nothing)
+        }
+        pid if pid == cb::SERVER_LINKS.0 => {
+            crate::dialog::connection::read_links(body)?;
+            (None, Play::Nothing)
+        }
+        pid if pid == cb::UPDATE_TAGS.0 => {
+            crate::dialog::connection::read_tags(body)?;
+            (None, Play::Nothing)
+        }
         pid if IGNORED.contains(&pid) => (None, Play::Nothing),
         _ => {
             let decoded = game::decode(pid, body);
@@ -1042,10 +1058,8 @@ fn write_accept_teleport(
 }
 
 /// Packets Melon knows and has no use for.
-const IGNORED: [i32; 8] = [
+const IGNORED: [i32; 6] = [
     cb::BUNDLE_DELIMITER.0,
-    cb::SHOW_DIALOG.0,
-    cb::CLEAR_DIALOG.0,
     cb::STOP_SOUND.0,
     cb::CUSTOM_CHAT_COMPLETIONS.0,
     cb::CUSTOM_PAYLOAD.0,

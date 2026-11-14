@@ -24,7 +24,7 @@ impl RunningState {
             crate::game::sync_head_objects(&self.env.gui_assets.font, &mut resources.players);
         }
 
-        if let Some(action) = self.screens.top_mut().map(|s| s.poll()) {
+        if let Some(action) = self.screens.poll() {
             self.apply(action, event_loop);
         }
         if let Some(reason) = self.world.as_mut().and_then(InWorld::ended) {
@@ -36,6 +36,7 @@ impl RunningState {
             self.leave_world(Some(reason));
         }
         self.poll_server_packs();
+        self.poll_dialogs();
         self.report_screenshots();
         self.pause_if_inactive();
 
@@ -185,7 +186,13 @@ impl RunningState {
         world.profiler.mark("tick");
         world.mesh(&mut self.renderer, world_resources);
         world.profiler.mark("mesh");
-        world_resources.prepare_icons(&mut self.renderer, |visit| world.visit_shown_stacks(visit));
+        let screens = &self.screens;
+        world_resources.prepare_icons(&mut self.renderer, |visit| {
+            world.visit_shown_stacks(visit);
+            if let Some(screen) = screens.top() {
+                screen.visit_stacks(visit);
+            }
+        });
         for (stack, using) in world.held_stacks() {
             world_resources.prepare_held(&mut self.renderer, stack, using);
         }
@@ -287,7 +294,7 @@ impl RunningState {
         let mut blur = None;
         if let Some(screen) = self.screens.top() {
             blur = menu_blur(screen, &mut self.draw_list, true);
-            let mut ui = Ui::new(&mut self.draw_list, gui, &env.lang, size);
+            let mut ui = Ui::new(&mut self.draw_list, gui, &env.lang, size).with_items(painter);
             screen.draw(&mut ui, &env.ctx(scale));
         }
         world.profiler.mark("ui");

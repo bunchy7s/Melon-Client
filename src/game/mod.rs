@@ -590,6 +590,13 @@ impl InWorld {
         self.joined.session.send_respawn();
     }
 
+    /// `ClientPacketListener.sendUnattendedCommand`: a command a dialog or
+    /// a link runs, its `/` dropped (`Commands.trimOptionalPrefix`).
+    pub fn run_command(&self, command: &str) {
+        let command = command.strip_prefix('/').unwrap_or(command);
+        self.joined.session.send_command(command);
+    }
+
     /// `Options.broadcastOptions`: the server hears of changed options.
     pub fn send_client_info(&self, info: &crate::network::ClientInfo) {
         self.joined.session.send_client_information(info);

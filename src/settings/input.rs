@@ -116,6 +116,8 @@ pub enum Action {
     TogglePerspective,
     SaveHotbar,
     LoadHotbar,
+    /// `keyQuickActions`: the server's quick actions dialog.
+    QuickActions,
 }
 
 impl Action {
@@ -150,6 +152,7 @@ impl Action {
         Self::TogglePerspective,
         Self::SaveHotbar,
         Self::LoadHotbar,
+        Self::QuickActions,
     ];
 
     /// `KeyMapping.getName`.
@@ -185,6 +188,7 @@ impl Action {
             Self::TogglePerspective => "key.togglePerspective",
             Self::SaveHotbar => "key.saveToolbarActivator",
             Self::LoadHotbar => "key.loadToolbarActivator",
+            Self::QuickActions => "key.quickActions",
         }
     }
 
@@ -198,7 +202,9 @@ impl Action {
             | Self::Jump
             | Self::Sneak
             | Self::Sprint => "key.category.movement",
-            Self::ToggleGui | Self::Screenshot | Self::TogglePerspective => "key.category.misc",
+            Self::ToggleGui | Self::Screenshot | Self::TogglePerspective | Self::QuickActions => {
+                "key.category.misc"
+            }
             Self::Chat | Self::PlayerList | Self::Command => "key.category.multiplayer",
             Self::Attack | Self::Use | Self::PickItem => "key.category.gameplay",
             Self::Inventory
@@ -254,6 +260,7 @@ impl Action {
             Self::TogglePerspective => "key.keyboard.f5",
             Self::SaveHotbar => "key.keyboard.c",
             Self::LoadHotbar => "key.keyboard.x",
+            Self::QuickActions => "key.keyboard.g",
         }
     }
 
