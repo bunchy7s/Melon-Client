@@ -324,7 +324,11 @@ impl RunningState {
             {
                 eprintln!("Tester: {} nicht geschrieben: {e}", path.display());
             }
-        } else if let (Some(path), Some(image)) = (icon_path, self.renderer.take_capture()) {
+        } else if let Some(path) = icon_path
+            && let Some(image) = self.renderer.take_capture()
+        {
+            // Only when the icon asked for the frame: otherwise it is a
+            // screenshot's, taken below.
             super::world_icon::save(&path, &image);
         }
         let renderer = &mut self.renderer;
