@@ -361,7 +361,6 @@ fn open_stream(assets_root: &Path, sound: &Sound) -> Option<Decoder<std::io::Cur
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     /// Decode-only: the `.ogg` yields stereo samples without an OS audio device.
     #[test]

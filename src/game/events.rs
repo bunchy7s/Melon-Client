@@ -159,7 +159,7 @@ impl InWorld {
                         )
                     },
                 );
-                let now = self.clocks.game_time() as i64;
+                let now = self.clocks.game_time();
                 let last = super::tick::LAST_HOLD.swap(now, std::sync::atomic::Ordering::Relaxed);
                 if rel & 0x7 == 0 && (now - last).abs() > 100 {
                     super::tick::HOLD_TRACE_UNTIL

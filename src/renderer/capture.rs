@@ -147,7 +147,7 @@ impl Renderer {
         if let Ok(pointer) = mapped {
             let mut pixels = std::slice::from_raw_parts(pointer.cast::<u8>(), len).to_vec();
             self.device.unmap_memory(readback.memory);
-            for pixel in pixels.chunks_exact_mut(4) {
+            for pixel in pixels.as_chunks_mut::<4>().0 {
                 if bgra {
                     pixel.swap(0, 2);
                 }

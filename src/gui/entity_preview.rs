@@ -125,9 +125,7 @@ fn draw_layer(out: &mut RgbaImage, depth: &mut [f32], layer: &PreviewLayer) {
         .enumerate()
         .filter(|(index, _)| {
             let id = PartId(*index);
-            layer
-                .only
-                .is_none_or(|parts| parts.iter().any(|p| *p == id))
+            layer.only.is_none_or(|parts| parts.contains(&id))
                 && layer.skip.iter().all(|p| *p != id)
         })
     {

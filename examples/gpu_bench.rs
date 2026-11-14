@@ -32,6 +32,8 @@ const CHUNKS: &str = "target/pipeline-bench/chunks.bin";
 const ROUNDS: usize = 5;
 const WARMUP: usize = 20;
 const FRAMES: usize = 90;
+/// The cloud colour (white, alpha 0.8); the mesh no longer carries it.
+const CLOUD_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.8];
 
 struct Bench {
     result: Option<anyhow::Result<()>>,
@@ -246,7 +248,7 @@ fn run(event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
                 model: glam::Mat4::from_translation(eye),
                 origin: glam::IVec3::ZERO,
                 layer: RenderLayer::Atmosphere,
-                translucent: true,
+                blend: melon::renderer::Blending::Translucent,
                 light: None,
                 overlay: 0.0,
                 glint: melon::renderer::Glint::None,
@@ -255,7 +257,7 @@ fn run(event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
         if clouds_on {
             let frame = melon::world::clouds::CloudFrame {
                 status: melon::world::clouds::CloudStatus::Fancy,
-                color: [1.0, 1.0, 1.0, 0.8],
+                color: CLOUD_COLOR,
                 bottom_y: 192.0,
                 range_chunks: RADIUS as u8,
                 camera: eye,
@@ -275,7 +277,7 @@ fn run(event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
                     )),
                     origin: glam::IVec3::ZERO,
                     layer: RenderLayer::Atmosphere,
-                    translucent: true,
+                    blend: melon::renderer::Blending::Translucent,
                     light: None,
                     overlay: 0.0,
                     glint: melon::renderer::Glint::None,
@@ -308,10 +310,18 @@ fn run(event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
                         bob: glam::Mat4::IDENTITY,
                     }),
                     entities: Vec::new(),
-                    clouds: atmosphere.first().cloned(),
+                    clouds: atmosphere
+                        .first()
+                        .cloned()
+                        .map(|draw| melon::renderer::CloudDraw {
+                            draw,
+                            color: CLOUD_COLOR,
+                        }),
                     weather: weather.clone(),
                     glint_item: None,
                     glint_armor: None,
+                    glowing: Vec::new(),
+                    post_effects: Vec::new(),
                 };
                 let started = Instant::now();
                 renderer.render(&Frame {

@@ -143,7 +143,7 @@ fn build(
     let plain = if shadowed { Some(draw(false)) } else { None };
     let mut next_plain = plain
         .as_ref()
-        .map(|p| p.vertices.chunks_exact(4).peekable());
+        .map(|p| p.vertices.as_chunks::<4>().0.iter().peekable());
     let same = |a: &[Vertex], b: &[Vertex]| {
         a.iter()
             .zip(b)
@@ -165,10 +165,10 @@ fn build(
                 parts.len() - 1
             }
         };
-        for quad in quads.chunks_exact(4) {
+        for quad in quads.as_chunks::<4>().0 {
             let is_shadow = match &mut next_plain {
                 Some(rest) => match rest.peek() {
-                    Some(plain) if same(quad, plain) => {
+                    Some(plain) if same(quad, *plain) => {
                         rest.next();
                         false
                     }

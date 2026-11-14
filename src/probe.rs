@@ -483,79 +483,6 @@ fn render(state: &State) -> String {
     out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Off, nothing is kept; on, the first detail stays and the rest count.
-    #[test]
-    fn notes_count_and_keep_the_first_detail() {
-        enable(std::env::temp_dir().join("melon-probe-test.md"));
-        note("packet.unresolved", "set_cursor_item", || "first".into());
-        note("packet.unresolved", "set_cursor_item", || "second".into());
-        count("lang.missing", "a.b");
-        section("Packs", "two".into());
-        let guard = STATE.lock().unwrap();
-        let state = guard.as_ref().unwrap();
-        let entry = &state.notes["packet.unresolved"]["set_cursor_item"];
-        assert_eq!((entry.count, entry.detail.as_str()), (2, "first"));
-        let text = render(state);
-        assert!(text.contains("`set_cursor_item` x2: first"));
-        assert!(text.contains("`a.b` x1"));
-        assert!(text.contains("## Packs"));
-        drop(guard);
-        ENABLED.store(false, Ordering::Relaxed);
-        note("lang.missing", "c.d", String::new);
-        let guard = STATE.lock().unwrap();
-        assert!(!guard.as_ref().unwrap().notes["lang.missing"].contains_key("c.d"));
-    }
-
-    #[test]
-    fn a_note_detail_may_read_the_move_log() {
-        enable(std::env::temp_dir().join("melon-probe-io-test.md"));
-        trace_io(false, "ping", "id=1");
-        note("hold", "nested", || format!("log:{}", recent_io()));
-        let guard = STATE.lock().unwrap();
-        let detail = &guard.as_ref().unwrap().notes["hold"]["nested"].detail;
-        assert!(detail.contains("rx ping"));
-        drop(guard);
-        ENABLED.store(false, Ordering::Relaxed);
-    }
-
-    #[test]
-    fn relative_flags_name_the_set_bits() {
-        assert_eq!(relative_flags(0), "absolute");
-        assert_eq!(
-            relative_flags(0xf8),
-            "0xf8 relative YAW|PITCH|DELTA_X|DELTA_Y|DELTA_Z"
-        );
-    }
-
-    #[test]
-    fn a_flood_of_keys_is_capped() {
-        let mut state = State {
-            path: PathBuf::new(),
-            started: Instant::now(),
-            written: Instant::now(),
-            notes: BTreeMap::new(),
-            dropped: BTreeMap::new(),
-            extra: Vec::new(),
-        };
-        let map = state.notes.entry("lang.missing").or_default();
-        for i in 0..MAX_KEYS {
-            map.insert(
-                i.to_string(),
-                Entry {
-                    count: 1,
-                    detail: String::new(),
-                },
-            );
-        }
-        state.dropped.insert("lang.missing", 5);
-        assert!(render(&state).contains("and 5 more"));
-    }
-}
-
 /// What the active resource packs hold, and which of it Melon has no use
 pub fn describe_packs(assets_root: &std::path::Path) {
     if !enabled() {
@@ -635,4 +562,77 @@ pub fn describe_packs(assets_root: &std::path::Path) {
     }
     let _ = assets_root;
     section("Packs", text);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Off, nothing is kept; on, the first detail stays and the rest count.
+    #[test]
+    fn notes_count_and_keep_the_first_detail() {
+        enable(std::env::temp_dir().join("melon-probe-test.md"));
+        note("packet.unresolved", "set_cursor_item", || "first".into());
+        note("packet.unresolved", "set_cursor_item", || "second".into());
+        count("lang.missing", "a.b");
+        section("Packs", "two".into());
+        let guard = STATE.lock().unwrap();
+        let state = guard.as_ref().unwrap();
+        let entry = &state.notes["packet.unresolved"]["set_cursor_item"];
+        assert_eq!((entry.count, entry.detail.as_str()), (2, "first"));
+        let text = render(state);
+        assert!(text.contains("`set_cursor_item` x2: first"));
+        assert!(text.contains("`a.b` x1"));
+        assert!(text.contains("## Packs"));
+        drop(guard);
+        ENABLED.store(false, Ordering::Relaxed);
+        note("lang.missing", "c.d", String::new);
+        let guard = STATE.lock().unwrap();
+        assert!(!guard.as_ref().unwrap().notes["lang.missing"].contains_key("c.d"));
+    }
+
+    #[test]
+    fn a_note_detail_may_read_the_move_log() {
+        enable(std::env::temp_dir().join("melon-probe-io-test.md"));
+        trace_io(false, "ping", "id=1");
+        note("hold", "nested", || format!("log:{}", recent_io()));
+        let guard = STATE.lock().unwrap();
+        let detail = &guard.as_ref().unwrap().notes["hold"]["nested"].detail;
+        assert!(detail.contains("rx ping"));
+        drop(guard);
+        ENABLED.store(false, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn relative_flags_name_the_set_bits() {
+        assert_eq!(relative_flags(0), "absolute");
+        assert_eq!(
+            relative_flags(0xf8),
+            "0xf8 relative YAW|PITCH|DELTA_X|DELTA_Y|DELTA_Z"
+        );
+    }
+
+    #[test]
+    fn a_flood_of_keys_is_capped() {
+        let mut state = State {
+            path: PathBuf::new(),
+            started: Instant::now(),
+            written: Instant::now(),
+            notes: BTreeMap::new(),
+            dropped: BTreeMap::new(),
+            extra: Vec::new(),
+        };
+        let map = state.notes.entry("lang.missing").or_default();
+        for i in 0..MAX_KEYS {
+            map.insert(
+                i.to_string(),
+                Entry {
+                    count: 1,
+                    detail: String::new(),
+                },
+            );
+        }
+        state.dropped.insert("lang.missing", 5);
+        assert!(render(&state).contains("and 5 more"));
+    }
 }

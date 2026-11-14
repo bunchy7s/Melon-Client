@@ -89,6 +89,21 @@ pub fn prepare_level(world_dir: &Path, seed: i64, chosen: &[String]) -> std::io:
         .map_err(|e| std::io::Error::other(e.to_string()))
 }
 
+/// Copies a folder's contents into `to` (`Util.copyBetweenDirs`), creating
+pub fn copy_into(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_into(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,19 +133,4 @@ mod tests {
         assert_eq!(found[0].description, serde_json::json!("Hi"));
         let _ = std::fs::remove_dir_all(&dir);
     }
-}
-
-/// Copies a folder's contents into `to` (`Util.copyBetweenDirs`), creating
-pub fn copy_into(from: &Path, to: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(to)?;
-    for entry in std::fs::read_dir(from)? {
-        let entry = entry?;
-        let target = to.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            copy_into(&entry.path(), &target)?;
-        } else {
-            std::fs::copy(entry.path(), target)?;
-        }
-    }
-    Ok(())
 }

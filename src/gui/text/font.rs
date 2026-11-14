@@ -91,6 +91,9 @@ pub fn sprite_char(index: usize) -> Option<char> {
 /// How big a texture of Unifont glyphs is (`FontTexture`'s 256).
 pub const DYNAMIC_PAGE: u32 = 256;
 
+/// The characters of one font by `ceil(advance)`: `FontSet.glyphsByWidth`.
+type WidthPool = HashMap<i32, Vec<char>>;
+
 /// Glyphs made when a text first needed them, and what still has to go to
 #[derive(Default)]
 struct Dynamic {
@@ -140,7 +143,7 @@ pub struct Font {
     unihex: Vec<Lazy>,
     dynamic: RefCell<Dynamic>,
     /// [`Self::width_pools`] by font id, `""` for the default.
-    pools: RefCell<HashMap<String, Rc<HashMap<i32, Vec<char>>>>>,
+    pools: RefCell<HashMap<String, Rc<WidthPool>>>,
     /// The pictures of `object` components, made on use like Unifont's.
     pub(super) objects: RefCell<super::objects::ObjectSprites>,
     pub pages: Vec<RgbaImage>,
@@ -162,17 +165,17 @@ impl Font {
             &mut glyphs,
             &mut unihex,
         )?;
-        if root_id == DEFAULT_FONT {
-            if let Err(e) = load_provider_file(
+        if root_id == DEFAULT_FONT
+            && let Err(e) = load_provider_file(
                 assets,
                 "minecraft:include/unifont_pua",
                 &mut pages,
                 &mut page_index_by_path,
                 &mut glyphs,
                 &mut unihex,
-            ) {
-                eprintln!("font: unifont_pua: {e:#}");
-            }
+            )
+        {
+            eprintln!("font: unifont_pua: {e:#}");
         }
         let mut faces = HashMap::new();
         if root_id == DEFAULT_FONT {
@@ -361,7 +364,7 @@ impl Font {
 
     /// `FontSet.glyphsByWidth`: the characters of `font` by `ceil(advance)`, Unifont's
     /// and the advance-only ones included.
-    fn width_pools(&self, font: Option<&str>) -> Rc<HashMap<i32, Vec<char>>> {
+    fn width_pools(&self, font: Option<&str>) -> Rc<WidthPool> {
         let key = font.unwrap_or("");
         if let Some(pools) = self.pools.borrow().get(key) {
             return pools.clone();

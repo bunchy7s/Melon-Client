@@ -364,6 +364,7 @@ fn partly_transparent(texture: &RgbaImage) -> bool {
 }
 
 /// Fills one triangle with the nearest texel, keeping the nearest surface
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_triangle(
     out: &mut RgbaImage,
     depth: &mut [f32],

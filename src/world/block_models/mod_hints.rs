@@ -21,7 +21,7 @@ pub(super) fn apply(id: u16, model: &StateModel<BakedQuad>) -> Option<StateModel
 }
 
 fn with_hints(quad: &BakedQuad, hints: RenderHints) -> BakedQuad {
-    let mut quad = quad.clone();
+    let mut quad = *quad;
     quad.layer = match hints.layer {
         RenderLayer::Auto => quad.layer,
         RenderLayer::Solid => ChunkLayer::Solid,

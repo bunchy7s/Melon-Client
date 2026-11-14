@@ -672,6 +672,7 @@ pub(super) fn visible_entities(
 }
 
 /// Another player as the tracker knows it.
+#[allow(clippy::too_many_arguments)]
 fn remote_avatar<'a>(
     entity: &'a ClientEntity,
     assets: &'a WorldResources,

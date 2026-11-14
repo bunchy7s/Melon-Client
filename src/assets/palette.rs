@@ -3,8 +3,11 @@
 use image::{Rgba, RgbaImage};
 use std::path::Path;
 
+/// One entry of a palette mapping: a base colour (RGB) and what it becomes.
+pub type ColorMapping = ((u8, u8, u8), [u8; 4]);
+
 /// `PaletteMapping.create`: each opaque colour in `base` maps to the
-pub fn mapping(base: &RgbaImage, target: &RgbaImage) -> Vec<((u8, u8, u8), [u8; 4])> {
+pub fn mapping(base: &RgbaImage, target: &RgbaImage) -> Vec<ColorMapping> {
     let n = (base.width() * base.height()).min(target.width() * target.height()) as usize;
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
@@ -22,7 +25,7 @@ pub fn mapping(base: &RgbaImage, target: &RgbaImage) -> Vec<((u8, u8, u8), [u8; 
 }
 
 /// `PaletteMapping.apply` over every pixel: keep fully transparent ones,
-pub fn apply(image: &RgbaImage, map: &[((u8, u8, u8), [u8; 4])]) -> RgbaImage {
+pub fn apply(image: &RgbaImage, map: &[ColorMapping]) -> RgbaImage {
     let mut out = image.clone();
     for pixel in out.pixels_mut() {
         let [r, g, b, a] = pixel.0;

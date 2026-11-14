@@ -144,9 +144,8 @@ mod tests {
         unsafe { std::env::remove_var("MELON_HOME") };
         let assets = default_assets_dir();
         assert_eq!(assets, platform_data().join("assets"));
-        match prev {
-            Some(v) => unsafe { std::env::set_var("MELON_HOME", v) },
-            None => {}
+        if let Some(v) = prev {
+            unsafe { std::env::set_var("MELON_HOME", v) }
         }
     }
 

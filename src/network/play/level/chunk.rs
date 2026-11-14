@@ -303,6 +303,26 @@ fn read_packed_indices(
     Ok(())
 }
 
+/// The tester: the states a section holds, by block.
+fn probe_states(blocks: &[u16]) {
+    use pumpkin_data::{Block, BlockStateId};
+    let mut seen = std::collections::HashSet::new();
+    for &state in blocks {
+        if !seen.insert(state) {
+            continue;
+        }
+        let Some(id) = BlockStateId::new(state) else {
+            crate::probe::count(
+                "block.seen",
+                format!("(state {state} outside the registry)"),
+            );
+            continue;
+        };
+        let block = Block::from_state_id(id);
+        crate::probe::note("block.seen", block.name, || format!("first state {state}"));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -542,25 +562,5 @@ mod tests {
 
         let chunk = decode(&body, Height::OVERWORLD).unwrap();
         assert_eq!(chunk.light.at(0, 0, 0), (7, 0));
-    }
-}
-
-/// The tester: the states a section holds, by block.
-fn probe_states(blocks: &[u16]) {
-    use pumpkin_data::{Block, BlockStateId};
-    let mut seen = std::collections::HashSet::new();
-    for &state in blocks {
-        if !seen.insert(state) {
-            continue;
-        }
-        let Some(id) = BlockStateId::new(state) else {
-            crate::probe::count(
-                "block.seen",
-                format!("(state {state} outside the registry)"),
-            );
-            continue;
-        };
-        let block = Block::from_state_id(id);
-        crate::probe::note("block.seen", block.name, || format!("first state {state}"));
     }
 }

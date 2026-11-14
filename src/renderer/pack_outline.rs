@@ -317,9 +317,7 @@ impl Renderer {
             if let Some(mut pack) = self.pack_outline.take() {
                 pack.destroy(&self.device);
             }
-            let Some(shader) = shader else {
-                return None;
-            };
+            let shader = shader?;
             match PackOutline::create(
                 &self.device,
                 &self.mem_props,

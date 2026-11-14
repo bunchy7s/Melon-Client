@@ -448,6 +448,7 @@ impl InWorld {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_tag(
         &self,
         draw_list: &mut DrawList,

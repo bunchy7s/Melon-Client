@@ -216,9 +216,8 @@ mod tests {
         std::fs::write(dir.join("client_id.txt"), "  abc-own-app  \n").unwrap();
         let id = microsoft_client_id(&dir);
         let _ = std::fs::remove_dir_all(&dir);
-        match prev {
-            Some(v) => unsafe { std::env::set_var("MELON_MS_CLIENT_ID", v) },
-            None => {}
+        if let Some(v) = prev {
+            unsafe { std::env::set_var("MELON_MS_CLIENT_ID", v) }
         }
         assert_eq!(id.as_deref(), Some("abc-own-app"));
     }
@@ -238,9 +237,8 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let id = microsoft_client_id(&dir);
         let _ = std::fs::remove_dir_all(&dir);
-        match prev {
-            Some(v) => unsafe { std::env::set_var("MELON_MS_CLIENT_ID", v) },
-            None => {}
+        if let Some(v) = prev {
+            unsafe { std::env::set_var("MELON_MS_CLIENT_ID", v) }
         }
         assert_eq!(id.as_deref(), Some(PUBLIC_CLIENT_ID));
     }

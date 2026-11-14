@@ -253,7 +253,7 @@ impl InWorld {
     /// `LocalPlayer.sendPosition`: every tick, so the server follows the
     pub(super) fn send_position(&mut self) {
         if crate::probe::enabled()
-            && (self.clocks.game_time() as i64)
+            && self.clocks.game_time()
                 <= HOLD_TRACE_UNTIL.load(std::sync::atomic::Ordering::Relaxed)
         {
             let now = self.clocks.game_time();

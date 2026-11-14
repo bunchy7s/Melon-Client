@@ -303,6 +303,7 @@ pub struct DragonPose {
     pub flap_time: f32,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pose_limbs(
     pose: &mut ModelPose,
     bounce: f32,

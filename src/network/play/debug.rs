@@ -302,6 +302,33 @@ fn dump(body: &[u8], show: bool) -> String {
     format!("\n        {}{more}\n        |{text}|", hex.join(" "))
 }
 
+/// The readable runs in a body (text of a dialog, titles, commands), so a
+fn strings(body: &[u8]) -> String {
+    let mut out = Vec::new();
+    let mut run = String::new();
+    for &b in body {
+        if (0x20..0x7f).contains(&b) {
+            run.push(b as char);
+        } else {
+            if run.len() >= 5 {
+                out.push(std::mem::take(&mut run));
+            }
+            run.clear();
+        }
+        if out.len() >= 80 {
+            break;
+        }
+    }
+    if run.len() >= 5 {
+        out.push(run);
+    }
+    if out.is_empty() {
+        String::new()
+    } else {
+        format!("\n  strings: {out:?}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,32 +363,5 @@ mod tests {
         let text = dump(b"hi\x00", true);
         assert!(text.contains("68 69 00") && text.contains("|hi.|"));
         assert_eq!(dump(b"hi", false), "");
-    }
-}
-
-/// The readable runs in a body (text of a dialog, titles, commands), so a
-fn strings(body: &[u8]) -> String {
-    let mut out = Vec::new();
-    let mut run = String::new();
-    for &b in body {
-        if (0x20..0x7f).contains(&b) {
-            run.push(b as char);
-        } else {
-            if run.len() >= 5 {
-                out.push(std::mem::take(&mut run));
-            }
-            run.clear();
-        }
-        if out.len() >= 80 {
-            break;
-        }
-    }
-    if run.len() >= 5 {
-        out.push(run);
-    }
-    if out.is_empty() {
-        String::new()
-    } else {
-        format!("\n  strings: {out:?}")
     }
 }

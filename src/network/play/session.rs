@@ -1041,6 +1041,18 @@ fn write_accept_teleport(
     Ok(())
 }
 
+/// Packets Melon knows and has no use for.
+const IGNORED: [i32; 8] = [
+    cb::BUNDLE_DELIMITER.0,
+    cb::SHOW_DIALOG.0,
+    cb::CLEAR_DIALOG.0,
+    cb::STOP_SOUND.0,
+    cb::CUSTOM_CHAT_COMPLETIONS.0,
+    cb::CUSTOM_PAYLOAD.0,
+    cb::OPEN_SIGN_EDITOR.0,
+    cb::SERVER_DATA.0,
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1068,8 +1080,10 @@ mod tests {
 
     #[test]
     fn a_play_ping_waits_for_the_game_loop() {
-        let mut listener = PlayListener::default();
-        listener.ack_teleports = false;
+        let mut listener = PlayListener {
+            ack_teleports: false,
+            ..PlayListener::default()
+        };
         let (reply, play) = listener
             .handle(id::CB_PLAY_PING, &7_i32.to_be_bytes())
             .unwrap();
@@ -1079,8 +1093,10 @@ mod tests {
 
     #[test]
     fn a_play_teleport_is_confirmed_after_it_is_applied() {
-        let mut listener = PlayListener::default();
-        listener.ack_teleports = false;
+        let mut listener = PlayListener {
+            ack_teleports: false,
+            ..PlayListener::default()
+        };
         let mut body = Vec::new();
         varint::write_var_int(&mut body, 3).unwrap();
         for v in [8.5_f64, 64.0, -12.25] {
@@ -1132,15 +1148,3 @@ mod tests {
         assert!(!teleport.acked);
     }
 }
-
-/// Packets Melon knows and has no use for.
-const IGNORED: [i32; 8] = [
-    cb::BUNDLE_DELIMITER.0,
-    cb::SHOW_DIALOG.0,
-    cb::CLEAR_DIALOG.0,
-    cb::STOP_SOUND.0,
-    cb::CUSTOM_CHAT_COMPLETIONS.0,
-    cb::CUSTOM_PAYLOAD.0,
-    cb::OPEN_SIGN_EDITOR.0,
-    cb::SERVER_DATA.0,
-];

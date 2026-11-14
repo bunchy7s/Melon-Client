@@ -167,7 +167,7 @@ mod tests {
     fn a_real_packs_gui_shaders_compile() {
         use crate::assets::packs::{self, Pack, ResourceStack};
         let root = std::env::var_os("MELON_ASSETS")
-            .map_or_else(|| crate::assets::default_root(), std::path::PathBuf::from);
+            .map_or_else(crate::assets::default_root, std::path::PathBuf::from);
         let path = std::env::var("MELON_PACK").expect("MELON_PACK");
         let pack = Pack::open("test".into(), "test".into(), Path::new(&path)).expect("opens");
         packs::activate(ResourceStack {

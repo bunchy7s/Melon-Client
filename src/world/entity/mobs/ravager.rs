@@ -140,7 +140,7 @@ pub fn setup_anim(
             (PI / 20.0) * angle::sin(PI * ravager.attacking / 10.0)
         };
     } else {
-        let y_offset = -1.0 * angle::sin(neck_x_rot);
+        let y_offset = -angle::sin(neck_x_rot);
         let stunned = ravager.stunned > 0.0;
         {
             let neck = &mut pose[parts.neck].pose;

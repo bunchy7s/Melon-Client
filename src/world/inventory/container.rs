@@ -245,7 +245,6 @@ impl OpenContainer {
         carried: &mut ItemStack,
     ) -> Click {
         let before = self.slots.clone();
-        let before_carried = carried.clone();
         let index = usize::try_from(slot).ok().filter(|&i| i < self.slots.len());
         if kind != ClickType::QuickCraft {
             self.drag = None;
@@ -292,8 +291,6 @@ impl OpenContainer {
             .filter(|&i| !stacks_equal(&before[i], &self.slots[i]))
             .map(|i| i as i16)
             .collect();
-        if !stacks_equal(&before_carried, carried) {}
-        let _ = before_carried;
         Click {
             slot,
             button,

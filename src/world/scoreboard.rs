@@ -45,7 +45,7 @@ impl NumberFormat {
 
     /// `StyledFormat.NO_STYLE`: the number with no colour of its own.
     pub fn no_style() -> Self {
-        Self::Styled(Box::new(Style::default()))
+        Self::Styled(Box::default())
     }
 
     /// `NumberFormat.format`.

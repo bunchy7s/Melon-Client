@@ -35,14 +35,10 @@ pub fn verify(version: &str, sha1: &str) -> Verdict {
 }
 
 fn official_client_sha1(version: &str) -> Result<Option<String>, String> {
-    let wiki = get_text(WIKI_HASHES);
-    match wiki {
-        Ok(lua) => {
-            if let Some(hash) = lua_client_hash(&lua, version) {
-                return Ok(Some(hash));
-            }
-        }
-        Err(_) => {}
+    if let Ok(lua) = get_text(WIKI_HASHES)
+        && let Some(hash) = lua_client_hash(&lua, version)
+    {
+        return Ok(Some(hash));
     }
     mojang_client_sha1(version)
 }
