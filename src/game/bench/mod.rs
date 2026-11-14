@@ -1,5 +1,6 @@
 //! `--bench`: the game plays itself through fixed phases in a fixed world
 
+pub mod nvml;
 pub mod report;
 
 use std::path::PathBuf;
@@ -103,6 +104,10 @@ pub struct BenchOptions {
     pub scene: Scene,
     /// `--out <dir>`: where the CSV and summary go.
     pub out: Option<PathBuf>,
+    /// `--hold <phase>`: repeat that phase until the window is closed
+    /// instead of going on, for GPU profilers that need a steady scene
+    /// (see `performance/README.md`). Nothing is written then.
+    pub hold: Option<Phase>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,6 +149,21 @@ impl Phase {
             Phase::Idle => "idle",
             Phase::Done => "done",
         }
+    }
+
+    /// `--hold`'s phases: the ones that can repeat. Loading and summoning
+    /// happen once.
+    pub fn parse_holdable(name: &str) -> Option<Phase> {
+        [
+            Phase::Crowd,
+            Phase::Rise,
+            Phase::Turn,
+            Phase::Fly,
+            Phase::Sound,
+            Phase::Idle,
+        ]
+        .into_iter()
+        .find(|phase| phase.name() == name)
     }
 
     /// How long the phase runs; `None` for loading, which runs until the
@@ -205,11 +225,13 @@ pub struct BenchDriver {
     last_load: LoadState,
     /// Loading waits for at least this many chunks.
     expected_chunks: usize,
+    /// `--hold`: the phase that starts over instead of ending.
+    hold: Option<Phase>,
 }
 
 impl BenchDriver {
     /// A run at this render distance, which says how many chunks loading
-    pub fn new(render_distance: u8, scene: Scene) -> Self {
+    pub fn new(render_distance: u8, scene: Scene, hold: Option<Phase>) -> Self {
         let side = f32::from(render_distance) * 2.0 + 1.0;
         Self {
             scene,
@@ -220,6 +242,7 @@ impl BenchDriver {
             settled: 0,
             last_load: LoadState::default(),
             expected_chunks: (side * side * EXPECTED_SHARE) as usize,
+            hold,
         }
     }
 
@@ -234,7 +257,9 @@ impl BenchDriver {
             Some(ticks) => self.ticks >= ticks,
             None => self.phase == Phase::Load && self.loaded(load),
         };
-        if done {
+        if done && self.hold == Some(self.phase) {
+            self.ticks = 0;
+        } else if done {
             let from = self.phase;
             self.phase = self.phase.next(self.scene);
             self.ticks = 0;
@@ -357,7 +382,7 @@ mod tests {
 
     #[test]
     fn phases_run_in_order_for_their_ticks() {
-        let mut driver = BenchDriver::new(1, Scene::Calm);
+        let mut driver = BenchDriver::new(1, Scene::Calm, None);
         let mut player = PlayerState::new(DVec3::ZERO);
         assert_eq!(
             run_until(&mut driver, &mut player, Phase::Rise),
@@ -372,7 +397,7 @@ mod tests {
 
     #[test]
     fn loading_waits_while_chunks_keep_coming() {
-        let mut driver = BenchDriver::new(1, Scene::Calm);
+        let mut driver = BenchDriver::new(1, Scene::Calm, None);
         let mut player = PlayerState::new(DVec3::ZERO);
         for chunks in 1..100 {
             let load = LoadState { chunks, meshing: 0 };
@@ -383,7 +408,7 @@ mod tests {
 
     #[test]
     fn flying_holds_forward_and_sprint() {
-        let mut driver = BenchDriver::new(1, Scene::Calm);
+        let mut driver = BenchDriver::new(1, Scene::Calm, None);
         let mut player = PlayerState::new(DVec3::ZERO);
         run_until(&mut driver, &mut player, Phase::Fly);
         let step = driver.tick(&mut player, LoadState::default());
@@ -397,7 +422,7 @@ mod tests {
 
     #[test]
     fn the_active_scene_spawns_then_looks_around_then_flies() {
-        let mut driver = BenchDriver::new(1, Scene::Active);
+        let mut driver = BenchDriver::new(1, Scene::Active, None);
         let mut player = PlayerState::new(DVec3::ZERO);
         let load = LoadState {
             chunks: 9,
@@ -412,6 +437,31 @@ mod tests {
         assert!(commands.iter().any(|c| c.starts_with("weather thunder")));
         assert_eq!(driver.phase(), Phase::Crowd);
         assert_eq!(run_until(&mut driver, &mut player, Phase::Rise), 300);
+    }
+
+    #[test]
+    fn a_held_phase_starts_over_instead_of_ending() {
+        let mut driver = BenchDriver::new(1, Scene::Calm, Some(Phase::Turn));
+        let mut player = PlayerState::new(DVec3::ZERO);
+        run_until(&mut driver, &mut player, Phase::Turn);
+        let load = LoadState::default();
+        let mut yaws = Vec::new();
+        for _ in 0..Phase::Turn.ticks().unwrap() * 3 {
+            driver.tick(&mut player, load);
+            assert_eq!(driver.phase(), Phase::Turn);
+            yaws.push(player.yaw());
+        }
+        let turn = Phase::Turn.ticks().unwrap() as usize;
+        assert_eq!(yaws[1], yaws[turn + 1], "each round turns the same way");
+    }
+
+    #[test]
+    fn only_repeatable_phases_can_be_held() {
+        assert_eq!(Phase::parse_holdable("turn"), Some(Phase::Turn));
+        assert_eq!(Phase::parse_holdable("idle"), Some(Phase::Idle));
+        for once in ["load", "spawn", "done", "nope"] {
+            assert_eq!(Phase::parse_holdable(once), None, "{once}");
+        }
     }
 
     #[test]

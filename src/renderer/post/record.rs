@@ -292,6 +292,7 @@ impl Renderer {
         let Some(chain) = self.post.chains.get(id) else {
             return;
         };
+        self.gpu_timer.pass("post");
         let device = &self.device;
         for pass in &chain.passes {
             if pass.inputs.contains(&Source::MainColor) && self.post.main_dirty.get() {
@@ -475,6 +476,7 @@ impl Renderer {
         if self.post.outline.is_none() {
             return;
         }
+        self.gpu_timer.pass("outline");
         let device = &self.device;
         let extent = self.swapchain.extent;
         let area = vk::Rect2D {

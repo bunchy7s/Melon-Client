@@ -17,6 +17,22 @@ pub(in crate::renderer) enum ScenePart {
     Hand,
 }
 
+/// The GPU timer's and the profilers' name for `layer`; terrain and
+/// translucent terrain are named per mode where they are drawn.
+fn layer_label(layer: RenderLayer) -> Option<&'static str> {
+    Some(match layer {
+        RenderLayer::Sky => "sky",
+        RenderLayer::Entities => "entities",
+        RenderLayer::Particles => "particles",
+        RenderLayer::Shadows => "shadows",
+        RenderLayer::Crumbling => "crumbling",
+        RenderLayer::WaterMask => "water_mask",
+        RenderLayer::Atmosphere => "atmosphere",
+        RenderLayer::Hand => "hand",
+        RenderLayer::Terrain | RenderLayer::Translucent => return None,
+    })
+}
+
 impl ScenePart {
     fn has(self, layer: RenderLayer) -> bool {
         match self {
@@ -43,6 +59,9 @@ impl Renderer {
             if !part.has(layer) {
                 continue;
             }
+            if let Some(label) = layer_label(layer) {
+                self.gpu_timer.counted_pass(label);
+            }
             if layer.clears_depth() {
                 self.clear_depth(cmd);
             }
@@ -64,15 +83,16 @@ impl Renderer {
                     let multi = self.indirect.is_some();
                     for &(mode, chunks) in passes {
                         let by_multi = multi && matches!(mode, Mode::Solid | Mode::Opaque);
-                        if by_multi {
-                            self.draw_terrain_multi(cmd, world, mode, chunks, view_proj, &light);
-                        }
                         let label = match mode {
                             Mode::Solid => "solid",
                             Mode::Opaque => "cutout",
                             Mode::TranslucentTerrain => "translucent",
                             _ => "terrain",
                         };
+                        self.gpu_timer.counted_pass(label);
+                        if by_multi {
+                            self.draw_terrain_multi(cmd, world, mode, chunks, view_proj, &light);
+                        }
                         let mut bound: Option<bool> = None;
                         for chunk in chunks {
                             let quads = matches!(chunk.mesh, TerrainMesh::Quads(_));
@@ -252,19 +272,13 @@ impl Renderer {
                     }
                 }
             }
-            let label = match layer {
-                RenderLayer::Sky => "sky",
-                RenderLayer::Entities => "entities",
-                RenderLayer::Particles => "particles",
-                RenderLayer::Shadows => "shadows",
-                RenderLayer::Crumbling => "crumbling",
-                RenderLayer::WaterMask => "water_mask",
-                RenderLayer::Atmosphere => "atmosphere",
-                RenderLayer::Hand => "hand",
-                RenderLayer::Terrain | RenderLayer::Translucent => continue,
-            };
-            self.gpu_timer.mark(&self.device, label);
+            if let Some(label) = layer_label(layer) {
+                self.gpu_timer.mark(&self.device, label);
+            }
         }
+        // A layer that had nothing to draw left its counted pass open: it
+        // has to end in this render pass.
+        self.gpu_timer.close_pass();
     }
 
     /// How the fog finds the distance of a model drawn in `layer`: from its

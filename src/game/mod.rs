@@ -472,8 +472,12 @@ impl InWorld {
     }
 
     /// `--bench`: from now on the benchmark plays, at this render distance.
-    pub fn start_bench(&mut self, render_distance: u8, scene: bench::Scene) {
-        self.bench = Some(bench::BenchDriver::new(render_distance, scene));
+    pub fn start_bench(&mut self, render_distance: u8, options: &bench::BenchOptions) {
+        self.bench = Some(bench::BenchDriver::new(
+            render_distance,
+            options.scene,
+            options.hold,
+        ));
     }
 
     /// The benchmark's phase, when it plays.

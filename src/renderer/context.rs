@@ -39,8 +39,16 @@ impl Renderer {
                 "vulkan: VK_LAYER_KHRONOS_validation nicht gefunden, fahre ohne Validation fort"
             );
         }
+        // Debug utils also name the passes for GPU profilers (Nsight Graphics,
+        // RenderDoc), so they are on whenever the driver offers them.
+        let debug_utils = entry
+            .enumerate_instance_extension_properties(None)?
+            .iter()
+            .any(|e| CStr::from_ptr(e.extension_name.as_ptr()) == ash::ext::debug_utils::NAME);
         if use_validation {
             layer_names.push(validation_layer.as_ptr());
+        }
+        if debug_utils || use_validation {
             extension_names.push(ash::ext::debug_utils::NAME.as_ptr());
         }
 
@@ -129,9 +137,12 @@ impl Renderer {
             && supported.multi_draw_indirect == vk::TRUE
             && supported.draw_indirect_first_instance == vk::TRUE
             && supported_11.shader_draw_parameters == vk::TRUE;
+        // Pipeline statistics: how much each pass shades, for the benchmark.
+        let statistics = supported.pipeline_statistics_query == vk::TRUE;
         let features = vk::PhysicalDeviceFeatures::default()
             .multi_draw_indirect(multi_draw)
-            .draw_indirect_first_instance(multi_draw);
+            .draw_indirect_first_instance(multi_draw)
+            .pipeline_statistics_query(statistics);
         let mut features_11 =
             vk::PhysicalDeviceVulkan11Features::default().shader_draw_parameters(multi_draw);
         let mut enabled_latest = super::swapchain::FifoLatestReadyFeatures::new(true);
@@ -355,8 +366,16 @@ impl Renderer {
 
         let quad_sets = super::quad_table::QuadSets::new(&device)?;
 
-        let gpu_timer =
-            super::gpu_timer::GpuTimer::new(&device, &limits, timestamp_bits, MAX_FRAMES_IN_FLIGHT);
+        let pass_labels = (debug_utils || use_validation)
+            .then(|| ash::ext::debug_utils::Device::new(&instance, &device));
+        let gpu_timer = super::gpu_timer::GpuTimer::new(
+            &device,
+            &limits,
+            timestamp_bits,
+            MAX_FRAMES_IN_FLIGHT,
+            pass_labels,
+            statistics,
+        );
 
         let blur = blur::Blur::new(
             &instance,

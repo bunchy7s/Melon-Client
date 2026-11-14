@@ -2624,6 +2624,7 @@ dependencies = [
  "flate2",
  "glam",
  "image",
+ "libloading 0.8.9",
  "num-bigint 0.5.1",
  "open",
  "png",

@@ -2,9 +2,40 @@
 
 use ash::vk;
 use std::cell::{Cell, RefCell};
+use std::ffi::CStr;
 
 /// Timestamps one frame may write.
 const MAX_MARKS: u32 = 24;
+/// Pipeline statistics queries one frame may use: one per counted pass.
+const MAX_COUNTED: u32 = 24;
+/// What each counted pass records, in the order the results come in
+/// (by bit: vertex shader 2, clipping primitives 6, fragment shader 7).
+const COUNTED: vk::QueryPipelineStatisticFlags = vk::QueryPipelineStatisticFlags::from_raw(
+    vk::QueryPipelineStatisticFlags::VERTEX_SHADER_INVOCATIONS.as_raw()
+        | vk::QueryPipelineStatisticFlags::CLIPPING_PRIMITIVES.as_raw()
+        | vk::QueryPipelineStatisticFlags::FRAGMENT_SHADER_INVOCATIONS.as_raw(),
+);
+
+/// How much shading one pass did in a frame, from a pipeline statistics
+/// query: what the GPU's shader cores were given, not how long it took.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PassStats {
+    /// Vertex shader invocations (after the post-transform cache).
+    pub vertices: u64,
+    /// Primitives that came out of clipping, so reached the rasterizer.
+    pub primitives: u64,
+    /// Fragment shader invocations: fragments early depth testing did not
+    /// reject. Divided by the screen's pixels, the pass's overdraw.
+    pub fragments: u64,
+}
+
+impl std::ops::AddAssign for PassStats {
+    fn add_assign(&mut self, other: Self) {
+        self.vertices += other.vertices;
+        self.primitives += other.primitives;
+        self.fragments += other.fragments;
+    }
+}
 /// How much each frame moves the average: about the last 30 frames count.
 const SMOOTHING: f32 = 1.0 / 30.0;
 
@@ -27,6 +58,24 @@ pub(super) struct GpuTimer {
     /// The newest frame read back, unsmoothed, for the benchmark.
     last: Vec<(&'static str, f32)>,
     last_total_ms: f32,
+    /// `VK_EXT_debug_utils`, when on: names each pass in the command buffer
+    /// for GPU profilers (Nsight Graphics, RenderDoc), see [`Self::pass`].
+    pass_labels: Option<ash::ext::debug_utils::Device>,
+    /// Whether a pass label is open in the frame being recorded.
+    label_open: Cell<bool>,
+    /// For the pipeline statistics queries, which are begun and ended
+    /// where the pass label is closed (no device at hand there).
+    device: Option<ash::Device>,
+    /// Pipeline statistics, one pool per frame in flight; empty without
+    /// `pipelineStatisticsQuery`. Like the timestamps: what each slot's pool
+    /// holds, the frame's pool and passes so far, and whether one is open.
+    count_pools: Vec<vk::QueryPool>,
+    counted_written: Vec<Vec<&'static str>>,
+    count_pool: Cell<vk::QueryPool>,
+    counted: RefCell<Vec<&'static str>>,
+    count_open: Cell<bool>,
+    /// The newest frame's statistics per pass, for the benchmark.
+    last_stats: Vec<(&'static str, PassStats)>,
 }
 
 impl GpuTimer {
@@ -36,6 +85,8 @@ impl GpuTimer {
         limits: &vk::PhysicalDeviceLimits,
         valid_bits: u32,
         frames: usize,
+        pass_labels: Option<ash::ext::debug_utils::Device>,
+        statistics: bool,
     ) -> Self {
         let supported = valid_bits > 0 && limits.timestamp_compute_and_graphics == vk::TRUE;
         let info = vk::QueryPoolCreateInfo::default()
@@ -44,6 +95,17 @@ impl GpuTimer {
         let pools = if supported {
             (0..frames)
                 .map_while(|_| unsafe { device.create_query_pool(&info, None) }.ok())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let count_info = vk::QueryPoolCreateInfo::default()
+            .query_type(vk::QueryType::PIPELINE_STATISTICS)
+            .query_count(MAX_COUNTED)
+            .pipeline_statistics(COUNTED);
+        let count_pools: Vec<vk::QueryPool> = if statistics {
+            (0..frames)
+                .map_while(|_| unsafe { device.create_query_pool(&count_info, None) }.ok())
                 .collect()
         } else {
             Vec::new()
@@ -64,11 +126,20 @@ impl GpuTimer {
             total_ms: 0.0,
             last: Vec::new(),
             last_total_ms: 0.0,
+            pass_labels,
+            label_open: Cell::new(false),
+            device: (!count_pools.is_empty()).then(|| device.clone()),
+            counted_written: vec![Vec::new(); count_pools.len()],
+            count_pools,
+            count_pool: Cell::new(vk::QueryPool::null()),
+            counted: RefCell::default(),
+            count_open: Cell::new(false),
+            last_stats: Vec::new(),
         }
     }
 
     pub(super) unsafe fn destroy(&mut self, device: &ash::Device) {
-        for pool in self.pools.drain(..) {
+        for pool in self.pools.drain(..).chain(self.count_pools.drain(..)) {
             unsafe { device.destroy_query_pool(pool, None) };
         }
     }
@@ -80,6 +151,10 @@ impl GpuTimer {
         cmd: vk::CommandBuffer,
         slot: usize,
     ) {
+        self.cmd.set(cmd);
+        self.label_open.set(false);
+        self.count_open.set(false);
+        unsafe { self.begin_counting(device, cmd, slot) };
         let Some(&pool) = self.pools.get(slot) else {
             return;
         };
@@ -100,17 +175,108 @@ impl GpuTimer {
         unsafe { self.write(device, vk::PipelineStageFlags::TOP_OF_PIPE, "start") };
     }
 
+    /// Reads back what slot `slot` counted the last time, then readies its
+    /// pool for this frame.
+    unsafe fn begin_counting(&mut self, device: &ash::Device, cmd: vk::CommandBuffer, slot: usize) {
+        let Some(&pool) = self.count_pools.get(slot) else {
+            return;
+        };
+        let written = std::mem::take(&mut self.counted_written[slot]);
+        if !written.is_empty() {
+            let mut results = vec![[0u64; 3]; written.len()];
+            let read = unsafe {
+                device.get_query_pool_results(pool, 0, &mut results, vk::QueryResultFlags::TYPE_64)
+            };
+            if read.is_ok() {
+                self.last_stats = sum_by_pass(&written, &results);
+            }
+        }
+        unsafe { device.cmd_reset_query_pool(cmd, pool, 0, MAX_COUNTED) };
+        self.count_pool.set(pool);
+        self.counted.borrow_mut().clear();
+    }
+
     /// Ends the GPU work named `label`, which ran since the last mark.
     pub(super) unsafe fn mark(&self, device: &ash::Device, label: &'static str) {
+        unsafe { self.close_pass() };
         unsafe { self.write(device, vk::PipelineStageFlags::BOTTOM_OF_PIPE, label) };
+    }
+
+    /// Opens a debug label `label` for the work recorded from here on, up to
+    /// the next [`Self::mark`] (or the next `pass`, or the frame's end). GPU
+    /// profilers show the pass under that name; without a profiler attached
+    /// the driver ignores it. Names past 31 bytes are cut.
+    pub(super) unsafe fn pass(&self, label: &'static str) {
+        let Some(api) = &self.pass_labels else {
+            return;
+        };
+        let cmd = self.cmd.get();
+        if cmd == vk::CommandBuffer::null() {
+            return;
+        }
+        unsafe { self.close_pass() };
+        let mut name = [0u8; 32];
+        let len = label.len().min(name.len() - 1);
+        name[..len].copy_from_slice(&label.as_bytes()[..len]);
+        let name = CStr::from_bytes_until_nul(&name).unwrap_or_default();
+        let info = vk::DebugUtilsLabelEXT::default().label_name(name);
+        unsafe { api.cmd_begin_debug_utils_label(cmd, &info) };
+        self.label_open.set(true);
+    }
+
+    /// [`Self::pass`], and counts the pass's shading as well (see
+    /// [`PassStats`]) up to the next [`Self::mark`] or `pass`. Only inside a
+    /// render pass that lasts until then: a pipeline statistics query must
+    /// end in the subpass it began in.
+    pub(super) unsafe fn counted_pass(&self, label: &'static str) {
+        unsafe { self.pass(label) };
+        let (Some(device), pool) = (&self.device, self.count_pool.get()) else {
+            return;
+        };
+        let mut counted = self.counted.borrow_mut();
+        if pool == vk::QueryPool::null() || counted.len() >= MAX_COUNTED as usize {
+            return;
+        }
+        let cmd = self.cmd.get();
+        unsafe {
+            device.cmd_begin_query(
+                cmd,
+                pool,
+                counted.len() as u32,
+                vk::QueryControlFlags::empty(),
+            );
+        }
+        counted.push(label);
+        self.count_open.set(true);
+    }
+
+    /// Closes the open pass label and pipeline statistics query, if any.
+    pub(super) unsafe fn close_pass(&self) {
+        if let Some(device) = &self.device
+            && self.count_open.replace(false)
+        {
+            let index = self.counted.borrow().len() as u32 - 1;
+            unsafe { device.cmd_end_query(self.cmd.get(), self.count_pool.get(), index) };
+        }
+        if let Some(api) = &self.pass_labels
+            && self.label_open.replace(false)
+        {
+            unsafe { api.cmd_end_debug_utils_label(self.cmd.get()) };
+        }
     }
 
     /// Ends the frame's recording; its times are read when its slot comes
     pub(super) fn end(&mut self, slot: usize) {
+        unsafe { self.close_pass() };
+        self.cmd.set(vk::CommandBuffer::null());
         if let Some(written) = self.written.get_mut(slot) {
             *written = std::mem::take(&mut *self.labels.borrow_mut());
         }
         self.pool.set(vk::QueryPool::null());
+        if let Some(written) = self.counted_written.get_mut(slot) {
+            *written = std::mem::take(&mut *self.counted.borrow_mut());
+        }
+        self.count_pool.set(vk::QueryPool::null());
     }
 
     unsafe fn write(
@@ -165,6 +331,11 @@ impl GpuTimer {
         (self.last_total_ms, &self.last)
     }
 
+    /// The newest frame the GPU finished: each counted pass's shading.
+    pub(super) fn last_stats(&self) -> &[(&'static str, PassStats)] {
+        &self.last_stats
+    }
+
     /// F3's lines: the frame's GPU time, then each pass with its share.
     pub(super) fn lines(&self) -> Vec<String> {
         if self.pools.is_empty() {
@@ -179,6 +350,24 @@ impl GpuTimer {
         );
         lines
     }
+}
+
+/// One frame's pipeline statistics, `[vertex, primitive, fragment]` per
+/// query in `results`, summed per pass name in the order first seen.
+fn sum_by_pass(labels: &[&'static str], results: &[[u64; 3]]) -> Vec<(&'static str, PassStats)> {
+    let mut frame: Vec<(&'static str, PassStats)> = Vec::new();
+    for (&label, &[vertices, primitives, fragments]) in labels.iter().zip(results) {
+        let stats = PassStats {
+            vertices,
+            primitives,
+            fragments,
+        };
+        match frame.iter_mut().find(|(name, _)| *name == label) {
+            Some((_, sum)) => *sum += stats,
+            None => frame.push((label, stats)),
+        }
+    }
+    frame
 }
 
 #[cfg(test)]
@@ -198,7 +387,45 @@ mod tests {
             total_ms: 0.0,
             last: Vec::new(),
             last_total_ms: 0.0,
+            pass_labels: None,
+            label_open: Cell::new(false),
+            device: None,
+            count_pools: Vec::new(),
+            counted_written: Vec::new(),
+            count_pool: Cell::new(vk::QueryPool::null()),
+            counted: RefCell::default(),
+            count_open: Cell::new(false),
+            last_stats: Vec::new(),
         }
+    }
+
+    #[test]
+    fn statistics_add_up_per_pass_in_first_seen_order() {
+        let stats = sum_by_pass(
+            &["solid", "cutout", "solid"],
+            &[[4, 2, 100], [8, 4, 50], [1, 1, 10]],
+        );
+        assert_eq!(
+            stats,
+            vec![
+                (
+                    "solid",
+                    PassStats {
+                        vertices: 5,
+                        primitives: 3,
+                        fragments: 110
+                    }
+                ),
+                (
+                    "cutout",
+                    PassStats {
+                        vertices: 8,
+                        primitives: 4,
+                        fragments: 50
+                    }
+                ),
+            ]
+        );
     }
 
     #[test]

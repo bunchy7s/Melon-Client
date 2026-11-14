@@ -304,6 +304,7 @@ impl Renderer {
         let Some(targets) = &self.blur.targets else {
             return;
         };
+        self.gpu_timer.pass("blur");
         let device = &self.device;
         let swapchain_image = self.swapchain.images[image_index];
         let extent = self.swapchain.extent;
@@ -476,6 +477,7 @@ impl Renderer {
             [0.0, 1.0 / size.height as f32],
         );
         self.gpu_timer.mark(device, "blur");
+        self.gpu_timer.pass("menu");
         self.record_ui(cmd, frame, late_calls, scissor);
         device.cmd_end_render_pass(cmd);
     }

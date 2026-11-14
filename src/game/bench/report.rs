@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value, json};
 
 use super::Phase;
+use super::nvml::GpuSample;
 use crate::game::subsystems::{Rates, Snapshot};
+use crate::renderer::PassStats;
 
 /// A change smaller than this share is noise, in the comparison: runs of
 pub const TOLERANCE: f64 = 0.10;
@@ -26,6 +28,8 @@ pub struct FrameSample {
     pub terrain_draws: usize,
     pub sections_drawn: usize,
     pub entities: usize,
+    /// How much each counted pass shaded (pipeline statistics).
+    pub shading: Vec<(&'static str, PassStats)>,
 }
 
 struct PhaseRecord {
@@ -38,6 +42,8 @@ struct PhaseRecord {
     rss_max: u64,
     mesh_memory_max: u64,
     chunks_end: usize,
+    /// NVML's readings while the phase ran.
+    gpu_samples: Vec<GpuSample>,
 }
 
 /// What the machine and the options were, for reading a summary later.
@@ -109,6 +115,68 @@ fn mean_by_name<'a>(rows: impl Iterator<Item = &'a [(&'static str, f32)]>) -> Va
     Value::Object(out)
 }
 
+/// Per counted pass, the mean per frame of what it shaded, and its
+/// fragments per screen pixel (`overdraw`); `total` sums the passes.
+fn shading(frames: &[FrameSample], resolution: (u32, u32)) -> Value {
+    let mut sums: Vec<(&str, PassStats)> = Vec::new();
+    for frame in frames {
+        for &(name, stats) in &frame.shading {
+            match sums.iter_mut().find(|(n, _)| *n == name) {
+                Some((_, sum)) => *sum += stats,
+                None => sums.push((name, stats)),
+            }
+        }
+    }
+    if sums.is_empty() {
+        return Value::Null;
+    }
+    let total = sums
+        .iter()
+        .fold(PassStats::default(), |mut all, &(_, stats)| {
+            all += stats;
+            all
+        });
+    let frames = frames.len().max(1) as f64;
+    let pixels = (f64::from(resolution.0) * f64::from(resolution.1)).max(1.0);
+    let entry = |stats: PassStats| {
+        let fragments = stats.fragments as f64 / frames;
+        json!({
+            "vertices": round(stats.vertices as f64 / frames),
+            "primitives": round(stats.primitives as f64 / frames),
+            "fragments": round(fragments),
+            "overdraw": round(fragments / pixels),
+        })
+    };
+    let mut out: Map<String, Value> = sums
+        .into_iter()
+        .map(|(name, stats)| (name.to_owned(), entry(stats)))
+        .collect();
+    out.insert("total".to_owned(), entry(total));
+    Value::Object(out)
+}
+
+/// The means of NVML's readings, and the most VRAM used; `null` without
+/// NVML.
+fn nvml(samples: &[GpuSample]) -> Value {
+    if samples.is_empty() {
+        return Value::Null;
+    }
+    let mean = |value: fn(&GpuSample) -> f64| {
+        round(samples.iter().map(value).sum::<f64>() / samples.len() as f64)
+    };
+    json!({
+        "samples": samples.len(),
+        "gpu_util": mean(|s| f64::from(s.gpu_util)),
+        "memory_util": mean(|s| f64::from(s.memory_util)),
+        "sm_mhz": mean(|s| f64::from(s.sm_mhz)),
+        "memory_mhz": mean(|s| f64::from(s.memory_mhz)),
+        "power_w": mean(|s| f64::from(s.power_mw) / 1000.0),
+        "vram_used_mib": round(
+            samples.iter().map(|s| s.vram_used).max().unwrap_or(0) as f64 / (1024.0 * 1024.0)
+        ),
+    })
+}
+
 impl Recorder {
     pub fn new(setup: Setup) -> Self {
         Self {
@@ -145,7 +213,15 @@ impl Recorder {
             rss_max: 0,
             mesh_memory_max: 0,
             chunks_end: 0,
+            gpu_samples: Vec::new(),
         });
+    }
+
+    /// NVML readings taken during the current phase.
+    pub fn add_gpu_samples(&mut self, samples: Vec<GpuSample>) {
+        if let Some(record) = self.phases.last_mut() {
+            record.gpu_samples.extend(samples);
+        }
     }
 
     /// One frame of the current phase, and what is worth sampling with it.
@@ -231,6 +307,8 @@ impl Recorder {
                         "decodes": rates.sound_decodes,
                         "decode_ms": round(rates.sound_decode_ms),
                     },
+                    "shading": shading(frames, self.setup.resolution),
+                    "nvml": nvml(&record.gpu_samples),
                     "server_mspt": mspt,
                     "threads": threads,
                     "rss_mib": round(record.rss_max as f64 / (1024.0 * 1024.0)),
@@ -391,6 +469,10 @@ fn more_is_better(path: &str) -> Option<bool> {
     if path.contains(".threads.") {
         return Some(false);
     }
+    // Busier, faster clocked or more power is neither better nor worse.
+    if path.contains(".nvml.") {
+        return None;
+    }
     path.starts_with("phases.").then_some(false)
 }
 
@@ -496,6 +578,59 @@ mod tests {
         assert_eq!(csv.lines().count(), 3);
         assert!(csv.starts_with("phase,frame_ms"));
         assert!(csv.lines().nth(1).unwrap().ends_with(",5.000"));
+    }
+
+    #[test]
+    fn shading_is_a_mean_per_frame_with_overdraw_per_pixel() {
+        let start = Instant::now();
+        let mut recorder = Recorder::new(Setup {
+            resolution: (10, 10),
+            ..Setup::default()
+        });
+        recorder.enter(Phase::Turn, snapshot(start));
+        let solid = |fragments| PassStats {
+            vertices: 40,
+            primitives: 20,
+            fragments,
+        };
+        for fragments in [100, 300] {
+            recorder.frame(
+                FrameSample {
+                    shading: vec![("solid", solid(fragments)), ("ui", solid(0))],
+                    ..FrameSample::default()
+                },
+                None,
+                0,
+                0,
+                0,
+            );
+        }
+        recorder.add_gpu_samples(vec![
+            GpuSample {
+                gpu_util: 80,
+                vram_used: 2 << 20,
+                ..GpuSample::default()
+            },
+            GpuSample {
+                gpu_util: 100,
+                vram_used: 1 << 20,
+                ..GpuSample::default()
+            },
+        ]);
+        recorder.enter(Phase::Done, snapshot(start + Duration::from_secs(1)));
+        let turn = &recorder.summary()["phases"]["turn"];
+        assert_eq!(turn["shading"]["solid"]["fragments"], json!(200.0));
+        assert_eq!(turn["shading"]["solid"]["overdraw"], json!(2.0));
+        assert_eq!(turn["shading"]["total"]["vertices"], json!(80.0));
+        assert_eq!(turn["nvml"]["gpu_util"], json!(90.0));
+        assert_eq!(turn["nvml"]["vram_used_mib"], json!(2.0));
+    }
+
+    #[test]
+    fn without_statistics_or_nvml_the_phase_says_null() {
+        assert_eq!(shading(&[FrameSample::default()], (1, 1)), Value::Null);
+        assert_eq!(nvml(&[]), Value::Null);
+        assert_eq!(more_is_better("phases.turn.nvml.gpu_util"), None);
     }
 
     #[test]

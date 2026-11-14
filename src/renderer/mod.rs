@@ -29,6 +29,7 @@ mod vk_check;
 mod vk_util;
 
 use device_info::read_device_info;
+pub use gpu_timer::PassStats;
 pub use swapchain::FIFO_LATEST_READY;
 use vk_util::{
     PassStart, choose_surface_format, create_buffer, create_depth_image, create_render_pass,

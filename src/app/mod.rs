@@ -386,7 +386,7 @@ impl RunningState {
             );
         }
         if let Some(run) = &mut self.bench {
-            world.start_bench(self.env.config.render_distance, run.options.scene);
+            world.start_bench(self.env.config.render_distance, &run.options);
             run.start(&self.renderer, &self.env.config);
         }
         self.screens.enter_world();

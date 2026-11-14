@@ -31,6 +31,12 @@ impl Renderer {
         self.gpu_timer.last_frame()
     }
 
+    /// The newest frame the GPU finished: how much each counted pass shaded.
+    /// Empty without `pipelineStatisticsQuery`.
+    pub fn gpu_last_stats(&self) -> &[(&'static str, super::gpu_timer::PassStats)] {
+        self.gpu_timer.last_stats()
+    }
+
     pub(super) unsafe fn render_inner(&mut self, frame: &Frame<'_>) -> anyhow::Result<()> {
         let ui_vertices = frame.ui.vertices.len().min(VERTEX_CAPACITY);
         if ui_vertices < frame.ui.vertices.len() {
@@ -128,6 +134,7 @@ impl Renderer {
         self.device
             .begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default())?;
         self.gpu_timer.begin(&self.device, cmd, self.frames.current);
+        self.gpu_timer.pass("upload");
         let updates = std::mem::take(&mut self.textures.pending_updates);
         super::texture_update::record(
             &mut self.textures.update_staging[self.frames.current],
@@ -230,6 +237,7 @@ impl Renderer {
                 self.record_scene(cmd, scene, ScenePart::Hand);
             }
         }
+        self.gpu_timer.counted_pass("ui");
         self.record_ui(cmd, frame, early, full_scissor);
         self.gpu_timer.mark(&self.device, "ui");
 

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::audio::stats::AudioStats;
 use crate::game::InWorld;
+use crate::game::bench::nvml::GpuMonitor;
 use crate::game::bench::report::{self, FrameSample, Recorder, Setup};
 use crate::game::bench::{BenchOptions, Phase, Scene, WORLD_SEED};
 use crate::game::subsystems::Snapshot;
@@ -23,6 +24,8 @@ pub(super) struct BenchRun {
     pub options: BenchOptions,
     recorder: Option<Recorder>,
     phase: Option<Phase>,
+    /// NVML, while recording on an NVIDIA GPU.
+    gpu_monitor: Option<GpuMonitor>,
 }
 
 impl BenchRun {
@@ -31,12 +34,17 @@ impl BenchRun {
             options,
             recorder: None,
             phase: None,
+            gpu_monitor: None,
         }
     }
 
     /// The world was entered: recording starts.
     pub fn start(&mut self, renderer: &Renderer, config: &Config) {
         let device = renderer.device_info();
+        self.gpu_monitor = GpuMonitor::start(&device.name);
+        if self.gpu_monitor.is_none() {
+            println!("Bench: kein NVML (keine NVIDIA-GPU?), GPU-Auslastung fehlt");
+        }
         self.recorder = Some(Recorder::new(Setup {
             label: self.options.label.clone(),
             scene: self.options.scene.name().to_owned(),
@@ -86,6 +94,9 @@ impl BenchRun {
                 );
                 recorder.set_resolution(size);
             }
+            if let Some(monitor) = &self.gpu_monitor {
+                recorder.add_gpu_samples(monitor.take());
+            }
             recorder.enter(phase, Snapshot::take(net, audio));
             self.phase = Some(phase);
             println!(
@@ -93,6 +104,12 @@ impl BenchRun {
                 phase.name(),
                 world.entity_count()
             );
+            if self.options.hold == Some(phase) {
+                println!(
+                    "Bench: --hold {}: die Phase wiederholt sich, bis das Fenster geschlossen wird (es wird nichts geschrieben)",
+                    phase.name()
+                );
+            }
         }
         if phase == Phase::Done {
             return true;
@@ -109,6 +126,7 @@ impl BenchRun {
                 terrain_draws: render.terrain_draws,
                 sections_drawn: render.sections_drawn,
                 entities: world.entity_count(),
+                shading: renderer.gpu_last_stats().to_vec(),
             },
             world.server_mspt(),
             net.totals().backlog,

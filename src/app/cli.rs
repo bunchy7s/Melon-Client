@@ -89,6 +89,12 @@ fn bench_options(args: &[String]) -> Result<Option<crate::game::bench::BenchOpti
                 .ok_or_else(|| format!("--scene braucht calm oder active, nicht {name}"))?,
         },
         out: value_of("--out")?.map(std::path::PathBuf::from),
+        hold: match value_of("--hold")? {
+            None => None,
+            Some(name) => Some(crate::game::bench::Phase::parse_holdable(name).ok_or_else(
+                || format!("--hold braucht crowd, rise, turn, fly, sound oder idle, nicht {name}"),
+            )?),
+        },
     }))
 }
 
@@ -131,6 +137,15 @@ mod tests {
         assert_eq!(bench.fps_cap, Some(144));
         assert!(bench.compare.is_none());
         assert!(parse(&args(&["melon", "--bench", "--fps-cap", "x"])).is_err());
+        assert!(bench.hold.is_none());
+        let Ok(Command::Play(held)) = parse(&args(&["melon", "--bench", "--hold", "turn"])) else {
+            panic!("expected Play");
+        };
+        assert_eq!(
+            held.bench.and_then(|b| b.hold),
+            Some(crate::game::bench::Phase::Turn)
+        );
+        assert!(parse(&args(&["melon", "--bench", "--hold", "load"])).is_err());
         let Ok(Command::Play(plain)) = parse(&args(&["melon", "--game"])) else {
             panic!("expected Play");
         };
