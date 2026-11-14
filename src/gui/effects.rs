@@ -84,7 +84,16 @@ pub struct ScreenEffects {
 
 impl ScreenEffects {
     /// Draws them in vanilla's order: the hand pass's overlays, then the
-    pub fn draw(&self, list: &mut DrawList, textures: &EffectTextures, size: (f32, f32)) {
+    /// `hud`: the HUD is shown (not hidden with F1); without it only the
+    /// hand pass's overlays (inside a block, under water, on fire) draw,
+    /// as `Hud.extractCameraOverlays` is skipped then.
+    pub fn draw(
+        &self,
+        list: &mut DrawList,
+        textures: &EffectTextures,
+        size: (f32, f32),
+        hud: bool,
+    ) {
         let (width, height) = size;
         if let Some(wall) = self.wall {
             fill_sprite(list, wall, size, argb(0xFF19_1919));
@@ -94,6 +103,9 @@ impl ScreenEffects {
         }
         if let Some(fire) = self.fire {
             fire_overlay(list, fire, size);
+        }
+        if !hud {
+            return;
         }
         if let Some(vignette) = self.vignette {
             list.set_blend(BlendMode::Vignette);

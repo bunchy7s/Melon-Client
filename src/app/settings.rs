@@ -65,7 +65,19 @@ impl RunningState {
             self.env.audio.play_click();
         }
         if config.directional_audio != old.directional_audio {
+            // Vanilla reloads the sound engine, then clicks.
             self.env.audio.set_directional(config.directional_audio);
+            self.env.audio.play_click();
+        }
+        // `Options.createSoundSliderOptionInstance`: outside a world the
+        // slider's source is heard (`SoundPreviewHandler.preview`).
+        if self.world.is_none()
+            && let Some(source) = crate::audio::source::SoundSource::ALL
+                .into_iter()
+                .find(|&s| config.sound_volumes.get(s) != old.sound_volumes.get(s))
+        {
+            let volume = config.sound_volumes.get(source) as f32;
+            self.sound_preview.preview(&self.env.audio, source, volume);
         }
         if config.speaker_layout != old.speaker_layout {
             self.env

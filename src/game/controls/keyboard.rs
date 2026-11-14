@@ -88,6 +88,8 @@ impl InWorld {
         let mode = self.game_mode.current;
         match action {
             Action::TogglePerspective => self.camera_mode = self.camera_mode.next(),
+            // `Gui.handleKeybinds`: `keyToggleGui` toggles `Hud.isHidden`.
+            Action::ToggleGui => self.hud_hidden = !self.hud_hidden,
             Action::Inventory if self.rides_with_inventory() => self.open_mount_inventory(),
             Action::Inventory => self.open_inventory(ui),
             Action::Chat => self.open_chat(false, ui),

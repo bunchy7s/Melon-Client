@@ -175,7 +175,8 @@ impl InWorld {
         let mut entities_drawn = 0;
         let main_arm = config.main_hand;
         if self.camera_mode == CameraMode::FirstPerson {
-            if !spectator {
+            // `GameRenderer.renderItemInHand`: not while the HUD is hidden.
+            if !spectator && !self.hud_hidden {
                 let origin = camera.position.floor().as_ivec3();
                 let eye = camera.position - origin.as_vec3();
                 let hands = self.first_person_hands(eye, main_arm, config.model_parts, partial);

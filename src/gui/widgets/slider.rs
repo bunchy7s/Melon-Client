@@ -76,9 +76,10 @@ impl Slider {
         self.dragging && self.set_from_mouse(mx)
     }
 
-    /// `onRelease`.
-    pub fn release(&mut self) {
-        self.dragging = false;
+    /// `onRelease`: whether this slider was the one held, and so clicks
+    /// now (`AbstractSliderButton` clicks on release, not on press).
+    pub fn release(&mut self) -> bool {
+        std::mem::take(&mut self.dragging)
     }
 
     /// `setValueFromMouse`, snapped to the nearest step as

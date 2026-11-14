@@ -547,7 +547,7 @@ impl Screen for PackSelectionScreen {
         ScreenAction::None
     }
 
-    fn on_mouse_up(&mut self, _x: f32, _y: f32) {
+    fn on_mouse_up(&mut self, _x: f32, _y: f32, _ctx: &ScreenContext) {
         self.available_list.on_mouse_up();
         self.selected_list.on_mouse_up();
     }

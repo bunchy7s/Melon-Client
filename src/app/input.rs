@@ -348,7 +348,7 @@ impl RunningState {
         };
         if !pressed {
             if button == MouseButton::Left {
-                screen.on_mouse_up(x, y);
+                screen.on_mouse_up(x, y, &self.env.ctx(scale));
             }
             return;
         }
@@ -463,6 +463,23 @@ impl RunningState {
             PhysicalKey::Code(code) => InputBind::from_key_code(code),
             PhysicalKey::Unidentified(_) => None,
         };
+        // `Minecraft.handleGlobalKeyPress`: a screenshot from anywhere, but
+        // not while a key is being bound.
+        if pressed
+            && !event.repeat
+            && !self.screens.capturing_bind()
+            && bind.as_ref().is_some_and(|bind| {
+                self.env
+                    .config
+                    .input
+                    .binds
+                    .actions_for(bind)
+                    .any(|action| action == crate::settings::input::Action::Screenshot)
+            })
+        {
+            self.screenshots.request();
+            return;
+        }
         let text = if pressed {
             text_events(
                 event,

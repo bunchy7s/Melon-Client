@@ -328,7 +328,7 @@ impl Screen for MultiplayerScreen {
         }
     }
 
-    fn on_mouse_up(&mut self, _x: f32, _y: f32) {
+    fn on_mouse_up(&mut self, _x: f32, _y: f32, _ctx: &ScreenContext) {
         self.list.on_mouse_up();
     }
 

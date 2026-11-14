@@ -23,7 +23,10 @@ impl InWorld {
         config: &Config,
         size: (f32, f32),
     ) {
-        self.effects_frame.draw(draw_list, &assets.effects, size);
+        // `Hud.isHidden` (F1) leaves the hand pass's overlays, not the camera's.
+        let shown = !self.hud_hidden;
+        self.effects_frame
+            .draw(draw_list, &assets.effects, size, shown);
         let tag_background = config.chat.world_background_opacity(0.25);
         self.draw_text_displays(draw_list, painter, lang, size, tag_background);
         self.draw_name_tags(draw_list, painter, lang, size, tag_background);
@@ -32,50 +35,53 @@ impl InWorld {
             .as_ref()
             .and_then(|overlay| overlay.effects_panel())
             .filter(|panel| panel.fits(size.0));
-        if panel.is_none() {
-            crate::gui::hud::effects::draw_hud(
-                draw_list,
-                &assets.hud.effects,
-                &self.status_effects,
-                size.0,
-            );
-        }
-        self.hud.draw(
-            draw_list,
-            &assets.hud,
-            painter,
-            &self.inventory,
-            &self.status,
-            crate::gui::hud::AttackCooldown {
-                strength: self.hands.attack_strength(self.inventory.selected_stack()),
-                indicator: config.attack_indicator,
-                main_arm: config.main_hand,
-                target_ready: self.attack_target_ready(),
-            },
-            self.camera_mode == CameraMode::FirstPerson && !self.debug.visible(),
-            size,
-        );
-        if self.game_mode.current.is_spectator() {
-            self.spectator_menu.draw(
-                draw_list,
-                &assets.spectator,
-                assets.hud.hotbar_sprites(),
-                &|id| assets.players.for_profile(id).texture,
-                painter,
-                lang,
-                size,
-            );
-        }
-        self.draw_sidebar(draw_list, painter, lang, size);
         let partial = self.tick_time / player::TICK;
         let (font, pages, white) = (painter.font, painter.font_textures, painter.white);
-        self.hud
-            .draw_overlay_message(draw_list, painter, size, partial);
-        self.hud
-            .bosses
-            .draw(draw_list, &assets.hud.boss, painter, size, self.hud.ticks());
-        self.hud.draw_title(draw_list, painter, size, partial);
-        if config.show_subtitles {
+        if shown {
+            if panel.is_none() {
+                crate::gui::hud::effects::draw_hud(
+                    draw_list,
+                    &assets.hud.effects,
+                    &self.status_effects,
+                    size.0,
+                );
+            }
+            self.hud.draw(
+                draw_list,
+                &assets.hud,
+                painter,
+                &self.inventory,
+                &self.status,
+                crate::gui::hud::AttackCooldown {
+                    strength: self.hands.attack_strength(self.inventory.selected_stack()),
+                    indicator: config.attack_indicator,
+                    main_arm: config.main_hand,
+                    target_ready: self.attack_target_ready(),
+                },
+                self.camera_mode == CameraMode::FirstPerson && !self.debug.visible(),
+                size,
+            );
+            if self.game_mode.current.is_spectator() {
+                self.spectator_menu.draw(
+                    draw_list,
+                    &assets.spectator,
+                    assets.hud.hotbar_sprites(),
+                    &|id| assets.players.for_profile(id).texture,
+                    painter,
+                    lang,
+                    size,
+                );
+            }
+            self.draw_sidebar(draw_list, painter, lang, size);
+            self.hud
+                .draw_overlay_message(draw_list, painter, size, partial);
+            self.hud
+                .bosses
+                .draw(draw_list, &assets.hud.boss, painter, size, self.hud.ticks());
+            self.hud.draw_title(draw_list, painter, size, partial);
+        }
+        // Hidden, the subtitles still show over an open in-game screen.
+        if config.show_subtitles && (shown || self.overlay.is_some()) {
             let ears = self.listener();
             let listener = crate::gui::hud::subtitles::Listener {
                 position: ears.position,
@@ -91,13 +97,17 @@ impl InWorld {
                 background,
                 Instant::now(),
             );
-        } else {
+        } else if !config.show_subtitles {
             self.hud.subtitles.clear();
         }
         let chat_open = self.overlay_kind() == Some(OverlayKind::Chat);
-        self.chat
-            .draw(draw_list, font, pages, white, lang, size.1, chat_open);
-        self.draw_tab_list(draw_list, assets, painter, lang, size.0);
+        if shown || chat_open {
+            self.chat
+                .draw(draw_list, font, pages, white, lang, size.1, chat_open);
+        }
+        if shown {
+            self.draw_tab_list(draw_list, assets, painter, lang, size.0);
+        }
         if let Some(overlay) = &mut self.overlay {
             overlay.draw(&mut OverlayDraw {
                 draw_list,

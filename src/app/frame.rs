@@ -36,6 +36,7 @@ impl RunningState {
             self.leave_world(Some(reason));
         }
         self.poll_server_packs();
+        self.report_screenshots();
 
         if self.world.is_some() {
             if self.draw_world(now, dt.as_secs_f32()) {
@@ -54,6 +55,27 @@ impl RunningState {
                 let next = now + Duration::from_secs_f64(1.0 / f64::from(fps));
                 self.next_frame = Some(next);
                 event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+            }
+        }
+    }
+
+    /// `Screenshot.grab`'s callback: each finished save in the chat
+    /// (`showDebugChat`), the file name a link to it.
+    fn report_screenshots(&mut self) {
+        for saved in self.screenshots.finished() {
+            let lang = &self.env.lang;
+            let text = match &saved {
+                Ok(file) => super::screenshot::saved_message(lang, file),
+                Err(e) => {
+                    crate::gui::text::StyledText::plain(&lang.format("screenshot.failure", &[e]))
+                }
+            };
+            match &mut self.world {
+                Some(world) => world.show_client_message(text, &self.env.gui_assets.font),
+                None => match saved {
+                    Ok(file) => eprintln!("Screenshot: {}", file.display()),
+                    Err(e) => eprintln!("Screenshot nicht gespeichert: {e}"),
+                },
             }
         }
     }
@@ -89,6 +111,9 @@ impl RunningState {
             screen.draw(&mut ui, &env.ctx(scale));
         }
 
+        if self.screenshots.begin_frame(true) {
+            self.renderer.request_capture();
+        }
         let frame = Frame {
             scene: scene.as_ref(),
             ui: &self.draw_list,
@@ -99,6 +124,9 @@ impl RunningState {
         if let Err(e) = self.renderer.render(&frame) {
             eprintln!("Render-Fehler: {e:#}");
         }
+        let renderer = &mut self.renderer;
+        self.screenshots
+            .end_frame(self.env.assets.game_dir(), || renderer.take_capture());
     }
 
     /// The benchmark is done: its results, the world saved, the game ends.
@@ -139,6 +167,9 @@ impl RunningState {
         env.audio.set_listener(ears.position, ears.forward, ears.up);
         world.sample_subsystems(env.audio.stats());
         world.set_sound_channels(env.audio.channels_used());
+        if world.debug_extended() {
+            world.set_sound_cache(env.audio.cache_stats());
+        }
         env.audio.set_subtitles(env.config.show_subtitles);
         for sound in world.take_sounds() {
             env.audio.play(&sound);
@@ -244,6 +275,10 @@ impl RunningState {
         if probe_shot.is_some() {
             self.renderer.request_capture();
         }
+        let screenshot_free = icon_path.is_none() && probe_shot.is_none();
+        if self.screenshots.begin_frame(screenshot_free) {
+            self.renderer.request_capture();
+        }
 
         let frame = Frame {
             scene: Some(&scene),
@@ -265,6 +300,9 @@ impl RunningState {
         } else if let (Some(path), Some(image)) = (icon_path, self.renderer.take_capture()) {
             super::world_icon::save(&path, &image);
         }
+        let renderer = &mut self.renderer;
+        self.screenshots
+            .end_frame(self.env.assets.game_dir(), || renderer.take_capture());
         let waits = self.renderer.last_waits();
         world.profiler.mark_split(
             "render",

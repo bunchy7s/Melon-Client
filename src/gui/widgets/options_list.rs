@@ -242,12 +242,15 @@ impl<O: OptionEntry> OptionsList<O> {
         }
     }
 
-    pub fn on_mouse_up(&mut self) {
+    /// Whether a slider was let go, which clicks.
+    pub fn on_mouse_up(&mut self) -> bool {
+        let mut released = false;
         for (_, control) in &mut self.options {
             if let Control::Slider(s) = control {
-                s.release();
+                released |= s.release();
             }
         }
+        released
     }
 
     pub fn on_scroll(&mut self, delta: f32) {
@@ -264,7 +267,6 @@ impl<O: OptionEntry> OptionsList<O> {
             match control {
                 Control::Slider(s) => {
                     if let Some(changed) = s.press(x, y) {
-                        ctx.click();
                         if changed {
                             self.pending.push(option.set_step(s.step()));
                         }
@@ -373,8 +375,10 @@ impl<O: OptionEntry> Screen for OptionsSubScreen<O> {
         self.list.on_mouse_move(x, y);
     }
 
-    fn on_mouse_up(&mut self, _x: f32, _y: f32) {
-        self.list.on_mouse_up();
+    fn on_mouse_up(&mut self, _x: f32, _y: f32, ctx: &ScreenContext) {
+        if self.list.on_mouse_up() {
+            ctx.click();
+        }
     }
 
     fn on_scroll(&mut self, delta: f32) {

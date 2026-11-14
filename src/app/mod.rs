@@ -6,6 +6,7 @@ mod frame;
 pub mod input;
 mod reload;
 pub mod screen_stack;
+mod screenshot;
 mod settings;
 mod world_icon;
 
@@ -129,6 +130,10 @@ struct RunningState {
     bench: Option<bench::BenchRun>,
     /// The singleplayer world's picture for the world list.
     world_icon: world_icon::WorldIcon,
+    /// F2's pictures: the one asked for and the ones being written.
+    screenshots: screenshot::Screenshots,
+    /// The volume sliders' sounds outside a world.
+    sound_preview: crate::audio::preview::SoundPreview,
 }
 
 impl App {
@@ -212,6 +217,8 @@ impl App {
             draw_list: DrawList::new(),
             bench: None,
             world_icon: world_icon::WorldIcon::new(),
+            screenshots: screenshot::Screenshots::default(),
+            sound_preview: Default::default(),
         };
         let scale = state.scale();
         let ctx = state.env.ctx(scale);

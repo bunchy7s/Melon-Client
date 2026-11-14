@@ -114,6 +114,7 @@ impl InWorld {
         out: &mut Vec<EntityDraw>,
     ) {
         let crosshair = self.debug.visible()
+            && !self.hud_hidden
             && self.camera_mode == CameraMode::FirstPerson
             && !self.game_mode.current.is_spectator();
         if !self.debug_view.any() && !crosshair {

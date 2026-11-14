@@ -93,6 +93,9 @@ pub enum OverlayAction {
     RunCommand(String),
     /// A link was clicked.
     OpenUrl(String),
+    /// A file of the client's own was clicked: opened at once, as
+    /// `ClickEvent.OpenFile` is (`Util.getPlatform().openFile`).
+    OpenFile(String),
     Copy(String),
     /// Close and switch to this game mode.
     SwitchGameMode(GameMode),

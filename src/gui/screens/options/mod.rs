@@ -256,8 +256,10 @@ impl Screen for OptionsScreen {
         }
     }
 
-    fn on_mouse_up(&mut self, _x: f32, _y: f32) {
-        self.fov.release();
+    fn on_mouse_up(&mut self, _x: f32, _y: f32, ctx: &ScreenContext) {
+        if self.fov.release() {
+            ctx.click();
+        }
     }
 
     fn cursor(&self) -> CursorKind {
@@ -269,7 +271,6 @@ impl Screen for OptionsScreen {
 
     fn on_click(&mut self, x: f32, y: f32, ctx: &ScreenContext) -> ScreenAction {
         if let Some(changed) = self.fov.press(x, y) {
-            ctx.click();
             if changed {
                 self.pending.push(fov_change(self.fov.step()));
             }

@@ -249,6 +249,7 @@ impl InWorld {
                     ScreenAction::OpenUrl(url)
                 };
             }
+            OverlayAction::OpenFile(path) => return ScreenAction::OpenUrl(path),
             OverlayAction::Copy(text) => return ScreenAction::Copy(text),
             OverlayAction::SwitchGameMode(mode) => {
                 self.close_overlay_with(ChatExit::Interrupted, ui);

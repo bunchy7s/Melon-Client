@@ -176,7 +176,7 @@ pub trait Screen {
     fn on_mouse_move(&mut self, x: f32, y: f32);
     fn on_click(&mut self, x: f32, y: f32, ctx: &ScreenContext) -> ScreenAction;
     /// Vanilla `AbstractScrollArea.onRelease`. Ends a scrollbar drag.
-    fn on_mouse_up(&mut self, _x: f32, _y: f32) {}
+    fn on_mouse_up(&mut self, _x: f32, _y: f32, _ctx: &ScreenContext) {}
     /// Scroll wheel: positive = up/back.
     fn on_scroll(&mut self, _delta: f32) {}
     /// A key or typed text. Enter can submit, so it may act.

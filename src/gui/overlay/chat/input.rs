@@ -257,6 +257,10 @@ impl ChatInput {
             Some(ClickEvent::CopyToClipboard { value }) => {
                 return OverlayAction::Copy(value.to_string());
             }
+            // Only the client makes these (a saved screenshot), never a server.
+            Some(ClickEvent::OpenFile { path }) => {
+                return OverlayAction::OpenFile(path.to_string());
+            }
             _ => {}
         }
         OverlayAction::None

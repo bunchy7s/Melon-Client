@@ -2,7 +2,7 @@
 
 use rodio::{ChannelCount, SampleRate, Source};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::time::Duration;
 
 #[derive(Default)]
@@ -120,20 +120,51 @@ impl Drop for Slot {
     }
 }
 
+/// A started sound as the game can still see it (`SoundManager.isActive`,
+/// `stop`): it is active until it ends, is stopped, or fails to start.
+#[derive(Debug, Default)]
+pub struct Playing {
+    ended: AtomicBool,
+    stop: AtomicBool,
+}
+
+impl Playing {
+    pub fn is_active(&self) -> bool {
+        !self.ended.load(Relaxed)
+    }
+
+    /// `SoundManager.stop(instance)`: it goes quiet at the mixer's next look.
+    pub fn stop(&self) {
+        self.stop.store(true, Relaxed);
+    }
+}
+
+/// A [`Playing`] held by the sound: dropping it, when the sound ends or
+/// never gets to start, marks the sound ended.
+pub(super) struct Watch(pub(super) Arc<Playing>);
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        self.0.ended.store(true, Relaxed);
+    }
+}
+
 /// A sound that counts itself out when the mixer drops it, and frees its
-/// channel then.
+/// channel then, it ends early when its [`Playing`] is stopped.
 pub(super) struct Counted<S> {
     inner: S,
     stats: Arc<AudioStats>,
     _slot: Slot,
+    watch: Option<Watch>,
 }
 
 impl<S> Counted<S> {
-    pub(super) fn new(inner: S, stats: Arc<AudioStats>, slot: Slot) -> Self {
+    pub(super) fn new(inner: S, stats: Arc<AudioStats>, slot: Slot, watch: Option<Watch>) -> Self {
         Self {
             inner,
             stats,
             _slot: slot,
+            watch,
         }
     }
 }
@@ -149,6 +180,9 @@ impl<S: Source> Iterator for Counted<S> {
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
+        if self.watch.as_ref().is_some_and(|w| w.0.stop.load(Relaxed)) {
+            return None;
+        }
         self.inner.next()
     }
 
@@ -192,6 +226,7 @@ mod tests {
             SamplesBuffer::new(one, rate, vec![0.0; 4]),
             Arc::clone(&stats),
             slot,
+            None,
         );
         assert_eq!(stats.totals().playing, 1);
         assert_eq!(pools.used(Pool::Static), 1);
@@ -199,6 +234,27 @@ mod tests {
         assert_eq!(stats.totals().playing, 0);
         assert_eq!(stats.totals().started, 1);
         assert_eq!(pools.used(Pool::Static), 0);
+    }
+
+    #[test]
+    fn a_stopped_sound_ends_and_says_so() {
+        let stats = Arc::new(AudioStats::default());
+        let pools = Arc::new(Pools::default());
+        let playing = Arc::new(Playing::default());
+        let one = std::num::NonZeroU16::new(1).unwrap();
+        let rate = std::num::NonZeroU32::new(48_000).unwrap();
+        let mut sound = Counted::new(
+            SamplesBuffer::new(one, rate, vec![0.0; 4]),
+            stats,
+            pools.acquire(Pool::Static).unwrap(),
+            Some(Watch(Arc::clone(&playing))),
+        );
+        assert!(sound.next().is_some());
+        playing.stop();
+        assert!(sound.next().is_none());
+        assert!(playing.is_active());
+        drop(sound);
+        assert!(!playing.is_active());
     }
 
     #[test]

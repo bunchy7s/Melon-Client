@@ -7,6 +7,7 @@ pub mod level_sounds;
 pub mod library;
 pub mod music;
 pub mod pcm;
+pub mod preview;
 pub mod source;
 pub mod spatial;
 pub mod stats;
@@ -18,7 +19,7 @@ use rodio::mixer::Mixer;
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Sample, Source};
 use source::{SoundSource, Volumes};
 use spatial::{Layout, Listener, Placed};
-use stats::{AudioStats, Counted, Pool, Pools, Slot};
+use stats::{AudioStats, Counted, Playing, Pool, Pools, Slot, Watch};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -282,6 +283,18 @@ impl AudioEngine {
         self.pools.debug_string()
     }
 
+    /// `SoundBufferLibrary.enumerate`: the decoded files held, and their bytes.
+    pub fn cache_stats(&self) -> (usize, usize) {
+        self.cache.decoded.lock().map_or((0, 0), |decoded| {
+            decoded
+                .values()
+                .flatten()
+                .fold((0, 0), |(count, bytes), buffer| {
+                    (count + 1, bytes + buffer.size())
+                })
+        })
+    }
+
     /// The static and the streaming channels in use.
     pub fn channels_used(&self) -> [u32; 2] {
         [Pool::Static, Pool::Streaming].map(|pool| self.pools.used(pool))
@@ -407,16 +420,28 @@ impl AudioEngine {
         self.play(&SoundInstance::of(CLICK));
     }
 
+    /// [`Self::play`], and what the game can ask of it afterwards; `None`
+    /// when it does not start (`SoundManager.isActive` is false then).
+    pub fn play_watched(&self, instance: &SoundInstance) -> Option<Arc<Playing>> {
+        let playing = Arc::new(Playing::default());
+        let started = std::time::Instant::now();
+        if !self.start(instance, Some(Watch(Arc::clone(&playing)))) {
+            return None;
+        }
+        self.stats.played(started.elapsed().as_nanos() as u64);
+        Some(playing)
+    }
+
     /// Starts a sound. The mixer gets a pre-decoded `SamplesBuffer`; a live
     pub fn play(&self, instance: &SoundInstance) {
         let started = std::time::Instant::now();
-        if self.start(instance) {
+        if self.start(instance, None) {
             self.stats.played(started.elapsed().as_nanos() as u64);
         }
     }
 
     /// [`Self::play`]; whether the sound started or is being loaded.
-    fn start(&self, instance: &SoundInstance) -> bool {
+    fn start(&self, instance: &SoundInstance, playing: Option<Watch>) -> bool {
         let Some(mixer) = &self.mixer else {
             return false;
         };
@@ -457,6 +482,7 @@ impl AudioEngine {
             gains: Arc::clone(&self.gains),
             stats: Arc::clone(&self.stats),
             slot,
+            playing,
             volume,
             pitch: (instance.pitch * sound.pitch).clamp(PITCH_RANGE.0, PITCH_RANGE.1),
             source: self.forced_source.unwrap_or(instance.source),
@@ -494,6 +520,8 @@ struct Voice {
     stats: Arc<AudioStats>,
     /// Its channel, freed when it ends or never starts.
     slot: Slot,
+    /// What the game watches of it, if anything.
+    playing: Option<Watch>,
     volume: f32,
     pitch: f32,
     source: SoundSource,
@@ -524,7 +552,8 @@ impl Voice {
                 .periodic_access(VOLUME_POLL, move |s| {
                     s.set_factor(volume * gains.get(source));
                 });
-        self.mixer.add(Counted::new(input, self.stats, self.slot));
+        self.mixer
+            .add(Counted::new(input, self.stats, self.slot, self.playing));
     }
 }
 

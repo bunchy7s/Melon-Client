@@ -110,6 +110,12 @@ impl InWorld {
             crate::audio::stats::STREAMING_CHANNELS,
             (self.mood() * 100.0 + 0.5).floor() as i32,
         ));
+        // `DebugEntrySoundCache`: whole MiB, rounded up.
+        let (buffers, bytes) = self.sound_cache;
+        extras.regular.push(format!(
+            "Sound cache: {buffers} buffers, {} MiB",
+            bytes.div_ceil(1024 * 1024)
+        ));
         extras.regular.push(format!(
             "Chunks[C] W: {} E: {}",
             self.level.chunk_count(),

@@ -278,8 +278,12 @@ pub struct InWorld {
     /// Sounds the player made, for the app to play.
     sounds: Vec<crate::audio::SoundInstance<'static>>,
     footsteps: sounds::Footsteps,
+    /// `Hud.isHidden`: F1 hid the HUD and the hand.
+    hud_hidden: bool,
     /// The sound channels in use, static and streaming, for F3.
     sound_channels: [u32; 2],
+    /// The decoded sound files and their bytes, for F3.
+    sound_cache: (usize, usize),
     /// The last rendered camera as the sounds hear it: position, forward, up.
     ears: Option<sounds::Ears>,
     /// What the client played itself lately, to not play it again when
@@ -458,7 +462,9 @@ impl InWorld {
             destroy_delay: 0,
             sounds: Vec::new(),
             footsteps: sounds::Footsteps::default(),
+            hud_hidden: false,
             sound_channels: [0; 2],
+            sound_cache: (0, 0),
             ears: None,
             echoes: sounds::Echoes::default(),
             right_click_delay: 0,
@@ -524,6 +530,16 @@ impl InWorld {
     /// The sound channels in use (`AudioEngine::channels_used`), for F3.
     pub fn set_sound_channels(&mut self, used: [u32; 2]) {
         self.sound_channels = used;
+    }
+
+    /// Whether F3 shows the optional entries, which ask for more to show.
+    pub fn debug_extended(&self) -> bool {
+        self.debug.visible() && self.debug_view.extended
+    }
+
+    /// `AudioEngine::cache_stats`, for F3.
+    pub fn set_sound_cache(&mut self, cache: (usize, usize)) {
+        self.sound_cache = cache;
     }
 
     pub fn sample_subsystems(&mut self, audio: &crate::audio::stats::AudioStats) {

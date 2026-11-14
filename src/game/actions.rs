@@ -72,6 +72,11 @@ impl InWorld {
         self.debug_line(lang, font, lang.get(key));
     }
 
+    /// `Minecraft.showDebugChat`: a client message in the chat, as it is.
+    pub fn show_client_message(&mut self, text: StyledText, font: &Font) {
+        self.chat.add_client_message(text, font);
+    }
+
     /// [`Self::debug_feedback`] for a message that is already text.
     pub fn debug_line(&mut self, lang: &Lang, font: &Font, message: &str) {
         let mut text = StyledText::default();
