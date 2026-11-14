@@ -138,6 +138,7 @@ impl RunningState {
         let ears = world.listener();
         env.audio.set_listener(ears.position, ears.forward, ears.up);
         world.sample_subsystems(env.audio.stats());
+        world.set_sound_channels(env.audio.channels_used());
         env.audio.set_subtitles(env.config.show_subtitles);
         for sound in world.take_sounds() {
             env.audio.play(&sound);

@@ -2,7 +2,7 @@
 
 use rodio::{ChannelCount, SampleRate, Source};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::time::Duration;
 
 #[derive(Default)]
@@ -49,15 +49,92 @@ impl AudioStats {
     }
 }
 
-/// A sound that counts itself out when the mixer drops it.
+/// `Library`'s channel pools as OpenAL Soft sizes them: its 255 mono
+/// sources give `clamp(sqrt(255), 2, 8)` = 8 streaming channels and
+/// `clamp(255 - 8, 8, 255)` = 247 static ones.
+pub const STATIC_CHANNELS: u32 = 247;
+pub const STREAMING_CHANNELS: u32 = 8;
+
+/// `Library.Pool`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pool {
+    Static = 0,
+    Streaming = 1,
+}
+
+impl Pool {
+    pub fn limit(self) -> u32 {
+        match self {
+            Pool::Static => STATIC_CHANNELS,
+            Pool::Streaming => STREAMING_CHANNELS,
+        }
+    }
+}
+
+/// `Library.CountingChannelPool`: how many channels of each pool are taken.
+#[derive(Default)]
+pub struct Pools {
+    used: [AtomicU32; 2],
+}
+
+impl Pools {
+    /// `CountingChannelPool.acquire`: a channel, or `None` when the pool is
+    /// full; the sound then does not play, nothing is cut off for it.
+    pub fn acquire(self: &Arc<Self>, pool: Pool) -> Option<Slot> {
+        let limit = pool.limit();
+        self.used[pool as usize]
+            .try_update(Relaxed, Relaxed, |used| (used < limit).then_some(used + 1))
+            .ok()?;
+        Some(Slot {
+            pools: Arc::clone(self),
+            pool,
+        })
+    }
+
+    pub fn used(&self, pool: Pool) -> u32 {
+        self.used[pool as usize].load(Relaxed)
+    }
+
+    /// `Library.getChannelDebugString`: "Sounds: 3/247 + 0/8".
+    pub fn debug_string(&self) -> String {
+        format!(
+            "Sounds: {}/{} + {}/{}",
+            self.used(Pool::Static),
+            STATIC_CHANNELS,
+            self.used(Pool::Streaming),
+            STREAMING_CHANNELS
+        )
+    }
+}
+
+/// A taken channel, given back when it is dropped: when the sound ends, or
+/// when it never got to play (its file was missing or would not decode).
+pub struct Slot {
+    pools: Arc<Pools>,
+    pool: Pool,
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.pools.used[self.pool as usize].fetch_sub(1, Relaxed);
+    }
+}
+
+/// A sound that counts itself out when the mixer drops it, and frees its
+/// channel then.
 pub(super) struct Counted<S> {
     inner: S,
     stats: Arc<AudioStats>,
+    _slot: Slot,
 }
 
 impl<S> Counted<S> {
-    pub(super) fn new(inner: S, stats: Arc<AudioStats>) -> Self {
-        Self { inner, stats }
+    pub(super) fn new(inner: S, stats: Arc<AudioStats>, slot: Slot) -> Self {
+        Self {
+            inner,
+            stats,
+            _slot: slot,
+        }
     }
 }
 
@@ -109,13 +186,32 @@ mod tests {
         stats.played(10);
         let one = std::num::NonZeroU16::new(1).unwrap();
         let rate = std::num::NonZeroU32::new(48_000).unwrap();
+        let pools = Arc::new(Pools::default());
+        let slot = pools.acquire(Pool::Static).unwrap();
         let sound = Counted::new(
             SamplesBuffer::new(one, rate, vec![0.0; 4]),
             Arc::clone(&stats),
+            slot,
         );
         assert_eq!(stats.totals().playing, 1);
+        assert_eq!(pools.used(Pool::Static), 1);
         assert_eq!(sound.count(), 4);
         assert_eq!(stats.totals().playing, 0);
         assert_eq!(stats.totals().started, 1);
+        assert_eq!(pools.used(Pool::Static), 0);
+    }
+
+    #[test]
+    fn a_full_pool_turns_sounds_away_until_one_ends() {
+        let pools = Arc::new(Pools::default());
+        let taken: Vec<Slot> = (0..STATIC_CHANNELS)
+            .map(|_| pools.acquire(Pool::Static).expect("free channel"))
+            .collect();
+        assert!(pools.acquire(Pool::Static).is_none());
+        assert!(pools.acquire(Pool::Streaming).is_some());
+        assert_eq!(pools.debug_string(), "Sounds: 247/247 + 0/8");
+        drop(taken);
+        assert_eq!(pools.used(Pool::Static), 0);
+        assert!(pools.acquire(Pool::Static).is_some());
     }
 }

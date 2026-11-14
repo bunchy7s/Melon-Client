@@ -120,7 +120,7 @@
   "melon.options.speakerLayout.quad": "Quad",
   "melon.options.speakerLayout.surround51": "Surround 5.1",
   "melon.options.speakerLayout.surround71": "Surround 7.1",
-  "melon.options.speakerLayout.tooltip": "Which speakers sounds are panned across. Auto uses what the output device prefers. Falls back to the device's own channels if it does not take the chosen ones.",
+  "melon.options.speakerLayout.tooltip": "Which speakers sounds are panned across. Auto uses what the output device prefers. Falls back to the device's own channels if it does not take the chosen ones. Directional Audio always uses stereo.",
   "melon.options.presentMode": "Present Mode",
   "melon.options.presentMode.auto": "Auto",
   "melon.options.presentMode.fifo": "FIFO",

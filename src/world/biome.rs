@@ -33,6 +33,88 @@ pub struct Visuals {
     pub water_fog_end_scale: Option<f32>,
 }
 
+/// `minecraft:audio/ambient_sounds` (`AmbientSounds`): a loop, the mood
+/// sound of dark places and random additions.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AmbientSounds {
+    pub loop_sound: Option<String>,
+    pub mood: Option<AmbientMood>,
+    pub additions: Vec<AmbientAddition>,
+}
+
+/// `AmbientMoodSettings`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AmbientMood {
+    pub sound: String,
+    pub tick_delay: i32,
+    pub block_search_extent: i32,
+    pub offset: f64,
+}
+
+/// `AmbientAdditionsSettings`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AmbientAddition {
+    pub sound: String,
+    pub tick_chance: f64,
+}
+
+/// A `SoundEvent` in a codec: its id, or an object with `sound_id`.
+fn sound_event(value: &Value) -> Option<String> {
+    value
+        .as_str()
+        .or_else(|| value.get("sound_id").and_then(Value::as_str))
+        .map(str::to_owned)
+}
+
+impl AmbientSounds {
+    /// `AmbientMoodSettings.LEGACY_CAVE_SETTINGS`: the overworld's and the
+    /// end's mood.
+    pub fn cave() -> Self {
+        Self {
+            mood: Some(AmbientMood {
+                sound: "minecraft:ambient.cave".to_owned(),
+                tick_delay: 6000,
+                block_search_extent: 8,
+                offset: 2.0,
+            }),
+            ..Self::default()
+        }
+    }
+
+    /// The attribute's value; fields a codec requires make a broken entry
+    /// count as missing.
+    pub fn from_json(value: &Value) -> Option<Self> {
+        let mood = match value.get("mood") {
+            None => None,
+            Some(mood) => Some(AmbientMood {
+                sound: sound_event(mood.get("sound")?)?,
+                tick_delay: i32::try_from(mood.get("tick_delay")?.as_i64()?).ok()?,
+                block_search_extent: i32::try_from(mood.get("block_search_extent")?.as_i64()?)
+                    .ok()?,
+                offset: mood.get("offset")?.as_f64()?,
+            }),
+        };
+        // `ExtraCodecs.compactListCodec`: one entry, or a list of them.
+        let additions = match value.get("additions") {
+            None => Vec::new(),
+            Some(Value::Array(list)) => list.iter().filter_map(addition).collect(),
+            Some(one) => addition(one).into_iter().collect(),
+        };
+        Some(Self {
+            loop_sound: value.get("loop").and_then(sound_event),
+            mood,
+            additions,
+        })
+    }
+}
+
+fn addition(value: &Value) -> Option<AmbientAddition> {
+    Some(AmbientAddition {
+        sound: sound_event(value.get("sound")?)?,
+        tick_chance: value.get("tick_chance")?.as_f64()?,
+    })
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Biome {
     pub temperature: f32,
@@ -49,6 +131,8 @@ pub struct Biome {
     pub visuals: Visuals,
     /// `minecraft:visual/ambient_particles`: what drifts in the air, with
     pub ambient_particles: Vec<(crate::particle::Kind, f32)>,
+    /// `minecraft:audio/ambient_sounds`; `None` leaves the dimension's.
+    pub ambient_sounds: Option<AmbientSounds>,
 }
 
 impl Default for Biome {
@@ -69,6 +153,7 @@ impl Default for Biome {
                 ..Visuals::default()
             },
             ambient_particles: Vec::new(),
+            ambient_sounds: None,
         }
     }
 }
@@ -120,6 +205,9 @@ impl Biome {
                     .map(|v| v as f32),
             },
             ambient_particles: crate::particle::client::ambient::from_attributes(attributes),
+            ambient_sounds: attributes
+                .and_then(|a| a.get("minecraft:audio/ambient_sounds"))
+                .and_then(AmbientSounds::from_json),
         }
     }
 
@@ -298,6 +386,39 @@ mod tests {
         assert_eq!(swamp.visuals.water_fog_color, Some(rgb(0x232317)));
         assert_eq!(swamp.visuals.water_fog_end_scale, Some(0.85));
         assert_eq!(swamp.visuals.fog_color, None);
+    }
+
+    #[test]
+    fn ambient_sounds_read_their_mood_loop_and_additions() {
+        let crimson = json!({
+            "attributes": {"minecraft:audio/ambient_sounds": {
+                "loop": "minecraft:ambient.crimson_forest.loop",
+                "mood": {"sound": "minecraft:ambient.crimson_forest.mood", "tick_delay": 6000,
+                         "block_search_extent": 8, "offset": 2.0},
+                "additions": {"sound": "minecraft:ambient.crimson_forest.additions", "tick_chance": 0.0111}
+            }}
+        });
+        let sounds = Biome::from_json(&crimson).ambient_sounds.unwrap();
+        assert_eq!(
+            sounds.loop_sound.as_deref(),
+            Some("minecraft:ambient.crimson_forest.loop")
+        );
+        assert_eq!(sounds.mood.as_ref().unwrap().block_search_extent, 8);
+        assert_eq!(sounds.additions.len(), 1);
+        assert_eq!(sounds.additions[0].tick_chance, 0.0111);
+        // The overworld's, from its dimension type, is the cave mood.
+        let overworld = json!({"mood": {"sound": "minecraft:ambient.cave", "tick_delay": 6000,
+                                        "block_search_extent": 8, "offset": 2.0}});
+        assert_eq!(
+            AmbientSounds::from_json(&overworld),
+            Some(AmbientSounds::cave())
+        );
+        // A mood without its required fields leaves the attribute out.
+        assert_eq!(
+            AmbientSounds::from_json(&json!({"mood": {"sound": "x"}})),
+            None
+        );
+        assert!(Biome::from_json(&json!({})).ambient_sounds.is_none());
     }
 
     #[test]

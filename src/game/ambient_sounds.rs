@@ -22,6 +22,30 @@ pub(super) struct Ambient {
     delay: i32,
     /// `ClientLevel.rainSoundTime`.
     rain_time: i32,
+    /// `BiomeAmbientSoundsHandler.moodiness`: how near the next mood sound
+    /// is, 0 to 1.
+    moodiness: f32,
+}
+
+/// `BiomeAmbientSoundsHandler.SKY_MOOD_RECOVERY_RATE`.
+const SKY_MOOD_RECOVERY_RATE: f32 = 0.001;
+
+/// One tick of the mood for the light at the sampled block: daylight wears
+/// it off, darkness builds it up. Whether the mood sound plays now; the
+/// mood is then back at 0.
+fn mood_step(moodiness: &mut f32, tick_delay: i32, sky: u8, block: u8) -> bool {
+    if sky > 0 {
+        *moodiness -= f32::from(sky) / 15.0 * SKY_MOOD_RECOVERY_RATE;
+    } else {
+        *moodiness -= (f32::from(block) - 1.0) / tick_delay as f32;
+    }
+    if *moodiness >= 1.0 {
+        *moodiness = 0.0;
+        true
+    } else {
+        *moodiness = moodiness.max(0.0);
+        false
+    }
 }
 
 /// Which of the underwater sounds a roll of `chance` (`0..1`) picks.
@@ -41,6 +65,72 @@ impl InWorld {
     pub(super) fn tick_ambient_sounds(&mut self, ui: &WorldContext) {
         self.tick_underwater_sounds();
         self.tick_rain_sounds(i32::from(ui.config.weather_radius));
+        self.tick_biome_ambient();
+    }
+
+    /// `LocalPlayer.getCurrentMood`, for F3.
+    pub(super) fn mood(&self) -> f32 {
+        self.ambient.moodiness
+    }
+
+    /// `minecraft:audio/ambient_sounds` where the player is: the biome's,
+    /// else the dimension's.
+    fn ambient_sounds_here(&self) -> Option<&crate::world::biome::AmbientSounds> {
+        let feet = self.player.feet().floor().as_ivec3();
+        self.level
+            .biome(feet.x, feet.y, feet.z)
+            .and_then(|id| self.biomes.biome(id))
+            .and_then(|biome| biome.ambient_sounds.as_ref())
+            .or(self.dimension_type.attributes.ambient_sounds.as_ref())
+    }
+
+    /// `BiomeAmbientSoundsHandler.tick`, but for the loop: the additions and
+    /// the mood sound of dark places.
+    fn tick_biome_ambient(&mut self) {
+        let mut moodiness = self.ambient.moodiness;
+        let mut played = Vec::new();
+        if let Some(ambient) = self.ambient_sounds_here() {
+            let mut random = rand::rng();
+            for addition in &ambient.additions {
+                if random.random::<f64>() < addition.tick_chance {
+                    // `SimpleSoundInstance.forAmbientAddition`: no place.
+                    played.push(SoundInstance::of(addition.sound.clone()).on(SoundSource::Ambient));
+                }
+            }
+            if let Some(mood) = &ambient.mood {
+                let extent = mood.block_search_extent;
+                let span = (extent * 2 + 1).max(1);
+                let feet = self.player.feet();
+                let eye_y = self.player.tick_eye().y;
+                let mut offset = || f64::from(random.random_range(0..span) - extent);
+                let sample = [feet.x + offset(), eye_y + offset(), feet.z + offset()]
+                    .map(|c| c.floor() as i32);
+                let (block, sky) = self.level.light_at(sample[0], sample[1], sample[2]);
+                if mood_step(&mut moodiness, mood.tick_delay, sky, block) {
+                    // From past the sampled block, along the line to it.
+                    let to = [
+                        f64::from(sample[0]) + 0.5 - feet.x,
+                        f64::from(sample[1]) + 0.5 - eye_y,
+                        f64::from(sample[2]) + 0.5 - feet.z,
+                    ];
+                    let distance = to.iter().map(|d| d * d).sum::<f64>().sqrt();
+                    let along = (distance + mood.offset) / distance;
+                    let at = [
+                        feet.x + to[0] * along,
+                        eye_y + to[1] * along,
+                        feet.z + to[2] * along,
+                    ];
+                    // `SimpleSoundInstance.forAmbientMood`.
+                    played.push(
+                        SoundInstance::of(mood.sound.clone())
+                            .on(SoundSource::Ambient)
+                            .at(at),
+                    );
+                }
+            }
+        }
+        self.ambient.moodiness = moodiness;
+        self.sounds.extend(played);
     }
 
     fn ambient_sound(
@@ -146,6 +236,26 @@ impl InWorld {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn darkness_builds_the_mood_and_daylight_wears_it_off() {
+        let mut mood = 0.0;
+        assert!(!mood_step(&mut mood, 6000, 0, 0));
+        assert!((mood - 1.0 / 6000.0).abs() < 1e-9);
+        // A torch-lit block (light 1 and up) does not build it.
+        let before = mood;
+        mood_step(&mut mood, 6000, 0, 1);
+        assert_eq!(mood, before);
+        mood_step(&mut mood, 6000, 15, 0);
+        assert_eq!(mood, 0.0);
+        let mut ticks = 0;
+        let mut mood = 0.0;
+        while !mood_step(&mut mood, 6000, 0, 0) {
+            ticks += 1;
+        }
+        assert!((5990..=6010).contains(&ticks), "{ticks}");
+        assert_eq!(mood, 0.0);
+    }
 
     #[test]
     fn the_rarer_the_roll_the_rarer_the_sound() {

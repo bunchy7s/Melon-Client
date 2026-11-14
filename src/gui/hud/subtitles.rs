@@ -27,8 +27,9 @@ pub struct Listener {
 /// `SubtitleOverlay.SoundPlayedAt`.
 #[derive(Clone, Copy, Debug)]
 struct PlayedAt {
-    /// `None` for a sound without a place: heard everywhere, no arrow.
-    at: Option<[f64; 3]>,
+    /// Where it was played; a sound without a place (`isRelative`: the UI,
+    /// music) is at the world's origin, as vanilla's `getX/Y/Z` are 0.
+    at: [f64; 3],
     time: Instant,
 }
 
@@ -54,11 +55,9 @@ impl Subtitle {
         let range = f64::from(self.range);
         self.played_at
             .iter()
-            .filter(|p| {
-                p.at.is_none_or(|at| distance_sq(at, camera) < range * range)
-            })
+            .filter(|p| distance_sq(p.at, camera) < range * range)
             .max_by(|a, b| {
-                let far = |p: &PlayedAt| p.at.map_or(0.0, |at| distance_sq(at, camera));
+                let far = |p: &PlayedAt| distance_sq(p.at, camera);
                 a.time.cmp(&b.time).then(far(a).total_cmp(&far(b)))
             })
             .copied()
@@ -70,13 +69,12 @@ impl Subtitle {
             return true;
         }
         let range = f64::from(self.range);
-        self.best(camera).is_some_and(|p| {
-            p.at.is_none_or(|at| distance_sq(at, camera) < range * range)
-        })
+        self.best(camera)
+            .is_some_and(|p| distance_sq(p.at, camera) < range * range)
     }
 
     /// `refresh`: the same place again replaces the old one.
-    fn refresh(&mut self, at: Option<[f64; 3]>, now: Instant) {
+    fn refresh(&mut self, at: [f64; 3], now: Instant) {
         self.played_at.retain(|p| p.at != at);
         self.played_at.push(PlayedAt { at, time: now });
     }
@@ -98,18 +96,16 @@ pub struct SubtitleOverlay {
 impl SubtitleOverlay {
     /// `onPlaySound`: a subtitle already showing is refreshed instead.
     pub fn hear(&mut self, heard: Heard, lang: &Lang, now: Instant) {
+        let at = heard.at.unwrap_or([0.0; 3]);
         if let Some(shown) = self.subtitles.iter_mut().find(|s| s.key == heard.subtitle) {
-            shown.refresh(heard.at, now);
+            shown.refresh(at, now);
             return;
         }
         self.subtitles.push(Subtitle {
             text: StyledText::plain(lang.get_dynamic(&heard.subtitle)),
             key: heard.subtitle,
             range: heard.range,
-            played_at: vec![PlayedAt {
-                at: heard.at,
-                time: now,
-            }],
+            played_at: vec![PlayedAt { at, time: now }],
         });
     }
 
@@ -178,7 +174,8 @@ impl SubtitleOverlay {
             );
             let grey = f32::from(Subtitle::brightness(played, now, DISPLAY_TIME)) / 255.0;
             let paint = painter.paint([grey; 3]);
-            if let Some(at) = played.at {
+            {
+                let at = played.at;
                 let delta = [0, 1, 2].map(|i| (at[i] - camera[i]) as f32);
                 let length = delta.iter().map(|d| d * d).sum::<f32>().sqrt();
                 // `Vec3.normalize`: a sound at the camera points nowhere.
@@ -254,13 +251,16 @@ mod tests {
             .map(|s| &*s.key)
             .collect();
         assert_eq!(audible, ["ui"]);
+        // Heard from the world's origin, so its arrow points there.
+        let ui = overlay.subtitles.iter().find(|s| &*s.key == "ui").unwrap();
+        assert_eq!(ui.best([50.0, 0.0, 0.0]).unwrap().at, [0.0; 3]);
     }
 
     #[test]
     fn a_subtitle_fades_from_white_to_grey() {
         let start = Instant::now();
         let played = PlayedAt {
-            at: None,
+            at: [0.0; 3],
             time: start,
         };
         assert_eq!(Subtitle::brightness(played, start, DISPLAY_TIME), 255);

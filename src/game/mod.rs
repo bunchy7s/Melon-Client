@@ -278,6 +278,8 @@ pub struct InWorld {
     /// Sounds the player made, for the app to play.
     sounds: Vec<crate::audio::SoundInstance<'static>>,
     footsteps: sounds::Footsteps,
+    /// The sound channels in use, static and streaming, for F3.
+    sound_channels: [u32; 2],
     /// The last rendered camera as the sounds hear it: position, forward, up.
     ears: Option<sounds::Ears>,
     /// What the client played itself lately, to not play it again when
@@ -456,6 +458,7 @@ impl InWorld {
             destroy_delay: 0,
             sounds: Vec::new(),
             footsteps: sounds::Footsteps::default(),
+            sound_channels: [0; 2],
             ears: None,
             echoes: sounds::Echoes::default(),
             right_click_delay: 0,
@@ -518,6 +521,11 @@ impl InWorld {
     }
 
     /// Renews F3's subsystem lines while F3 is open.
+    /// The sound channels in use (`AudioEngine::channels_used`), for F3.
+    pub fn set_sound_channels(&mut self, used: [u32; 2]) {
+        self.sound_channels = used;
+    }
+
     pub fn sample_subsystems(&mut self, audio: &crate::audio::stats::AudioStats) {
         if !self.debug.visible() {
             self.subsystems.reset();

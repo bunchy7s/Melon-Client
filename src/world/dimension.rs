@@ -93,6 +93,7 @@ pub type Rgb = [f32; 3];
 /// The environment attributes a dimension type sets
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Attributes {
+    pub ambient_sounds: Option<crate::world::biome::AmbientSounds>,
     pub fog_color: Option<Rgb>,
     pub sky_color: Option<Rgb>,
     pub fog_start_distance: Option<f32>,
@@ -106,13 +107,10 @@ pub struct Attributes {
     pub block_light_tint: Option<Rgb>,
     pub sky_light_color: Option<Rgb>,
     pub sky_light_factor: Option<f32>,
-    /// `minecraft:gameplay/sky_light_level`: how bright the sky counts
     pub sky_light_level: Option<f32>,
     pub night_vision_color: Option<Rgb>,
-    /// `ARGB`: the alpha is the clouds' opacity.
     pub cloud_color: Option<[f32; 4]>,
     pub cloud_height: Option<f32>,
-    /// `minecraft:gameplay/piglins_zombify`: piglins and hoglins turn into
     pub piglins_zombify: Option<bool>,
 }
 
@@ -156,6 +154,7 @@ impl DimensionType {
                 sky_color: Some(rgb(0x78a7ff)),
                 cloud_color: Some(argb(0xccffffff)),
                 cloud_height: Some(192.33),
+                ambient_sounds: Some(crate::world::biome::AmbientSounds::cave()),
                 ..Attributes::default()
             },
         }
@@ -202,6 +201,7 @@ impl DimensionType {
                 sky_color: Some(rgb(0x000000)),
                 sky_light_color: Some(rgb(0xac60cd)),
                 sky_light_factor: Some(0.0),
+                ambient_sounds: Some(crate::world::biome::AmbientSounds::cave()),
                 ..Attributes::default()
             },
         }
@@ -265,6 +265,9 @@ impl Attributes {
         let float = |key: &str| json.get(key).and_then(Value::as_f64).map(|v| v as f32);
         let _ = base;
         Self {
+            ambient_sounds: json
+                .get("minecraft:audio/ambient_sounds")
+                .and_then(crate::world::biome::AmbientSounds::from_json),
             fog_color: color("minecraft:visual/fog_color"),
             sky_color: color("minecraft:visual/sky_color"),
             fog_start_distance: float("minecraft:visual/fog_start_distance"),

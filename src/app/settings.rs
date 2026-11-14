@@ -64,6 +64,9 @@ impl RunningState {
             self.env.audio.set_device(&config.sound_device);
             self.env.audio.play_click();
         }
+        if config.directional_audio != old.directional_audio {
+            self.env.audio.set_directional(config.directional_audio);
+        }
         if config.speaker_layout != old.speaker_layout {
             self.env
                 .audio

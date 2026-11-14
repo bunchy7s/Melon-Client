@@ -21,6 +21,8 @@ pub struct Sound {
     pub pitch: f32,
     /// Read from the file while playing instead of decoded at once: music.
     pub stream: bool,
+    /// Decoded when the sounds load, not when first played (`Sound.preload`).
+    pub preload: bool,
     /// Blocks it can be heard from at volume 1 (`Sound.attenuationDistance`).
     pub attenuation_distance: f32,
 }
@@ -103,6 +105,7 @@ impl SoundEvents {
                 volume: 1.0,
                 pitch: 1.0,
                 stream: false,
+                preload: false,
                 attenuation_distance: DEFAULT_ATTENUATION,
             }),
             weight: 1,
@@ -141,6 +144,17 @@ impl SoundEvents {
 
     pub fn is_empty(&self) -> bool {
         self.events.is_empty()
+    }
+
+    /// The files to decode as the sounds load (`SoundEngine.requestPreload`).
+    pub fn preloads(&self) -> impl Iterator<Item = &Sound> {
+        self.events
+            .values()
+            .flatten()
+            .filter_map(|entry| match &entry.kind {
+                Kind::Sound(sound) if sound.preload && !sound.stream => Some(sound),
+                _ => None,
+            })
     }
 
     /// The subtitle's translation key of `event`, if it has one.
@@ -187,7 +201,7 @@ fn parse_entry(value: &Value) -> Option<Entry> {
             plain(name),
             1,
             (1.0, 1.0),
-            (false, DEFAULT_ATTENUATION),
+            (false, false, DEFAULT_ATTENUATION),
         ));
     }
     let name = plain(value.get("name")?.as_str()?);
@@ -209,6 +223,10 @@ fn parse_entry(value: &Value) -> Option<Entry> {
         .get("stream")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let preload = value
+        .get("preload")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let attenuation = number(
         value,
         "attenuation_distance",
@@ -218,7 +236,7 @@ fn parse_entry(value: &Value) -> Option<Entry> {
         name,
         weight,
         (volume, pitch),
-        (stream, attenuation),
+        (stream, preload, attenuation),
     ))
 }
 
@@ -227,7 +245,7 @@ fn sound_entry(
     name: &str,
     weight: u32,
     (volume, pitch): (f32, f32),
-    (stream, attenuation_distance): (bool, f32),
+    (stream, preload, attenuation_distance): (bool, bool, f32),
 ) -> Entry {
     Entry {
         kind: Kind::Sound(Sound {
@@ -235,6 +253,7 @@ fn sound_entry(
             volume: 1.0,
             pitch: 1.0,
             stream,
+            preload,
             attenuation_distance,
         }),
         weight,
@@ -254,7 +273,7 @@ mod tests {
             {"name": "minecraft:dig/stone2", "volume": 0.5, "pitch": 1.5}
         ], "subtitle": "subtitles.block.generic.break"},
         "music.menu": {"sounds": [{"name": "music/menu/a", "stream": true}]},
-        "block.bell.use": {"sounds": [{"name": "bell", "attenuation_distance": 48}]},
+        "block.bell.use": {"sounds": [{"name": "bell", "attenuation_distance": 48, "preload": true}]},
         "alias": {"sounds": [{"name": "block.stone.break", "type": "event", "volume": 0.5}]},
         "loop": {"sounds": [{"name": "loop", "type": "event"}]},
         "empty": {"sounds": []},
@@ -279,6 +298,8 @@ mod tests {
             48.0
         );
         assert!(events.pick("nothing", 0.0).is_none());
+        let preloads: Vec<&str> = events.preloads().map(|s| &*s.name).collect();
+        assert_eq!(preloads, ["bell"]);
         assert!(SoundEvents::parse("not json").is_none());
     }
 

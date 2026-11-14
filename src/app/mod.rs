@@ -185,6 +185,7 @@ impl App {
             &assets,
             &config.sound_device,
             config.speaker_layout.channels(),
+            config.directional_audio,
         );
         audio.set_volumes(&config.sound_volumes);
         let background = load_panorama(&mut renderer, &assets);

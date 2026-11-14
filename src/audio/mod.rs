@@ -2,21 +2,23 @@
 
 pub mod block_sounds;
 mod device;
+pub mod hrtf;
 pub mod level_sounds;
 pub mod library;
 pub mod music;
+pub mod pcm;
 pub mod source;
 pub mod spatial;
 pub mod stats;
 
 use crate::assets::Assets;
 use library::{Sound, SoundEvents};
-use rodio::buffer::SamplesBuffer;
+use pcm::PcmBuffer;
 use rodio::mixer::Mixer;
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Sample, Source};
 use source::{SoundSource, Volumes};
 use spatial::{Layout, Listener, Placed};
-use stats::{AudioStats, Counted};
+use stats::{AudioStats, Counted, Pool, Pools, Slot};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -117,6 +119,9 @@ pub struct AudioEngine {
     layout: Layout,
     /// The channels asked for, `None` for what the device prefers.
     channels: Option<u16>,
+    /// "Directional Audio": sounds with a place go through the HRTF, and
+    /// the output is stereo, as OpenAL Soft makes it then.
+    hrtf: Option<&'static hrtf::HrtfStore>,
     device: String,
     /// Whether the subtitles are shown, and so whether [`Heard`]s are kept.
     listening: AtomicBool,
@@ -124,17 +129,106 @@ pub struct AudioEngine {
     forced_source: Option<SoundSource>,
     listener: Arc<Listener>,
     events: SoundEvents,
-    sounds_root: PathBuf,
-    decoded: Arc<Mutex<HashMap<Arc<str>, Option<SamplesBuffer>>>>,
-    waiting: Arc<Mutex<HashMap<Arc<str>, Vec<Voice>>>>,
+    /// The decoded files and who waits for them; replaced on a reload.
+    cache: Arc<Cache>,
+    loader: Loader,
+    pools: Arc<Pools>,
     gains: Arc<Gains>,
     stats: Arc<AudioStats>,
 }
 
+/// The decoded files (`SoundBufferLibrary.cache`), and the sounds waiting
+/// for one that is being decoded.
+struct Cache {
+    root: PathBuf,
+    decoded: Mutex<HashMap<Arc<str>, Option<PcmBuffer>>>,
+    waiting: Mutex<HashMap<Arc<str>, Vec<Voice>>>,
+}
+
+impl Cache {
+    fn new(root: &Path) -> Arc<Self> {
+        Arc::new(Self {
+            root: root.to_path_buf(),
+            decoded: Mutex::default(),
+            waiting: Mutex::default(),
+        })
+    }
+}
+
+/// A file to decode, and where to put it.
+struct Job {
+    cache: Arc<Cache>,
+    name: Arc<str>,
+    stats: Arc<AudioStats>,
+}
+
+/// A few threads that decode the files sounds need: vanilla decodes on a
+/// thread pool too (`Util.nonCriticalIoPool`), so a long file does not hold
+/// up the short ones behind it. Fixed threads, so a burst of new sounds
+/// spawns none.
+struct Loader {
+    jobs: Option<crossbeam_channel::Sender<Job>>,
+}
+
+impl Loader {
+    /// Half the cores, two to four.
+    fn start() -> Self {
+        let threads = std::thread::available_parallelism()
+            .map_or(2, |n| n.get() / 2)
+            .clamp(2, 4);
+        let (jobs, queue) = crossbeam_channel::unbounded::<Job>();
+        let mut started = 0;
+        for i in 0..threads {
+            let queue = queue.clone();
+            let spawned = std::thread::Builder::new()
+                .name(format!("sound-load-{i}"))
+                .spawn(move || {
+                    for job in queue {
+                        job.run();
+                    }
+                });
+            match spawned {
+                Ok(_) => started += 1,
+                Err(e) => eprintln!("Audio: kein Lade-Thread: {e}"),
+            }
+        }
+        Self {
+            jobs: (started > 0).then_some(jobs),
+        }
+    }
+
+    /// Queues `job`; false when no thread is there to take it.
+    fn send(&self, job: Job) -> bool {
+        self.jobs
+            .as_ref()
+            .is_some_and(|jobs| jobs.send(job).is_ok())
+    }
+}
+
+impl Job {
+    /// Decodes the file, then starts every sound that waited for it.
+    fn run(self) {
+        let buffer = load_buffer(&self.cache, &self.name, &self.stats);
+        let voices = self
+            .cache
+            .waiting
+            .lock()
+            .ok()
+            .and_then(|mut waiting| waiting.remove(&self.name))
+            .unwrap_or_default();
+        if let Some(buffer) = buffer {
+            for voice in voices {
+                voice.add(Box::new(buffer.clone()));
+            }
+        }
+    }
+}
+
 impl AudioEngine {
     /// Missing device or sound file: playing is a no-op. `device` is the
-    pub fn init(assets: &Assets, device: &str, channels: Option<u16>) -> Self {
-        let stream = open_output(device, channels);
+    pub fn init(assets: &Assets, device: &str, channels: Option<u16>, directional: bool) -> Self {
+        let hrtf = directional.then(hrtf::HrtfStore::default_set).flatten();
+        let stream = open_output(device, if hrtf.is_some() { Some(2) } else { channels });
         if stream.is_none() {
             eprintln!("Audio-Ausgabe nicht verfuegbar, Sounds bleiben stumm");
         }
@@ -150,25 +244,86 @@ impl AudioEngine {
             mixer,
             layout,
             channels,
+            hrtf,
             device: device.to_owned(),
             listening: AtomicBool::new(false),
             heard: Mutex::default(),
             forced_source,
             listener: Arc::new(Listener::default()),
             events: SoundEvents::load(assets.root()),
-            sounds_root: assets.root().to_path_buf(),
-            decoded: Arc::default(),
-            waiting: Arc::default(),
+            cache: Cache::new(assets.root()),
+            loader: Loader::start(),
+            pools: Arc::default(),
             gains,
             stats: Arc::default(),
         }
+        .preloaded()
+    }
+
+    /// `SoundEngine.requestPreload` for every `"preload": true` file.
+    fn preloaded(self) -> Self {
+        for sound in self.events.preloads() {
+            self.queue_decode(&sound.name, None);
+        }
+        self
     }
 
     /// The output devices to choose from, by name.
     pub fn reload_sounds(&mut self, assets: &Assets) {
         self.events = SoundEvents::load(assets.root());
-        self.decoded = Arc::default();
-        self.waiting = Arc::default();
+        self.cache = Cache::new(assets.root());
+        for sound in self.events.preloads() {
+            self.queue_decode(&sound.name, None);
+        }
+    }
+
+    /// `Library.getChannelDebugString`, for F3.
+    pub fn channel_debug_string(&self) -> String {
+        self.pools.debug_string()
+    }
+
+    /// The static and the streaming channels in use.
+    pub fn channels_used(&self) -> [u32; 2] {
+        [Pool::Static, Pool::Streaming].map(|pool| self.pools.used(pool))
+    }
+
+    /// Has `name` decoded unless it is already, or already being; `voice`
+    /// starts once it is. False when it cannot be.
+    fn queue_decode(&self, name: &Arc<str>, voice: Option<Voice>) -> bool {
+        let cache = &self.cache;
+        if let Ok(decoded) = cache.decoded.lock()
+            && let Some(known) = decoded.get(name)
+        {
+            let Some(buffer) = known.clone() else {
+                return false;
+            };
+            drop(decoded);
+            if let Some(voice) = voice {
+                voice.add(Box::new(buffer));
+            }
+            return true;
+        }
+        let Ok(mut waiting) = cache.waiting.lock() else {
+            return false;
+        };
+        if let Some(voices) = waiting.get_mut(name) {
+            voices.extend(voice);
+            return true;
+        }
+        waiting.insert(Arc::clone(name), voice.into_iter().collect());
+        drop(waiting);
+        let job = Job {
+            cache: Arc::clone(cache),
+            name: Arc::clone(name),
+            stats: Arc::clone(&self.stats),
+        };
+        if self.loader.send(job) {
+            return true;
+        }
+        if let Ok(mut waiting) = cache.waiting.lock() {
+            waiting.remove(name);
+        }
+        false
     }
 
     pub fn devices(&self) -> Vec<String> {
@@ -188,9 +343,24 @@ impl AudioEngine {
         self.reopen();
     }
 
+    /// "Directional Audio" on or off; vanilla reloads its sound engine for
+    /// it, this reopens the output. Without the data set it stays off.
+    pub fn set_directional(&mut self, on: bool) {
+        self.hrtf = on.then(hrtf::HrtfStore::default_set).flatten();
+        if on && self.hrtf.is_none() {
+            eprintln!("Audio: HRTF-Daten nicht lesbar, Richtungsaudio bleibt aus");
+        }
+        self.reopen();
+    }
+
     fn reopen(&mut self) {
         self._stream = None;
-        self._stream = open_output(&self.device, self.channels);
+        let channels = if self.hrtf.is_some() {
+            Some(2)
+        } else {
+            self.channels
+        };
+        self._stream = open_output(&self.device, channels);
         self.mixer = self._stream.as_ref().map(|s| s.mixer().clone());
         self.layout = layout_of(self._stream.as_ref());
     }
@@ -268,74 +438,46 @@ impl AudioEngine {
                 },
             });
         }
+        // `channelAccess.createHandle`: the channel is taken before the file
+        // loads; with none free the sound does not play.
+        let pool = if sound.stream {
+            Pool::Streaming
+        } else {
+            Pool::Static
+        };
+        let Some(slot) = self.pools.acquire(pool) else {
+            return false;
+        };
         let volume = instance.volume.clamp(0.0, 1.0) * sound.volume;
         let voice = Voice {
             mixer: mixer.clone(),
             layout: self.layout,
+            hrtf: self.hrtf,
             listener: Arc::clone(&self.listener),
             gains: Arc::clone(&self.gains),
             stats: Arc::clone(&self.stats),
+            slot,
             volume,
             pitch: (instance.pitch * sound.pitch).clamp(PITCH_RANGE.0, PITCH_RANGE.1),
             source: self.forced_source.unwrap_or(instance.source),
             place: instance.position.map(|at| (at, range)),
         };
-        let cached = if sound.stream {
-            None
-        } else {
-            self.decoded
-                .lock()
-                .ok()
-                .and_then(|decoded| decoded.get(&*sound.name).cloned())
-        };
-        match cached {
-            Some(Some(buffer)) => voice.add(Box::new(buffer)),
-            Some(None) => return false,
-            None => {
-                let name = Arc::clone(&sound.name);
-                if !sound.stream {
-                    let Ok(mut waiting) = self.waiting.lock() else {
-                        return false;
-                    };
-                    if let Some(voices) = waiting.get_mut(&name) {
-                        voices.push(voice);
-                        return true;
-                    }
-                    waiting.insert(Arc::clone(&name), Vec::new());
+        if !sound.stream {
+            return self.queue_decode(&sound.name, Some(voice));
+        }
+        // Music is decoded while it plays, from the file read on a thread of
+        // its own (at most eight play at once, the streaming pool).
+        let root = self.cache.root.clone();
+        let spawned = std::thread::Builder::new()
+            .name("sound-stream".to_owned())
+            .spawn(move || {
+                if let Some(input) = open_stream(&root, &sound) {
+                    voice.add(Box::new(input));
                 }
-                let root = self.sounds_root.clone();
-                let decoded = Arc::clone(&self.decoded);
-                let waiting = Arc::clone(&self.waiting);
-                let task_name = Arc::clone(&name);
-                let spawned = std::thread::Builder::new()
-                    .name("sound-load".to_owned())
-                    .spawn(move || {
-                        if sound.stream {
-                            if let Some(input) = open_stream(&root, &sound) {
-                                voice.add(Box::new(input));
-                            }
-                            return;
-                        }
-                        let buffer = load_buffer(&root, &sound, &decoded, &voice.stats);
-                        let others = waiting
-                            .lock()
-                            .ok()
-                            .and_then(|mut w| w.remove(&task_name))
-                            .unwrap_or_default();
-                        if let Some(buffer) = buffer {
-                            for voice in std::iter::once(voice).chain(others) {
-                                voice.add(Box::new(buffer.clone()));
-                            }
-                        }
-                    });
-                if let Err(e) = spawned {
-                    if let Ok(mut waiting) = self.waiting.lock() {
-                        waiting.remove(&name);
-                    }
-                    eprintln!("Audio: kein Lade-Thread fuer {}: {e}", instance.event);
-                    return false;
-                }
-            }
+            });
+        if let Err(e) = spawned {
+            eprintln!("Audio: kein Stream-Thread fuer {}: {e}", instance.event);
+            return false;
         }
         true
     }
@@ -345,9 +487,13 @@ impl AudioEngine {
 struct Voice {
     mixer: Mixer,
     layout: Layout,
+    /// The HRTF a sound with a place is heard through, if it is on.
+    hrtf: Option<&'static hrtf::HrtfStore>,
     listener: Arc<Listener>,
     gains: Arc<Gains>,
     stats: Arc<AudioStats>,
+    /// Its channel, freed when it ends or never starts.
+    slot: Slot,
     volume: f32,
     pitch: f32,
     source: SoundSource,
@@ -358,10 +504,19 @@ struct Voice {
 impl Voice {
     fn add(self, input: Box<dyn Source<Item = Sample> + Send>) {
         let input = input.speed(self.pitch);
-        let place = self
-            .place
-            .map(|(at, range)| (Arc::clone(&self.listener), at, range));
-        let input = Placed::new(input, self.layout, place);
+        let input: Box<dyn Source<Item = Sample> + Send> = match (self.hrtf, self.place) {
+            (Some(store), Some((at, range))) => Box::new(hrtf::Binaural::new(
+                input,
+                store,
+                Arc::clone(&self.listener),
+                at,
+                range,
+            )),
+            (_, place) => {
+                let place = place.map(|(at, range)| (Arc::clone(&self.listener), at, range));
+                Box::new(Placed::new(input, self.layout, place))
+            }
+        };
         let (volume, source, gains) = (self.volume, self.source, self.gains);
         let input =
             input
@@ -369,27 +524,23 @@ impl Voice {
                 .periodic_access(VOLUME_POLL, move |s| {
                     s.set_factor(volume * gains.get(source));
                 });
-        self.mixer.add(Counted::new(input, self.stats));
+        self.mixer.add(Counted::new(input, self.stats, self.slot));
     }
 }
 
-/// The decoded file of `sound`, decoded and remembered the first time. A
-fn load_buffer(
-    root: &Path,
-    sound: &Sound,
-    decoded: &Mutex<HashMap<Arc<str>, Option<SamplesBuffer>>>,
-    stats: &AudioStats,
-) -> Option<SamplesBuffer> {
-    if let Some(known) = decoded.lock().ok()?.get(&*sound.name) {
+/// The decoded file `name`, decoded and remembered the first time; a file
+/// that is missing or will not decode is remembered as `None`.
+fn load_buffer(cache: &Cache, name: &Arc<str>, stats: &AudioStats) -> Option<PcmBuffer> {
+    if let Some(known) = cache.decoded.lock().ok()?.get(name) {
         return known.clone();
     }
     let started = std::time::Instant::now();
-    let buffer = decode(root, &sound.name);
+    let buffer = decode(&cache.root, name);
     stats.decoded(started.elapsed().as_nanos() as u64);
-    let mut decoded = decoded.lock().ok()?;
-    let entry = decoded.entry(sound.name.clone()).or_insert_with(|| {
+    let mut decoded = cache.decoded.lock().ok()?;
+    let entry = decoded.entry(Arc::clone(name)).or_insert_with(|| {
         if buffer.is_none() {
-            eprintln!("Audio: {}.ogg fehlt oder ist unlesbar", sound.name);
+            eprintln!("Audio: {name}.ogg fehlt oder ist unlesbar");
         }
         buffer
     });
@@ -423,15 +574,17 @@ fn layout_of(stream: Option<&MixerDeviceSink>) -> Layout {
     Layout::for_channels(stream.map_or(2, |s| s.config().channel_count().get()))
 }
 
-fn decode(assets_root: &Path, name: &str) -> Option<SamplesBuffer> {
+/// `JOrbisAudioStream.readAll`: the whole file as 16-bit samples. Like
+/// `OpenAlUtil.audioFormatToOpenAl`, only mono and stereo are taken.
+fn decode(assets_root: &Path, name: &str) -> Option<PcmBuffer> {
     let bytes = crate::assets::sound(assets_root, name)?;
     let decoder = Decoder::new(std::io::Cursor::new(bytes)).ok()?;
     let (channels, sample_rate) = (decoder.channels(), decoder.sample_rate());
-    Some(SamplesBuffer::new(
-        channels,
-        sample_rate,
-        decoder.collect::<Vec<f32>>(),
-    ))
+    if channels.get() > 2 {
+        eprintln!("Audio: {name}.ogg hat {channels} Kanaele, nur Mono und Stereo gehen");
+        return None;
+    }
+    Some(PcmBuffer::from_samples(channels, sample_rate, decoder))
 }
 
 /// Music: decoded while it plays, from the file read whole (it may sit in

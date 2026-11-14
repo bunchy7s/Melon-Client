@@ -102,6 +102,14 @@ impl InWorld {
             "Client Light: {} ({sky} sky, {block} block)",
             block.max(sky)
         ));
+        // `DebugEntrySoundMood`.
+        let [used, streaming] = self.sound_channels;
+        extras.regular.push(format!(
+            "Sounds: {used}/{} + {streaming}/{} (Mood {}%)",
+            crate::audio::stats::STATIC_CHANNELS,
+            crate::audio::stats::STREAMING_CHANNELS,
+            (self.mood() * 100.0 + 0.5).floor() as i32,
+        ));
         extras.regular.push(format!(
             "Chunks[C] W: {} E: {}",
             self.level.chunk_count(),
