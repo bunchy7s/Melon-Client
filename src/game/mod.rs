@@ -10,9 +10,7 @@ mod block_meshes;
 mod border_mesh;
 pub mod camera;
 pub mod controls;
-mod debug_info;
-mod debug_view;
-mod debug_visualizers;
+mod debug;
 mod effects;
 mod entities;
 pub mod entity_models;
@@ -197,7 +195,7 @@ pub struct InWorld {
     camera_mode: CameraMode,
     debug: DebugOverlay,
     /// F3+B and F3+G: what is drawn into the world.
-    pub(crate) debug_view: debug_view::DebugView,
+    pub(crate) debug_view: debug::view::DebugView,
     fps: FpsCounter,
     /// The frame loop's phases, for F3.
     pub profiler: profiler::FrameProfiler,
@@ -243,7 +241,7 @@ pub struct InWorld {
     border: crate::world::border::WorldBorder,
     border_mesh: border_mesh::BorderMesh,
     /// What the slower F3 + F6 world renderers keep between frames.
-    visualizers: debug_visualizers::VisualizerCache,
+    visualizers: debug::visualizers::VisualizerCache,
     /// `DebugEntryChunkGeneration`'s lines and the block they are for.
     chunk_generation: std::cell::RefCell<Option<([i32; 3], Vec<String>)>>,
     /// The recipes the server unlocked, and what its machines accept.
@@ -357,7 +355,7 @@ pub enum LoadingReason {
 impl InWorld {
     /// `game_dir` holds `hotbar.nbt` and `command_history.txt`.
     pub fn enter(mut joined: Joined, game_dir: &Path) -> Self {
-        let (debug_view, debug_visible) = debug_view::DebugView::load(game_dir);
+        let (debug_view, debug_visible) = debug::view::DebugView::load(game_dir);
         let mut debug =
             DebugOverlay::new(crate::gui::hud::debug_entries::DebugEntries::load(game_dir));
         debug.set_visible(debug_visible);

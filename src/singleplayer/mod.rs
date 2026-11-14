@@ -3,7 +3,6 @@
 pub mod creation;
 pub mod data_packs;
 pub mod datetime;
-pub mod debug;
 pub mod rules;
 mod saves;
 pub mod server;

@@ -3,7 +3,7 @@
 use pumpkin_data::tag::{self, RegistryKey, Taggable};
 use pumpkin_data::{Block, BlockStateId};
 
-use super::InWorld;
+use crate::game::InWorld;
 use crate::gui::hud::debug::DebugExtras;
 use crate::gui::hud::debug_entries::Entry;
 use crate::world::clouds::CloudStatus;
@@ -120,7 +120,11 @@ fn client_heightmaps(level: &crate::world::level::Level, x: i32, z: i32) -> Stri
 
 impl InWorld {
     /// The game's F3 lines, each worked out only when its entry is on.
-    pub(super) fn debug_extras(&self, clouds: CloudStatus, biome_blend: u8) -> DebugExtras {
+    pub(in crate::game) fn debug_extras(
+        &self,
+        clouds: CloudStatus,
+        biome_blend: u8,
+    ) -> DebugExtras {
         let entries = self.debug.entries();
         let on = |entry: Entry| entries.is_enabled(entry);
         let mut extras = DebugExtras::default();
@@ -240,7 +244,7 @@ impl InWorld {
             extras.heightmaps = vec![
                 client_heightmaps(&self.level, bx, bz),
                 match &server {
-                    Some(world) => crate::singleplayer::debug::server_heightmaps(world, bx, bz),
+                    Some(world) => super::server::server_heightmaps(world, bx, bz),
                     None => "SH S: ?? O: ?? M: ?? ML: ??".to_owned(),
                 },
             ];
@@ -248,10 +252,10 @@ impl InWorld {
         if let Some(world) = &server {
             let at = [f64::from(feet.x), f64::from(feet.y), f64::from(feet.z)];
             if on(Entry::LocalDifficulty) {
-                extras.local_difficulty = crate::singleplayer::debug::local_difficulty(world, at);
+                extras.local_difficulty = super::server::local_difficulty(world, at);
             }
             if on(Entry::EntitySpawnCounts) {
-                extras.spawn_counts = crate::singleplayer::debug::spawn_counts(world);
+                extras.spawn_counts = super::server::spawn_counts(world);
             }
             if on(Entry::ChunkGenerationStats) {
                 // `DebugEntryChunkGeneration`: sampled again only when the
@@ -259,10 +263,7 @@ impl InWorld {
                 let pos = [bx, by, bz];
                 let mut cache = self.chunk_generation.borrow_mut();
                 if cache.as_ref().is_none_or(|(at, _)| *at != pos) {
-                    *cache = Some((
-                        pos,
-                        crate::singleplayer::debug::chunk_generation(world, pos),
-                    ));
+                    *cache = Some((pos, super::server::chunk_generation(world, pos)));
                 }
                 if let Some((_, lines)) = cache.as_ref() {
                     extras.chunk_generation = lines.clone();

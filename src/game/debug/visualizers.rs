@@ -10,8 +10,8 @@ use glam::{DVec3, IVec3, Vec3};
 use pumpkin_data::BlockStateId;
 use pumpkin_data::tag::{self, Taggable};
 
-use super::InWorld;
-use super::gizmos::{DEFAULT_WIDTH, Fill, Gizmos, Line, TEXT_SCALE, WorldText};
+use crate::game::InWorld;
+use crate::game::gizmos::{DEFAULT_WIDTH, Fill, Gizmos, Line, TEXT_SCALE, WorldText};
 use crate::gui::hud::debug_entries::Entry;
 use crate::math::argb;
 use crate::world::block::direction::Direction;
@@ -73,7 +73,7 @@ fn corner(x: i32, y: i32, z: i32) -> DVec3 {
 
 impl InWorld {
     /// Everything the entries below ask for this frame, into `gizmos`.
-    pub(super) fn visualizer_gizmos(
+    pub(in crate::game) fn visualizer_gizmos(
         &mut self,
         gizmos: &mut Gizmos,
         camera: DVec3,
@@ -593,7 +593,7 @@ impl InWorld {
                     if let Some(world) = &server {
                         lines.push(format!(
                             "Server: {}",
-                            crate::singleplayer::debug::chunk_state(world, x, z)
+                            super::server::chunk_state(world, x, z)
                         ));
                     }
                     for (i, line) in lines.into_iter().enumerate() {

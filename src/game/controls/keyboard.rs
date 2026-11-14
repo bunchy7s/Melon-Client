@@ -231,7 +231,7 @@ impl InWorld {
                         let [x, y, z] = hit.pos;
                         let state = self.level.block_state(x, y, z).unwrap_or(0);
                         action = ScreenAction::Clipboard(
-                            super::super::debug_info::setblock_command(hit.pos, state),
+                            super::super::debug::info::setblock_command(hit.pos, state),
                         );
                         feedback(self, "debug.inspect.client.block");
                     } else if let Some(entity) =

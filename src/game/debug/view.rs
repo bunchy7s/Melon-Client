@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use glam::{DVec3, Mat4, Vec3};
 use serde::{Deserialize, Serialize};
 
-use super::InWorld;
-use super::camera::{Camera, CameraMode};
-use super::gizmos::{DEFAULT_WIDTH, GizmoMesh, Gizmos, TextView};
+use crate::game::InWorld;
+use crate::game::camera::{Camera, CameraMode};
+use crate::game::gizmos::{DEFAULT_WIDTH, GizmoMesh, Gizmos, TextView};
 use crate::gui::hud::debug_entries::Category;
 use crate::gui::text::font::Font;
 use crate::math::argb;
@@ -95,7 +95,7 @@ impl InWorld {
     /// The hitboxes, chunk borders and the other world renderers F3 + F6
     /// switched on, in view this frame, into `out`.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn draw_debug_view(
+    pub(in crate::game) fn draw_debug_view(
         &mut self,
         renderer: &mut Renderer,
         camera: &Camera,
