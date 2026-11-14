@@ -7,38 +7,42 @@ use super::{
 use ash::vk;
 use image::RgbaImage;
 
+/// Bytes of new textures queued for the next frame before they are
+/// uploaded at once instead.
+const UPLOAD_BUDGET: u64 = 64 << 20;
+
 impl Renderer {
     pub fn white_texture(&self) -> TextureId {
         self.textures.white
     }
 
     pub fn load_texture(&mut self, rgba: &RgbaImage) -> anyhow::Result<TextureId> {
-        let tex = unsafe {
+        let made = unsafe {
             self.uploader(self.textures.nearest_sampler)
                 .image_2d(rgba)?
         };
-        Ok(self.put_texture(tex))
+        Ok(self.put_new(made))
     }
 
     /// A texture sampled linearly (`blur: true` in its `.mcmeta`): the
     pub fn load_texture_linear(&mut self, rgba: &RgbaImage) -> anyhow::Result<TextureId> {
-        let tex = unsafe { self.uploader(self.textures.linear_sampler).image_2d(rgba)? };
-        Ok(self.put_texture(tex))
+        let made = unsafe { self.uploader(self.textures.linear_sampler).image_2d(rgba)? };
+        Ok(self.put_new(made))
     }
 
     /// A texture that repeats outside `0..1` (vanilla's `GL_REPEAT`), so a
     pub fn load_texture_tiled(&mut self, rgba: &RgbaImage) -> anyhow::Result<TextureId> {
-        let tex = unsafe { self.uploader(self.textures.repeat_sampler).image_2d(rgba)? };
-        Ok(self.put_texture(tex))
+        let made = unsafe { self.uploader(self.textures.repeat_sampler).image_2d(rgba)? };
+        Ok(self.put_new(made))
     }
 
     /// Linear and wrapping: the enchanted glint (`blur: true` and UVs that
     pub fn load_texture_linear_tiled(&mut self, rgba: &RgbaImage) -> anyhow::Result<TextureId> {
-        let tex = unsafe {
+        let made = unsafe {
             self.uploader(self.textures.linear_repeat_sampler)
                 .image_2d(rgba)?
         };
-        Ok(self.put_texture(tex))
+        Ok(self.put_new(made))
     }
 
     /// The item-glint sampler the GUI shaders read at set 1 binding 3.
@@ -61,11 +65,11 @@ impl Renderer {
         rgba: &RgbaImage,
         mips: &[RgbaImage],
     ) -> anyhow::Result<TextureId> {
-        let tex = unsafe {
+        let made = unsafe {
             self.uploader(self.textures.mipmap_sampler)
                 .image_2d_mipmapped(rgba, mips)?
         };
-        Ok(self.put_texture(tex))
+        Ok(self.put_new(made))
     }
 
     /// Rewrites part of mip `level` of a texture with `pixels`, top-left at
@@ -90,6 +94,41 @@ impl Renderer {
                     y,
                     pixels,
                 });
+        }
+    }
+
+    /// Queues `made`'s pixels and stores its texture.
+    fn put_new(
+        &mut self,
+        (tex, init): (texture::Texture, texture_update::PendingInit),
+    ) -> TextureId {
+        self.queue_init(init);
+        self.put_texture(tex)
+    }
+
+    /// Queues a new texture's pixels for the next frame. Past
+    /// [`UPLOAD_BUDGET`] (a loading burst: the block atlas) everything
+    /// queued goes up at once, waiting for that one submit, so the frame's
+    /// staging buffer stays small.
+    fn queue_init(&mut self, init: texture_update::PendingInit) {
+        self.textures.pending_init_bytes += init.bytes();
+        self.textures.pending_inits.push(init);
+        if self.textures.pending_init_bytes <= UPLOAD_BUDGET {
+            return;
+        }
+        let inits = std::mem::take(&mut self.textures.pending_inits);
+        self.textures.pending_init_bytes = 0;
+        let result = unsafe {
+            texture_update::submit_now(
+                &self.device,
+                &self.mem_props,
+                self.frames.command_pool,
+                self.queue,
+                &inits,
+            )
+        };
+        if let Err(e) = result {
+            eprintln!("Textur-Upload fehlgeschlagen: {e:#}");
         }
     }
 
@@ -186,10 +225,18 @@ impl Renderer {
         let now = self.frames.number;
         let device = &self.device;
         let pools = &self.textures.descriptor_pools;
+        let (inits, updates) = (
+            &mut self.textures.pending_inits,
+            &mut self.textures.pending_updates,
+        );
         self.textures.retired.retain(|(frame, tex)| {
             if !all && now < frame + super::MAX_FRAMES_IN_FLIGHT as u64 + 1 {
                 return true;
             }
+            // Frames that end before recording (an out-of-date swapchain)
+            // still count, so a copy into it may still be queued.
+            inits.retain(|init| init.image != tex.image);
+            updates.retain(|update| update.image != tex.image);
             unsafe {
                 pools.free(device, tex.descriptor_set);
                 device.destroy_image_view(tex.view, None);
@@ -240,7 +287,8 @@ impl Renderer {
 
     /// Six equal-size faces in Vulkan order (+X, -X, +Y, -Y, +Z, -Z).
     pub fn load_cubemap(&mut self, faces: &[RgbaImage; 6]) -> anyhow::Result<CubeMapId> {
-        let tex = unsafe { self.uploader(self.textures.linear_sampler).cubemap(faces)? };
+        let (tex, init) = unsafe { self.uploader(self.textures.linear_sampler).cubemap(faces)? };
+        self.queue_init(init);
         self.textures.cubemaps.push(tex);
         Ok(CubeMapId(self.textures.cubemaps.len() - 1))
     }
@@ -297,8 +345,6 @@ impl Renderer {
         texture::Uploader {
             device: &self.device,
             mem_props: &self.mem_props,
-            command_pool: self.frames.command_pool,
-            queue: self.queue,
             descriptor_pools: &self.textures.descriptor_pools,
             descriptor_set_layout: self.pipelines.layout,
             sampler,

@@ -273,6 +273,11 @@ struct SkyCube {
 struct Textures {
     list: Vec<texture::Texture>,
     cubemaps: Vec<texture::Texture>,
+    /// New textures' contents, copied in at the start of the next frame,
+    /// before the rewrites.
+    pending_inits: Vec<texture_update::PendingInit>,
+    /// Their bytes, for the budget past which they go up at once.
+    pending_init_bytes: u64,
     /// Texture regions to rewrite at the start of the next frame.
     pending_updates: Vec<texture_update::PendingUpdate>,
     /// One staging buffer per frame in flight for those rewrites.
@@ -425,6 +430,8 @@ impl Drop for Renderer {
                 .destroy_descriptor_set_layout(self.pipelines.layouts.table, None);
             self.device
                 .destroy_descriptor_set_layout(self.pipelines.layouts.draws, None);
+            self.textures.pending_inits.clear();
+            self.textures.pending_updates.clear();
             for staging in &mut self.textures.update_staging {
                 staging.destroy(&self.device);
             }

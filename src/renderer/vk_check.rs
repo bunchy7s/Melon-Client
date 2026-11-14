@@ -11,6 +11,22 @@ use std::sync::Mutex;
 
 static MESSAGES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
+/// Held by each test on the device for its whole run: [`MESSAGES`] is one
+/// log for all of them.
+static SERIAL: Mutex<()> = Mutex::new(());
+
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn messages() -> std::sync::MutexGuard<'static, Vec<String>> {
+    MESSAGES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 fn local_layer_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".vulkan/validation")
 }
@@ -39,10 +55,7 @@ unsafe extern "system" fn collect_messages(
         return vk::FALSE;
     }
     let message = CStr::from_ptr((*data).p_message).to_string_lossy();
-    MESSAGES
-        .lock()
-        .expect("validation log")
-        .push(message.into_owned());
+    messages().push(message.into_owned());
     vk::FALSE
 }
 
@@ -197,7 +210,8 @@ unsafe fn color_only_pass(
 
 #[test]
 fn validation_layers_accept_every_pipeline() {
-    MESSAGES.lock().expect("validation log").clear();
+    let _serial = serial();
+    messages().clear();
     unsafe {
         let gpu = Gpu::new().expect("Vulkan instance with validation");
         let depth = find_depth_format(&gpu.instance, gpu.physical).expect("depth format");
@@ -317,7 +331,7 @@ fn validation_layers_accept_every_pipeline() {
         gpu.device.destroy_render_pass(blur_pass, None);
     }
 
-    let messages = MESSAGES.lock().expect("validation log");
+    let messages = messages();
     assert!(
         messages.is_empty(),
         "Vulkan validation:\n{}",
@@ -338,7 +352,8 @@ fn post_chains_pass_validation() {
         eprintln!("MELON_ASSETS fehlt, Test uebersprungen");
         return;
     };
-    MESSAGES.lock().expect("validation log").clear();
+    let _serial = serial();
+    messages().clear();
     if let Some(pack) = std::env::var_os("MELON_PACK") {
         let pack = Pack::open("test".into(), "test".into(), Path::new(&pack)).expect("pack");
         packs::activate(ResourceStack {
@@ -437,7 +452,7 @@ fn post_chains_pass_validation() {
         }
     }
     packs::activate(ResourceStack::default());
-    let messages = MESSAGES.lock().expect("validation log");
+    let messages = messages();
     assert!(
         messages.is_empty(),
         "Vulkan validation:\n{}",
@@ -473,7 +488,8 @@ fn texture_pools_grow_and_compact() {
     use super::descriptor_pools::DescriptorPools;
     use super::texture::{Texture, Uploader};
 
-    MESSAGES.lock().expect("validation log").clear();
+    let _serial = serial();
+    messages().clear();
     unsafe {
         let gpu = Gpu::new().expect("Vulkan instance with validation");
         let device = &gpu.device;
@@ -507,16 +523,16 @@ fn texture_pools_grow_and_compact() {
         let uploader = Uploader {
             device,
             mem_props: &mem_props,
-            command_pool,
-            queue,
             descriptor_pools: &pools,
             descriptor_set_layout: layout,
             sampler,
         };
         let pixel = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]));
-        let mut textures: Vec<Texture> = (0..19)
+        let (mut textures, inits): (Vec<Texture>, Vec<_>) = (0..19)
             .map(|_| uploader.image_2d(&pixel).expect("upload"))
-            .collect();
+            .unzip();
+        super::texture_update::submit_now(device, &mem_props, command_pool, queue, &inits)
+            .expect("pixels up");
         assert_eq!(pools.capacities(), [4, 8, 16]);
         assert!(pools.needs_compaction());
 
@@ -572,10 +588,306 @@ fn texture_pools_grow_and_compact() {
         device.destroy_command_pool(command_pool, None);
     }
 
-    let messages = MESSAGES.lock().expect("validation log");
+    let messages = messages();
     assert!(
         messages.is_empty(),
         "Vulkan validation:\n{}",
         messages.join("\n")
     );
+}
+
+/// New textures' pixels recorded into a frame's command buffer (with an
+/// atlas-style rewrite after them), and the batched upload past the
+/// budget, read back texel for texel, with validation on.
+#[test]
+fn queued_texture_uploads_land_without_waiting() {
+    use super::staging::Staging;
+    use super::texture::{Texture, Uploader};
+    use super::texture_update::{self, PendingUpdate};
+    use image::{Rgba, RgbaImage};
+
+    let _serial = serial();
+    messages().clear();
+    // Reading back needs `TRANSFER_SRC`, which textures don't have: the log
+    // is checked before each read and cleared after it.
+    let clean = |stage: &str| {
+        let mut messages = messages();
+        let found = std::mem::take(&mut *messages);
+        drop(messages);
+        assert!(
+            found.is_empty(),
+            "Vulkan validation ({stage}):\n{}",
+            found.join("\n")
+        );
+    };
+    let forget = || messages().clear();
+    unsafe {
+        let gpu = Gpu::new().expect("Vulkan instance with validation");
+        let device = &gpu.device;
+        let family = gpu
+            .instance
+            .get_physical_device_queue_family_properties(gpu.physical)
+            .iter()
+            .position(|q| q.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+            .expect("graphics queue") as u32;
+        let queue = device.get_device_queue(family, 0);
+        let command_pool = device
+            .create_command_pool(
+                &vk::CommandPoolCreateInfo::default().queue_family_index(family),
+                None,
+            )
+            .expect("command pool");
+        let mem_props = gpu
+            .instance
+            .get_physical_device_memory_properties(gpu.physical);
+        let layout = pipeline::create_descriptor_set_layout(device).expect("texture set layout");
+        let sampler = super::vk_util::create_sampler(
+            device,
+            vk::Filter::NEAREST,
+            false,
+            vk::SamplerAddressMode::CLAMP_TO_EDGE,
+        )
+        .expect("sampler");
+        let pools = super::descriptor_pools::DescriptorPools::new(device, 8).expect("pools");
+        let uploader = Uploader {
+            device,
+            mem_props: &mem_props,
+            descriptor_pools: &pools,
+            descriptor_set_layout: layout,
+            sampler,
+        };
+
+        let gradient = RgbaImage::from_fn(4, 4, |x, y| Rgba([x as u8 * 60, y as u8 * 60, 7, 255]));
+        let (flat, flat_init) = uploader.image_2d(&gradient).expect("2d");
+        let (mipped, mipped_init) = uploader
+            .image_2d_mipmapped(
+                &RgbaImage::from_pixel(2, 2, Rgba([1, 2, 3, 4])),
+                &[RgbaImage::from_pixel(1, 1, Rgba([9, 8, 7, 6]))],
+            )
+            .expect("mipmapped");
+        let faces: [RgbaImage; 6] =
+            std::array::from_fn(|i| RgbaImage::from_pixel(1, 1, Rgba([i as u8 * 40, 0, 0, 255])));
+        let (cube, cube_init) = uploader.cubemap(&faces).expect("cubemap");
+        let patch = RgbaImage::from_pixel(2, 1, Rgba([200, 100, 50, 255]));
+        let updates = [PendingUpdate {
+            image: flat.image,
+            level: 0,
+            x: 1,
+            y: 2,
+            pixels: patch,
+        }];
+        let inits = [flat_init, mipped_init, cube_init];
+
+        // The frame: `prepare`, then `record` into its command buffer.
+        let mut staging = Staging::default();
+        texture_update::prepare(&mut staging, device, &mem_props, &inits, &updates)
+            .expect("prepare");
+        let cmd = device
+            .allocate_command_buffers(
+                &vk::CommandBufferAllocateInfo::default()
+                    .command_pool(command_pool)
+                    .level(vk::CommandBufferLevel::PRIMARY)
+                    .command_buffer_count(1),
+            )
+            .expect("cmd")[0];
+        device
+            .begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default())
+            .expect("begin");
+        texture_update::record(&mut staging, device, &mem_props, cmd, &inits, &updates)
+            .expect("record");
+        device.end_command_buffer(cmd).expect("end");
+        let cmds = [cmd];
+        device
+            .queue_submit(
+                queue,
+                &[vk::SubmitInfo::default().command_buffers(&cmds)],
+                vk::Fence::null(),
+            )
+            .expect("submit");
+        device.queue_wait_idle(queue).expect("idle");
+        clean("recorded into the frame");
+
+        let read = |image: vk::Image, level: u32, layer: u32, (w, h): (u32, u32)| -> RgbaImage {
+            read_back(
+                device,
+                &mem_props,
+                command_pool,
+                queue,
+                image,
+                level,
+                layer,
+                (w, h),
+            )
+        };
+        let mut expected = gradient.clone();
+        for x in 1..3 {
+            expected.put_pixel(x, 2, Rgba([200, 100, 50, 255]));
+        }
+        assert_eq!(
+            read(flat.image, 0, 0, (4, 4)),
+            expected,
+            "pixels plus the rewrite"
+        );
+        assert_eq!(
+            read(mipped.image, 0, 0, (2, 2)).get_pixel(1, 1),
+            &Rgba([1, 2, 3, 4])
+        );
+        assert_eq!(
+            read(mipped.image, 1, 0, (1, 1)).get_pixel(0, 0),
+            &Rgba([9, 8, 7, 6])
+        );
+        for (layer, face) in faces.iter().enumerate() {
+            assert_eq!(
+                &read(cube.image, 0, layer as u32, (1, 1)),
+                face,
+                "face {layer}"
+            );
+        }
+        forget();
+
+        // Past the budget: all at once, in one submit.
+        let (late, late_init) = uploader.image_2d(&gradient).expect("2d");
+        texture_update::submit_now(device, &mem_props, command_pool, queue, &[late_init])
+            .expect("submit now");
+        clean("submitted at once");
+        assert_eq!(read(late.image, 0, 0, (4, 4)), gradient);
+        forget();
+
+        staging.destroy(device);
+        for tex in [flat, mipped, cube, late] {
+            let tex: Texture = tex;
+            pools.free(device, tex.descriptor_set);
+            device.destroy_image_view(tex.view, None);
+            device.destroy_image(tex.image, None);
+            device.free_memory(tex.memory, None);
+        }
+        pools.destroy(device);
+        device.destroy_sampler(sampler, None);
+        device.destroy_descriptor_set_layout(layout, None);
+        device.destroy_command_pool(command_pool, None);
+    }
+
+    let messages = messages();
+    assert!(
+        messages.is_empty(),
+        "Vulkan validation:\n{}",
+        messages.join("\n")
+    );
+}
+
+/// One level and layer of a sampled `R8G8B8A8` image, copied back to the
+/// host; leaves it in `SHADER_READ_ONLY_OPTIMAL` again.
+#[allow(clippy::too_many_arguments)]
+unsafe fn read_back(
+    device: &ash::Device,
+    mem_props: &vk::PhysicalDeviceMemoryProperties,
+    command_pool: vk::CommandPool,
+    queue: vk::Queue,
+    image: vk::Image,
+    level: u32,
+    layer: u32,
+    (width, height): (u32, u32),
+) -> image::RgbaImage {
+    let size = (width * height * 4) as u64;
+    let (buffer, memory) = super::create_buffer(
+        device,
+        mem_props,
+        size,
+        vk::BufferUsageFlags::TRANSFER_DST,
+        vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+    )
+    .expect("readback buffer");
+    let cmd = device
+        .allocate_command_buffers(
+            &vk::CommandBufferAllocateInfo::default()
+                .command_pool(command_pool)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(1),
+        )
+        .expect("cmd")[0];
+    device
+        .begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default())
+        .expect("begin");
+    let range = vk::ImageSubresourceRange::default()
+        .aspect_mask(vk::ImageAspectFlags::COLOR)
+        .base_mip_level(level)
+        .level_count(1)
+        .base_array_layer(layer)
+        .layer_count(1);
+    let barrier = |old, new, src, dst| {
+        vk::ImageMemoryBarrier::default()
+            .old_layout(old)
+            .new_layout(new)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(image)
+            .subresource_range(range)
+            .src_access_mask(src)
+            .dst_access_mask(dst)
+    };
+    device.cmd_pipeline_barrier(
+        cmd,
+        vk::PipelineStageFlags::ALL_COMMANDS,
+        vk::PipelineStageFlags::TRANSFER,
+        vk::DependencyFlags::empty(),
+        &[],
+        &[],
+        &[barrier(
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            vk::AccessFlags::SHADER_READ,
+            vk::AccessFlags::TRANSFER_READ,
+        )],
+    );
+    device.cmd_copy_image_to_buffer(
+        cmd,
+        image,
+        vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+        buffer,
+        &[vk::BufferImageCopy::default()
+            .image_subresource(vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: level,
+                base_array_layer: layer,
+                layer_count: 1,
+            })
+            .image_extent(vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            })],
+    );
+    device.cmd_pipeline_barrier(
+        cmd,
+        vk::PipelineStageFlags::TRANSFER,
+        vk::PipelineStageFlags::ALL_COMMANDS,
+        vk::DependencyFlags::empty(),
+        &[],
+        &[],
+        &[barrier(
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            vk::AccessFlags::TRANSFER_READ,
+            vk::AccessFlags::empty(),
+        )],
+    );
+    device.end_command_buffer(cmd).expect("end");
+    let cmds = [cmd];
+    device
+        .queue_submit(
+            queue,
+            &[vk::SubmitInfo::default().command_buffers(&cmds)],
+            vk::Fence::null(),
+        )
+        .expect("submit");
+    device.queue_wait_idle(queue).expect("idle");
+    let mapped = device
+        .map_memory(memory, 0, size, vk::MemoryMapFlags::empty())
+        .expect("map") as *const u8;
+    let bytes = std::slice::from_raw_parts(mapped, size as usize).to_vec();
+    device.unmap_memory(memory);
+    device.free_command_buffers(command_pool, &[cmd]);
+    device.destroy_buffer(buffer, None);
+    device.free_memory(memory, None);
+    image::RgbaImage::from_raw(width, height, bytes).expect("pixels")
 }

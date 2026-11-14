@@ -51,6 +51,7 @@ impl Renderer {
             &mut self.textures.update_staging[current],
             &self.device,
             &self.mem_props,
+            &self.textures.pending_inits,
             &self.textures.pending_updates,
         )?;
         for arena in [&mut self.meshes, &mut self.quad_meshes] {
@@ -166,12 +167,15 @@ impl Renderer {
             .begin_command_buffer(cmd, &vk::CommandBufferBeginInfo::default())?;
         self.gpu_timer.begin(&self.device, cmd, self.frames.current);
         self.gpu_timer.pass("upload");
+        let inits = std::mem::take(&mut self.textures.pending_inits);
+        self.textures.pending_init_bytes = 0;
         let updates = std::mem::take(&mut self.textures.pending_updates);
         super::texture_update::record(
             &mut self.textures.update_staging[self.frames.current],
             &self.device,
             &self.mem_props,
             cmd,
+            &inits,
             &updates,
         )?;
         for arena in [&mut self.meshes, &mut self.quad_meshes] {

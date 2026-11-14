@@ -90,6 +90,7 @@ impl Renderer {
     ) -> anyhow::Result<Vec<(crate::renderer::texture::Texture, u32, u32)>> {
         use crate::renderer::post::config::Input;
         let mut out: Vec<(crate::renderer::texture::Texture, u32, u32)> = Vec::new();
+        let mut inits = Vec::new();
         let fail = |out: &mut Vec<(crate::renderer::texture::Texture, u32, u32)>, e| {
             let (device, pools) = (self.device.clone(), &self.textures.descriptor_pools);
             for (texture, _, _) in out.drain(..) {
@@ -117,10 +118,24 @@ impl Renderer {
                     .uploader(self.textures.nearest_sampler)
                     .image_2d(&image)
                 {
-                    Ok(texture) => out.push((texture, *width, *height)),
+                    Ok((texture, init)) => {
+                        out.push((texture, *width, *height));
+                        inits.push(init);
+                    }
                     Err(e) => return Err(fail(&mut out, e)),
                 }
             }
+        }
+        // Loaded while the device is idle anyway, and freed without
+        // waiting for a frame: up now, not with the next frame.
+        if let Err(e) = crate::renderer::texture_update::submit_now(
+            &self.device,
+            &self.mem_props,
+            self.frames.command_pool,
+            self.queue,
+            &inits,
+        ) {
+            return Err(fail(&mut out, e));
         }
         Ok(out)
     }

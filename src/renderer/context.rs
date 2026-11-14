@@ -515,6 +515,8 @@ impl Renderer {
             textures: super::Textures {
                 list: Vec::new(),
                 cubemaps: Vec::new(),
+                pending_inits: Vec::new(),
+                pending_init_bytes: 0,
                 pending_updates: Vec::new(),
                 update_staging: (0..MAX_FRAMES_IN_FLIGHT)
                     .map(|_| super::staging::Staging::default())
