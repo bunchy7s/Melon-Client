@@ -177,21 +177,65 @@ impl Renderer {
 
     /// Destroys the retired textures no frame in flight can still use.
     pub(super) fn destroy_retired_textures(&mut self) {
+        self.destroy_retired(false);
+    }
+
+    /// With `all`, also the ones retired in the last frames: only once the
+    /// device is idle.
+    fn destroy_retired(&mut self, all: bool) {
         let now = self.frames.number;
         let device = &self.device;
-        let pool = self.textures.descriptor_pool;
+        let pools = &self.textures.descriptor_pools;
         self.textures.retired.retain(|(frame, tex)| {
-            if now < frame + super::MAX_FRAMES_IN_FLIGHT as u64 + 1 {
+            if !all && now < frame + super::MAX_FRAMES_IN_FLIGHT as u64 + 1 {
                 return true;
             }
             unsafe {
-                let _ = device.free_descriptor_sets(pool, &[tex.descriptor_set]);
+                pools.free(device, tex.descriptor_set);
                 device.destroy_image_view(tex.view, None);
                 device.destroy_image(tex.image, None);
                 device.free_memory(tex.memory, None);
             }
             false
         });
+    }
+
+    /// Moves all texture descriptor sets into one pool again once they
+    /// overflowed into more (a large pack, many custom items), or shrinks a
+    /// pool far too big for them. Waits for the GPU, so only call it where a
+    /// stall is expected: after a resource reload, on leaving a world.
+    pub fn compact_textures(&mut self) {
+        if !self.textures.descriptor_pools.needs_compaction() {
+            return;
+        }
+        unsafe {
+            if let Err(e) = self.device.device_wait_idle() {
+                eprintln!("Warten auf die GPU fehlgeschlagen: {e}");
+                return;
+            }
+            self.destroy_retired(true);
+            let super::Textures {
+                list,
+                cubemaps,
+                descriptor_pools,
+                ..
+            } = &mut self.textures;
+            let (post, blur) = (&mut self.post, &mut self.blur);
+            let result = descriptor_pools.compact(&self.device, self.pipelines.layout, |swap| {
+                for tex in list.iter_mut().chain(cubemaps.iter_mut()) {
+                    swap(&mut tex.descriptor_set);
+                }
+                for tex in post.textures_mut() {
+                    swap(&mut tex.descriptor_set);
+                }
+                for set in blur.sets_mut() {
+                    swap(set);
+                }
+            });
+            if let Err(e) = result {
+                eprintln!("Textur-Deskriptoren nicht zusammengelegt: {e:#}");
+            }
+        }
     }
 
     /// Six equal-size faces in Vulkan order (+X, -X, +Y, -Y, +Z, -Z).
@@ -255,7 +299,7 @@ impl Renderer {
             mem_props: &self.mem_props,
             command_pool: self.frames.command_pool,
             queue: self.queue,
-            descriptor_pool: self.textures.descriptor_pool,
+            descriptor_pools: &self.textures.descriptor_pools,
             descriptor_set_layout: self.pipelines.layout,
             sampler,
         }

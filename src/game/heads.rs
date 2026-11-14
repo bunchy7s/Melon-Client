@@ -173,24 +173,24 @@ pub(super) fn submit_worn_head(
     if worn_as_armor(stack) {
         return;
     }
-    let Some((mesh, atlas, translucent)) = assets.held.get(stack, HandPose::Head, false) else {
-        return;
-    };
+    let parts: Vec<_> = assets.held.get(stack, HandPose::Head, false).collect();
     let lift = -0.25 + wearer.transforms.y_offset;
-    out.push(EntityDraw {
-        mesh,
-        atlas,
-        model: head
-            * Mat4::from_translation(Vec3::new(0.0, lift, 0.0))
-            * Mat4::rot_y_deg(180.0)
-            * Mat4::from_scale(Vec3::new(0.625, -0.625, -0.625)),
-        origin,
-        layer,
-        blend: crate::renderer::Blending::of(translucent),
-        light: Some(light),
-        overlay: 0.0,
-        glint: Glint::entity(crate::world::glint::has_foil(stack)),
-    });
+    for &(mesh, atlas, translucent) in &parts {
+        out.push(EntityDraw {
+            mesh,
+            atlas,
+            model: head
+                * Mat4::from_translation(Vec3::new(0.0, lift, 0.0))
+                * Mat4::rot_y_deg(180.0)
+                * Mat4::from_scale(Vec3::new(0.625, -0.625, -0.625)),
+            origin,
+            layer,
+            blend: crate::renderer::Blending::of(translucent),
+            light: Some(light),
+            overlay: 0.0,
+            glint: Glint::entity(crate::world::glint::has_foil(stack)),
+        });
+    }
 }
 
 /// `HumanoidArmorLayer.shouldRender` for the head: a helmet, drawn by the

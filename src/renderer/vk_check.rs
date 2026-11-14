@@ -463,3 +463,116 @@ fn khronos_validation_layer_is_on_the_loader_path() {
         std::env::var_os("VK_LAYER_PATH")
     );
 }
+
+/// Texture sets overflow into pools twice the size, and
+/// [`DescriptorPools::compact`] moves them back into one, with validation
+/// on: real uploads, plus one set never written (the blur's before its
+/// first use).
+#[test]
+fn texture_pools_grow_and_compact() {
+    use super::descriptor_pools::DescriptorPools;
+    use super::texture::{Texture, Uploader};
+
+    MESSAGES.lock().expect("validation log").clear();
+    unsafe {
+        let gpu = Gpu::new().expect("Vulkan instance with validation");
+        let device = &gpu.device;
+        let family = gpu
+            .instance
+            .get_physical_device_queue_family_properties(gpu.physical)
+            .iter()
+            .position(|q| q.queue_flags.contains(vk::QueueFlags::GRAPHICS))
+            .expect("graphics queue") as u32;
+        let queue = device.get_device_queue(family, 0);
+        let command_pool = device
+            .create_command_pool(
+                &vk::CommandPoolCreateInfo::default().queue_family_index(family),
+                None,
+            )
+            .expect("command pool");
+        let mem_props = gpu
+            .instance
+            .get_physical_device_memory_properties(gpu.physical);
+        let layout = pipeline::create_descriptor_set_layout(device).expect("texture set layout");
+        let sampler = super::vk_util::create_sampler(
+            device,
+            vk::Filter::NEAREST,
+            false,
+            vk::SamplerAddressMode::CLAMP_TO_EDGE,
+        )
+        .expect("sampler");
+
+        let pools = DescriptorPools::new(device, 4).expect("pools");
+        let unwritten = pools.allocate(device, layout).expect("unwritten set");
+        let uploader = Uploader {
+            device,
+            mem_props: &mem_props,
+            command_pool,
+            queue,
+            descriptor_pools: &pools,
+            descriptor_set_layout: layout,
+            sampler,
+        };
+        let pixel = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]));
+        let mut textures: Vec<Texture> = (0..19)
+            .map(|_| uploader.image_2d(&pixel).expect("upload"))
+            .collect();
+        assert_eq!(pools.capacities(), [4, 8, 16]);
+        assert!(pools.needs_compaction());
+
+        let before: Vec<vk::DescriptorSet> = textures.iter().map(|t| t.descriptor_set).collect();
+        let mut sets = [unwritten];
+        pools
+            .compact(device, layout, |swap| {
+                for tex in &mut textures {
+                    swap(&mut tex.descriptor_set);
+                }
+                swap(&mut sets[0]);
+            })
+            .expect("compact");
+        // 20 sets and a quarter to spare: 25, so 4 · 2^3.
+        assert_eq!(pools.capacities(), [32]);
+        assert!(!pools.needs_compaction());
+        let after: std::collections::HashSet<vk::DescriptorSet> =
+            textures.iter().map(|t| t.descriptor_set).collect();
+        assert_eq!(after.len(), textures.len(), "every texture its own set");
+        assert!(before.iter().all(|old| !after.contains(old)), "every set moved");
+
+        // Most textures gone: the pool shrinks to fit the rest.
+        for tex in textures.drain(3..) {
+            pools.free(device, tex.descriptor_set);
+            device.destroy_image_view(tex.view, None);
+            device.destroy_image(tex.image, None);
+            device.free_memory(tex.memory, None);
+        }
+        assert!(pools.needs_compaction());
+        pools
+            .compact(device, layout, |swap| {
+                for tex in &mut textures {
+                    swap(&mut tex.descriptor_set);
+                }
+                swap(&mut sets[0]);
+            })
+            .expect("compact smaller");
+        assert_eq!(pools.capacities(), [8]);
+
+        for tex in textures.drain(..) {
+            pools.free(device, tex.descriptor_set);
+            device.destroy_image_view(tex.view, None);
+            device.destroy_image(tex.image, None);
+            device.free_memory(tex.memory, None);
+        }
+        pools.free(device, sets[0]);
+        pools.destroy(device);
+        device.destroy_sampler(sampler, None);
+        device.destroy_descriptor_set_layout(layout, None);
+        device.destroy_command_pool(command_pool, None);
+    }
+
+    let messages = MESSAGES.lock().expect("validation log");
+    assert!(
+        messages.is_empty(),
+        "Vulkan validation:\n{}",
+        messages.join("\n")
+    );
+}

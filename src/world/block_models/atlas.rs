@@ -320,7 +320,7 @@ fn skyline(
 }
 
 /// `f` over `items` on every core, results in order.
-fn parallel_map<T: Send, R: Send>(items: Vec<T>, f: impl Fn(T) -> R + Sync) -> Vec<R> {
+pub(super) fn parallel_map<T: Send, R: Send>(items: Vec<T>, f: impl Fn(T) -> R + Sync) -> Vec<R> {
     let threads = std::thread::available_parallelism()
         .map_or(1, |n| n.get())
         .min(items.len().max(1));

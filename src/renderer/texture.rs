@@ -3,6 +3,7 @@
 use ash::vk;
 use image::RgbaImage;
 
+use super::descriptor_pools::DescriptorPools;
 use super::{create_buffer, find_memory_type};
 
 #[derive(Clone, Copy)]
@@ -24,7 +25,7 @@ pub struct Uploader<'a> {
     pub mem_props: &'a vk::PhysicalDeviceMemoryProperties,
     pub command_pool: vk::CommandPool,
     pub queue: vk::Queue,
-    pub descriptor_pool: vk::DescriptorPool,
+    pub descriptor_pools: &'a DescriptorPools,
     pub descriptor_set_layout: vk::DescriptorSetLayout,
     pub sampler: vk::Sampler,
 }
@@ -105,6 +106,7 @@ impl Uploader<'_> {
             device.free_memory(made.staging_memory, None);
         }
         if result.is_err() {
+            self.descriptor_pools.free(device, made.set);
             if made.view != vk::ImageView::null() {
                 device.destroy_image_view(made.view, None);
             }
@@ -289,12 +291,10 @@ impl Uploader<'_> {
         )?;
         made.view = view;
 
-        let set_layouts = [self.descriptor_set_layout];
-        let descriptor_set = device.allocate_descriptor_sets(
-            &vk::DescriptorSetAllocateInfo::default()
-                .descriptor_pool(self.descriptor_pool)
-                .set_layouts(&set_layouts),
-        )?[0];
+        let descriptor_set = self
+            .descriptor_pools
+            .allocate(device, self.descriptor_set_layout)?;
+        made.set = descriptor_set;
 
         let descriptor_image = [vk::DescriptorImageInfo::default()
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
@@ -328,4 +328,5 @@ struct Made {
     image: vk::Image,
     memory: vk::DeviceMemory,
     view: vk::ImageView,
+    set: vk::DescriptorSet,
 }

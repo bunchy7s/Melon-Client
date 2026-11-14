@@ -153,6 +153,9 @@ pub struct TextureCache<'a> {
     /// The animated textures loaded so far, whose entry in `images` is the
     animations: HashMap<String, crate::world::texture_animation::Frames>,
     tick: u64,
+    /// The IDs given an image by [`Self::insert`] (a skin, a composed
+    /// banner): not the file an atlas holds under that name.
+    inserted: std::collections::HashSet<String>,
 }
 
 impl<'a> TextureCache<'a> {
@@ -162,6 +165,7 @@ impl<'a> TextureCache<'a> {
             images: HashMap::new(),
             animations: HashMap::new(),
             tick: 0,
+            inserted: std::collections::HashSet::new(),
         }
     }
 
@@ -169,6 +173,12 @@ impl<'a> TextureCache<'a> {
     pub fn insert(&mut self, id: &str, image: RgbaImage) {
         self.animations.remove(id);
         self.images.insert(id.to_owned(), Some(image));
+        self.inserted.insert(id.to_owned());
+    }
+
+    /// Whether `id` holds an image given by [`Self::insert`].
+    pub fn is_inserted(&self, id: &str) -> bool {
+        self.inserted.contains(id)
     }
 
     /// A texture; an animated one (a strip of frames, `animation` in its

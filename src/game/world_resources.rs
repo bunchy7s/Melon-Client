@@ -31,6 +31,10 @@ pub struct WorldResources {
     pub atlas: TextureId,
     /// The atlas's animated sprites (water, lava, fire...).
     pub animator: TextureAnimator,
+    /// Vanilla's `items` atlas, no mipmaps: what held items sample unless
+    /// their texture is a block's (see [`crate::world::item_atlas`]).
+    pub item_atlas: TextureId,
+    pub item_animator: TextureAnimator,
     pub fluids: FluidSprites,
     /// The assets these were loaded from, for what loads on first sight
     pub root: std::path::PathBuf,
@@ -94,6 +98,7 @@ impl WorldResources {
                 loaded.textures = textures;
                 loaded.meshes = meshes;
                 renderer.bind_gui_glint(loaded.glint_item);
+                renderer.compact_textures();
                 Ok(loaded)
             }
             Err(e) => {
@@ -133,7 +138,10 @@ impl WorldResources {
         }
     }
 
-    /// Frees every texture and mesh.
+    /// Frees every texture and mesh, then lets the renderer merge the
+    /// texture descriptor pools that overflowed meanwhile (many custom
+    /// held items) back into one. A reload ends here too, with the new
+    /// textures already in place.
     pub fn release(mut self, renderer: &mut Renderer) {
         self.icons.release(renderer);
         self.held.release(renderer);
@@ -146,6 +154,7 @@ impl WorldResources {
         for mesh in self.meshes.drain(..) {
             renderer.free_mesh(mesh);
         }
+        renderer.compact_textures();
     }
 
     fn build(renderer: &mut Renderer, assets: &Assets) -> anyhow::Result<Self> {
@@ -179,13 +188,29 @@ impl WorldResources {
             |id| models.sprite(id),
             sprite("minecraft:particle/generic_0"),
         );
+        let models = std::sync::Arc::new(models);
+        let block_atlas = renderer.load_texture_mipmapped(&atlas.image, &atlas.mips)?;
+        let items = crate::world::block_models::pack_sprites(
+            assets.root(),
+            crate::world::item_atlas::texture_ids(assets.root()),
+            renderer.max_texture_side(),
+        );
+        let item_atlas = renderer.load_texture(&items.image)?;
+        let sheets = super::held_items::Sheets {
+            items: item_atlas,
+            item_sprites: items.sprites,
+            blocks: block_atlas,
+            models: models.clone(),
+        };
         Ok(Self {
             fluids,
             particle_sprites: std::sync::Arc::new(particle_sprites),
             root: assets.root().to_path_buf(),
             animator: atlas.animator,
-            atlas: renderer.load_texture_mipmapped(&atlas.image, &atlas.mips)?,
-            models: std::sync::Arc::new(models),
+            atlas: block_atlas,
+            item_atlas,
+            item_animator: items.animator,
+            models,
             colormaps: std::sync::Arc::new(ColorMaps::load(assets.root())),
             players,
             mobs,
@@ -198,7 +223,7 @@ impl WorldResources {
             spectator: SpectatorTextures::load(renderer, assets)?,
             tab: crate::gui::hud::player_tab::TabTextures::load(renderer, assets)?,
             icons: ItemIcons::new(assets.root()),
-            held: HeldItems::new(assets.root()),
+            held: HeldItems::new(assets.root(), sheets),
             blocks: Default::default(),
             sun: assets.texture(renderer, "minecraft:environment/celestial/sun.png")?,
             moon: [
@@ -294,6 +319,15 @@ impl WorldResources {
                 renderer.update_texture(self.atlas, level, x >> level, y >> level, mip);
             }
             renderer.update_texture(self.atlas, 0, x, y, image);
+        }
+        let mut latest = std::collections::HashMap::new();
+        for _ in 0..ticks {
+            for (x, y, image) in self.item_animator.tick() {
+                latest.insert((x, y), image);
+            }
+        }
+        for ((x, y), image) in latest {
+            renderer.update_texture(self.item_atlas, 0, x, y, image);
         }
     }
 

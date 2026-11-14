@@ -297,17 +297,8 @@ impl Renderer {
             )?,
         ];
 
-        let descriptor_pool_sizes = [vk::DescriptorPoolSize {
-            ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-            descriptor_count: MAX_TEXTURES,
-        }];
-        let descriptor_pool = device.create_descriptor_pool(
-            &vk::DescriptorPoolCreateInfo::default()
-                .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
-                .pool_sizes(&descriptor_pool_sizes)
-                .max_sets(MAX_TEXTURES),
-            None,
-        )?;
+        let descriptor_pools =
+            super::descriptor_pools::DescriptorPools::new(&device, MAX_TEXTURES)?;
 
         let clamp = vk::SamplerAddressMode::CLAMP_TO_EDGE;
         let nearest_sampler = create_sampler(&device, vk::Filter::NEAREST, false, clamp)?;
@@ -418,7 +409,7 @@ impl Renderer {
             surface_format,
             render_pass,
             descriptor_set_layout,
-            descriptor_pool,
+            &descriptor_pools,
             linear_sampler,
         )?;
 
@@ -529,7 +520,7 @@ impl Renderer {
                     .map(|_| super::staging::Staging::default())
                     .collect(),
                 white: TextureId(0),
-                descriptor_pool,
+                descriptor_pools,
                 nearest_sampler,
                 mipmap_sampler,
                 linear_sampler,

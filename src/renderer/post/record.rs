@@ -39,13 +39,13 @@ impl Renderer {
                     Err(e) => failed.push((source.id, e)),
                 }
             }
-            let (device, pool) = (self.device.clone(), self.textures.descriptor_pool);
+            let (device, pools) = (self.device.clone(), &self.textures.descriptor_pools);
             failed.extend(self.post.set_chains(
                 &self.device,
                 &self.mem_props,
                 self.gui_uniforms.layout,
                 prepared,
-                &|t| free_effect_texture(&device, pool, t),
+                &|t| free_effect_texture(&device, pools, t),
             ));
             if let Err(e) = self
                 .post
@@ -91,9 +91,9 @@ impl Renderer {
         use crate::renderer::post::config::Input;
         let mut out: Vec<(crate::renderer::texture::Texture, u32, u32)> = Vec::new();
         let fail = |out: &mut Vec<(crate::renderer::texture::Texture, u32, u32)>, e| {
-            let (device, pool) = (self.device.clone(), self.textures.descriptor_pool);
+            let (device, pools) = (self.device.clone(), &self.textures.descriptor_pools);
             for (texture, _, _) in out.drain(..) {
-                free_effect_texture(&device, pool, texture);
+                free_effect_texture(&device, pools, texture);
             }
             e
         };

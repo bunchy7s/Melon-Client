@@ -25,6 +25,7 @@ pub mod glint;
 pub mod head_profile;
 pub mod hotbars;
 pub mod inventory;
+pub mod item_atlas;
 pub mod item_model;
 pub mod java_random;
 pub mod level;

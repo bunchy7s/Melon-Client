@@ -212,7 +212,7 @@ impl InWorld {
                             using,
                         } => {
                             let pose = HandPose::first_person(arm);
-                            if let Some((mesh, atlas, translucent)) =
+                            for (mesh, atlas, translucent) in
                                 assets.held.get(stack, pose, using)
                             {
                                 entities.push(EntityDraw {

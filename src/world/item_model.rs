@@ -298,9 +298,10 @@ impl ItemModel {
         quads
     }
 
-    /// The meshes for every [`HandPose`] and the one texture they sample,
-    pub fn held(&self, assets_root: &Path) -> Option<HeldItem> {
-        self.held_with_skin(assets_root, None)
+    /// The meshes for every [`HandPose`], split by the texture they sample:
+    /// an atlas `sprites` finds, or the item's own for the rest.
+    pub fn held(&self, assets_root: &Path, sprites: SpriteLookup) -> Option<HeldItem> {
+        self.held_with_skin(assets_root, None, sprites)
     }
 
     /// [`Self::held`] resolved once per [`HandPose`]: `display_context`
@@ -311,6 +312,7 @@ impl ItemModel {
         (held, count): (impl Into<HeldUse>, Count),
         variant: Option<&Variant>,
         skin: Option<&RgbaImage>,
+        sprites: SpriteLookup,
     ) -> Option<HeldItem> {
         let held = held.into();
         let mut textures = TextureCache::new(assets_root);
@@ -329,32 +331,12 @@ impl ItemModel {
                 per_pose[pose as usize] = Some((item, quads));
             }
         }
-        let all: Vec<ItemQuad> = per_pose
-            .iter()
-            .flatten()
-            .flat_map(|(_, quads)| quads.iter().cloned())
-            .collect();
-        if all.is_empty() {
-            return None;
-        }
-        let (texture, places) = pack_textures(&all, &mut textures)?;
-        let meshes = HandPose::ALL.map(|pose| {
-            per_pose[pose as usize]
+        let poses = std::array::from_fn(|i| {
+            per_pose[i]
                 .as_ref()
-                .map(|(item, quads)| item.mesh_in_pose(pose, quads, &places))
-                .unwrap_or_default()
+                .map(|(item, quads)| (item, quads.as_slice()))
         });
-        if meshes.iter().all(|m| m.is_empty()) {
-            return None;
-        }
-        let translucent = texture.pixels().any(|p| p[3] != 0 && p[3] != 255);
-        let animation = animate_packed(&all, &mut textures, &texture);
-        Some(HeldItem {
-            texture,
-            animation,
-            translucent,
-            meshes,
-        })
+        bake_held(&poses, &mut textures, sprites)
     }
 
     /// [`Self::held`] with `skin` in place of Steve's: a player head
@@ -362,6 +344,7 @@ impl ItemModel {
         &self,
         assets_root: &Path,
         skin: Option<&image::RgbaImage>,
+        sprites: SpriteLookup,
     ) -> Option<HeldItem> {
         let mut textures = TextureCache::new(assets_root);
         if let Some(skin) = skin {
@@ -371,33 +354,24 @@ impl ItemModel {
             );
         }
         let quads = self.quads(assets_root, &mut textures);
-        if quads.is_empty() {
-            return None;
-        }
-        let (texture, places) = pack_textures(&quads, &mut textures)?;
-        let meshes = HandPose::ALL.map(|pose| self.mesh_in_pose(pose, &quads, &places));
-        let translucent = texture.pixels().any(|p| p[3] != 0 && p[3] != 255);
-        let animation = animate_packed(&quads, &mut textures, &texture);
-        Some(HeldItem {
-            texture,
-            animation,
-            translucent,
-            meshes,
-        })
+        let poses = [Some((self, quads.as_slice())); 10];
+        bake_held(&poses, &mut textures, sprites)
     }
 
-    /// One pose's vertices: `ItemTransform.apply` baked in. Face shade is
+    /// One pose's vertices: `ItemTransform.apply` baked in. Only the quads
+    /// `place` finds a spot for (origin and size in their texture) are
+    /// drawn.
     fn mesh_in_pose(
         &self,
         pose: HandPose,
         quads: &[ItemQuad],
-        places: &[(String, Vec2, Vec2)],
+        place: impl Fn(&str) -> Option<(Vec2, Vec2)>,
     ) -> Vec<WorldVertex> {
         let display = pose.display(&self.model);
         let shade_frame = pose.shade_frame() * Mat3::from_mat4(display);
         let mut out = Vec::with_capacity(quads.len() * 4);
         for quad in quads {
-            let Some(place) = places.iter().find(|p| p.0 == quad.texture) else {
+            let Some((origin, size)) = place(&quad.texture) else {
                 continue;
             };
             let shade_normal = if pose.bakes_shade_in_model_space() {
@@ -413,13 +387,134 @@ impl ItemModel {
             let color = quad.tint.map(|c| f32::from(c) / 255.0 * shade);
             let corners = std::array::from_fn(|i| {
                 let pos = display.transform_point3(quad.corners[i]);
-                let uv = place.1 + quad.uvs[i] * place.2;
+                let uv = origin + quad.uvs[i] * size;
                 (pos.to_array(), uv.to_array())
             });
             geometry::push_quad(&mut out, corners, color, false);
         }
         out
     }
+}
+
+/// Which texture a part of a held item samples.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Sheet {
+    /// The item atlas, built with the resources (`textures/item/`...).
+    Items,
+    /// The block atlas.
+    Blocks,
+    /// The item's own texture: what no atlas holds (a skin, a composed
+    /// banner, a texture no atlas source lists).
+    Own,
+}
+
+/// Finds a texture in the atlases built at load: its sheet (never
+/// [`Sheet::Own`]), its `[u0, v0, u1, v1]` and whether some pixel is
+/// partly see-through.
+pub type SpriteLookup<'a> = &'a dyn Fn(&str) -> Option<(Sheet, [f32; 4], bool)>;
+
+/// Where one texture of a held item is.
+struct Place {
+    sheet: Sheet,
+    origin: Vec2,
+    size: Vec2,
+    translucent: bool,
+}
+
+/// The [`HeldItem`] of the models and quads `poses` holds, one entry per
+/// [`HandPose`]. A quad samples the atlas `sprites` finds its texture in;
+/// the rest are packed into the item's own texture. Each sheet and
+/// see-through-ness becomes a part (`BakedQuad.MaterialInfo`'s render
+/// type per quad).
+fn bake_held(
+    poses: &[Option<(&ItemModel, &[ItemQuad])>; 10],
+    textures: &mut TextureCache,
+    sprites: SpriteLookup,
+) -> Option<HeldItem> {
+    let mut places: HashMap<String, Place> = HashMap::new();
+    let mut own: Vec<ItemQuad> = Vec::new();
+    for (_, quads) in poses.iter().flatten() {
+        for quad in quads.iter() {
+            let id = &quad.texture;
+            if places.contains_key(id) || own.iter().any(|q| q.texture == *id) {
+                continue;
+            }
+            let found = if textures.is_inserted(id) {
+                None
+            } else {
+                sprites(id)
+            };
+            match found {
+                Some((sheet, [u0, v0, u1, v1], translucent)) => {
+                    places.insert(
+                        id.clone(),
+                        Place {
+                            sheet,
+                            origin: Vec2::new(u0, v0),
+                            size: Vec2::new(u1 - u0, v1 - v0),
+                            translucent,
+                        },
+                    );
+                }
+                None => own.push(quad.clone()),
+            }
+        }
+    }
+    let (mut texture, mut animation) = (None, None);
+    if let Some((image, own_places)) = pack_textures(&own, textures) {
+        for (id, origin, size) in own_places {
+            let translucent = textures
+                .get(&id)
+                .is_some_and(|image| image.pixels().any(|p| p[3] != 0 && p[3] != 255));
+            places.insert(
+                id,
+                Place {
+                    sheet: Sheet::Own,
+                    origin,
+                    size,
+                    translucent,
+                },
+            );
+        }
+        animation = animate_packed(&own, textures, &image);
+        texture = Some(image);
+    }
+    let mut groups: Vec<(bool, Sheet)> = places.values().map(|p| (p.translucent, p.sheet)).collect();
+    groups.sort();
+    groups.dedup();
+    let parts: Vec<HeldPart> = groups
+        .into_iter()
+        .map(|(translucent, sheet)| {
+            let place = |id: &str| {
+                places
+                    .get(id)
+                    .filter(|p| p.sheet == sheet && p.translucent == translucent)
+                    .map(|p| (p.origin, p.size))
+            };
+            let meshes = HandPose::ALL.map(|pose| {
+                poses[pose as usize]
+                    .map(|(item, quads)| item.mesh_in_pose(pose, quads, place))
+                    .unwrap_or_default()
+            });
+            HeldPart {
+                sheet,
+                translucent,
+                meshes,
+            }
+        })
+        .filter(|part| part.meshes.iter().any(|mesh| !mesh.is_empty()))
+        .collect();
+    if parts.is_empty() {
+        return None;
+    }
+    if parts.iter().all(|part| part.sheet != Sheet::Own) {
+        (texture, animation) = (None, None);
+    }
+    Some(HeldItem {
+        texture,
+        animation,
+        parts,
+    })
 }
 
 /// How an item is held, each with its own `display` transform
@@ -572,12 +667,21 @@ impl HandPose {
     }
 }
 
-/// An item ready to upload for holding: one mesh per [`HandPose`], in the
+/// An item ready to upload for holding: its parts, opaque ones first, and
+/// the texture of its own the [`Sheet::Own`] part samples.
 pub struct HeldItem {
-    pub texture: RgbaImage,
-    /// The frames of an item whose textures are animated, packed like
+    /// What no atlas holds, side by side; `None` when no part needs it.
+    pub texture: Option<RgbaImage>,
+    /// The frames of `texture` when animated, packed like it.
     pub animation: Option<HeldAnimation>,
+    pub parts: Vec<HeldPart>,
+}
+
+/// The quads of a held item that sample one sheet and are opaque or not.
+pub struct HeldPart {
+    pub sheet: Sheet,
     /// Some texel is partly see-through (stained glass, ice): drawn
+    /// blended.
     pub translucent: bool,
     /// By [`HandPose`], in [`HandPose::ALL`]'s order.
     pub meshes: [Vec<WorldVertex>; 10],
@@ -1511,6 +1615,61 @@ mod tests {
         }
     }
 
+    /// The item atlas holds `textures/item/`, so a sword needs no texture
+    /// of its own; a block item samples the block atlas; a banner's flag,
+    /// composed per colour, stays the item's own.
+    #[test]
+    fn held_items_sample_the_atlases_and_keep_only_the_rest() {
+        let Some(root) = assets() else {
+            eprintln!("no extracted assets, skipping");
+            return;
+        };
+        let ids = crate::world::item_atlas::texture_ids(root);
+        assert!(ids.iter().any(|id| id == "minecraft:item/diamond_sword"));
+        let count = ids.len();
+        let atlas = crate::world::block_models::pack_sprites(root, ids, 4096);
+        eprintln!(
+            "item atlas: {count} textures, {}x{}",
+            atlas.image.width(),
+            atlas.image.height()
+        );
+        let lookup = |id: &str| {
+            let id = crate::world::item_atlas::canonical(id);
+            atlas
+                .sprites
+                .get(&id)
+                .map(|&(rect, see_through)| (Sheet::Items, rect, see_through))
+                .or_else(|| {
+                    id.contains(":block/")
+                        .then_some((Sheet::Blocks, [0.0, 0.0, 1.0, 1.0], false))
+                })
+        };
+        let held = |key: &str| {
+            ItemModel::resolve(root, key, None)
+                .expect(key)
+                .held(root, &lookup)
+                .expect(key)
+        };
+        let sheets = |item: &HeldItem| item.parts.iter().map(|p| p.sheet).collect::<Vec<_>>();
+
+        let sword = held("diamond_sword");
+        assert_eq!(sheets(&sword), [Sheet::Items]);
+        assert!(sword.texture.is_none());
+        let [u0, v0, u1, v1] = atlas.sprites["minecraft:item/diamond_sword"].0;
+        for v in sword.parts[0].meshes.iter().flatten() {
+            let [u, w] = v.uv;
+            assert!((u0..=u1).contains(&u) && (v0..=v1).contains(&w), "{u} {w}");
+        }
+
+        let stone = held("stone");
+        assert_eq!(sheets(&stone), [Sheet::Blocks]);
+        assert!(stone.texture.is_none());
+
+        let banner = held("red_banner");
+        assert!(sheets(&banner).contains(&Sheet::Own), "{:?}", sheets(&banner));
+        assert!(banner.texture.is_some());
+    }
+
     #[test]
     fn a_flat_item_is_one_pixel_thick_with_side_walls() {
         let Some(root) = assets() else {
@@ -1523,7 +1682,9 @@ mod tests {
         let (min, max) = z.fold((f32::MAX, f32::MIN), |(lo, hi), z| (lo.min(z), hi.max(z)));
         assert!((min - 7.5 / 16.0).abs() < 1e-5 && (max - 8.5 / 16.0).abs() < 1e-5);
         assert!(quads.len() > 2, "front and back plus side walls");
-        let held = item.held(root).expect("a sword can be held");
-        assert!(held.meshes.iter().all(|mesh| mesh.len() == quads.len() * 4));
+        let held = item.held(root, &|_| None).expect("a sword can be held");
+        assert!(held.texture.is_some(), "no atlas: its own texture");
+        assert_eq!(held.parts.len(), 1, "one texture, opaque");
+        assert!(held.parts[0].meshes.iter().all(|mesh| mesh.len() == quads.len() * 4));
     }
 }

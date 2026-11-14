@@ -67,8 +67,8 @@ pub struct BlockModels {
     by_state: Vec<StateModel<BakedQuad>>,
     /// Per state, what the mesher asks of every block.
     flags: Vec<MeshFlags>,
-    /// Every atlas texture's `[u0, v0, u1, v1]`, by texture ID.
-    sprites: HashMap<String, [f32; 4]>,
+    /// Every atlas texture's index in `rects`, by texture ID.
+    sprites: HashMap<String, usize>,
     /// Every distinct baked quad's corners, by [`BakedQuad::index`].
     corners: Vec<[WorldVertex; 4]>,
     /// What smooth lighting reads off each of them, by the same index.
@@ -179,6 +179,47 @@ pub struct BakedAtlas {
     /// [`mipmap::LEVELS`] smaller levels of `image`, half the size each.
     pub mips: Vec<RgbaImage>,
     pub animator: TextureAnimator,
+}
+
+/// A second atlas packed like the block atlas, without mipmaps (vanilla's
+/// `items` atlas: `AtlasManager.AtlasConfig(..., false)`).
+pub struct SpriteSheet {
+    pub image: RgbaImage,
+    /// `[u0, v0, u1, v1]` and whether some pixel is partly see-through, by
+    /// texture ID as given.
+    pub sprites: HashMap<String, ([f32; 4], bool)>,
+    pub animator: TextureAnimator,
+}
+
+/// Packs the textures `ids` (missing ones are left out) into one atlas no
+/// wider or taller than `max_side`. Unlike block textures, a still one is
+/// kept whole when it isn't square (vanilla's `SpriteLoader` keeps any
+/// size; custom item packs use tall ones).
+pub fn pack_sprites(assets_root: &Path, ids: Vec<String>, max_side: u32) -> SpriteSheet {
+    let loaded = atlas::parallel_map(ids, |id| {
+        let (png, meta) = crate::assets::texture_with_meta(assets_root, &id)?;
+        let animated = meta.as_ref().is_some_and(|m| m.get("animation").is_some());
+        // An animated one is loaded with its frames by the packer.
+        let image = if animated {
+            None
+        } else {
+            Some(crate::assets::decode_png(&png)?)
+        };
+        Some((id, image))
+    });
+    let images: Vec<(String, Option<RgbaImage>)> = loaded.into_iter().flatten().collect();
+    let ids: Vec<String> = images.iter().map(|(id, _)| id.clone()).collect();
+    let packed = pack_atlas(assets_root, images, max_side);
+    let sprites = ids
+        .into_iter()
+        .zip(packed.rects.iter().zip(&packed.partly_transparent))
+        .map(|(id, (&rect, &see_through))| (id, (rect, see_through)))
+        .collect();
+    SpriteSheet {
+        image: packed.image,
+        sprites,
+        animator: packed.animator,
+    }
 }
 
 impl BlockModels {
@@ -337,7 +378,12 @@ impl BlockModels {
 
     /// An atlas texture's `[u0, v0, u1, v1]`, e.g. `minecraft:block/water_still`.
     pub fn sprite(&self, id: &str) -> Option<[f32; 4]> {
-        self.sprites.get(id).copied()
+        self.sprite_info(id).map(|(rect, _)| rect)
+    }
+
+    /// [`Self::sprite`] and whether some pixel is partly see-through.
+    pub fn sprite_info(&self, id: &str) -> Option<([f32; 4], bool)> {
+        self.rects.get(*self.sprites.get(id)?).copied()
     }
 
     /// Bakes every state from the models under `assets_root` and packs one
@@ -412,7 +458,7 @@ impl BlockModels {
         let sprites = baker
             .texture_index
             .iter()
-            .map(|(id, &index)| (id.clone(), packed.rects[index]))
+            .map(|(id, &index)| (id.clone(), index))
             .collect();
         let rects = packed
             .rects

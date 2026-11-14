@@ -48,18 +48,17 @@ impl Blur {
         format: vk::Format,
         frame_pass: vk::RenderPass,
         set_layout: vk::DescriptorSetLayout,
-        pool: vk::DescriptorPool,
+        pools: &super::descriptor_pools::DescriptorPools,
         sampler: vk::Sampler,
     ) -> anyhow::Result<Self> {
         let pass = Self::create_pass(device, format)?;
         let horizontal = pipeline::blur::create(device, pass, set_layout)?;
         let vertical = pipeline::blur::create(device, frame_pass, set_layout)?;
-        let layouts = [set_layout; 2];
-        let sets = device.allocate_descriptor_sets(
-            &vk::DescriptorSetAllocateInfo::default()
-                .descriptor_pool(pool)
-                .set_layouts(&layouts),
-        )?;
+        // Never freed one by one: they go with the pools.
+        let sets = [
+            pools.allocate(device, set_layout)?,
+            pools.allocate(device, set_layout)?,
+        ];
         let features = instance
             .get_physical_device_format_properties(physical_device, format)
             .optimal_tiling_features;
@@ -72,11 +71,16 @@ impl Blur {
             pass,
             horizontal,
             vertical,
-            sets: [sets[0], sets[1]],
+            sets,
             sampler,
             halve,
             targets: None,
         })
+    }
+
+    /// Its sets, for [`super::descriptor_pools::DescriptorPools::compact`].
+    pub(super) fn sets_mut(&mut self) -> &mut [vk::DescriptorSet; 2] {
+        &mut self.sets
     }
 
     /// Colour only; ready to be sampled when it ends.

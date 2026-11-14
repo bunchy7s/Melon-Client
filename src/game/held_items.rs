@@ -1,31 +1,77 @@
-//! Items in hand on the GPU: each item's [`HeldItem`] meshes and texture,
+//! Items in hand on the GPU: each item's [`HeldItem`] parts as meshes.
+//! Parts sample the item or the block atlas, built with the resources;
+//! only what neither holds (a downloaded skin, a composed banner) gets a
+//! texture of its own, so a pack's custom items don't add textures while
+//! playing.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use pumpkin_data::item_stack::ItemStack;
 
 use image::RgbaImage;
 
 use crate::renderer::{MeshId, Renderer, TextureId};
+use crate::world::block_models::BlockModels;
 use crate::world::head_profile::HeadProfile;
 use crate::world::item_model::{
-    self, Count, HandPose, HeldAnimation, HeldItem, HeldUse, ItemKey, ItemModel,
+    self, Count, HandPose, HeldAnimation, HeldItem, HeldUse, ItemKey, ItemModel, Sheet,
 };
 
-/// One item's uploaded meshes, by [`HandPose`], and their texture.
-struct Uploaded {
+/// The atlases held items sample, made with the resources.
+pub struct Sheets {
+    pub items: TextureId,
+    /// The item atlas's sprites and whether each is partly see-through, by
+    /// `namespace:path`.
+    pub item_sprites: HashMap<String, ([f32; 4], bool)>,
+    pub blocks: TextureId,
+    pub models: Arc<BlockModels>,
+}
+
+impl Sheets {
+    /// Where texture `id` is: the item atlas first (vanilla's item models
+    /// use it), then the block atlas.
+    fn find(&self, id: &str) -> Option<(Sheet, [f32; 4], bool)> {
+        let canonical = crate::world::item_atlas::canonical(id);
+        if let Some(&(rect, see_through)) = self.item_sprites.get(&canonical) {
+            return Some((Sheet::Items, rect, see_through));
+        }
+        let (namespace, path) = crate::assets::split_id(id);
+        let block = self.models.sprite_info(id).or_else(|| {
+            let other = if id.contains(':') {
+                (namespace == "minecraft").then(|| path.to_owned())
+            } else {
+                Some(canonical)
+            };
+            self.models.sprite_info(&other?)
+        });
+        block.map(|(rect, see_through)| (Sheet::Blocks, rect, see_through))
+    }
+}
+
+/// One uploaded part: its meshes by [`HandPose`] and the texture they sample.
+struct Part {
     texture: TextureId,
     translucent: bool,
     meshes: [MeshId; 10],
+}
+
+/// One item's uploaded parts.
+struct Uploaded {
+    parts: Vec<Part>,
+    /// The item's own texture, when some part samples it.
+    own: Option<TextureId>,
     /// The ground mesh's lowest point and its depth (`getModelBoundingBox`
     ground: (f32, f32),
-    /// Animated textures: the frames and the one showing.
+    /// Animated own texture: the frames and the one showing. (Animated
+    /// atlas sprites move with their atlas.)
     animation: Option<(HeldAnimation, usize)>,
 }
 
 pub struct HeldItems {
     assets_root: PathBuf,
+    sheets: Sheets,
     /// `None` for an item with nothing to draw in hand; by item and
     items: HashMap<(ItemKey, HeldUse), Option<Uploaded>>,
     /// Blocks drawn by a mob (a mooshroom's mushrooms), by model id.
@@ -35,9 +81,10 @@ pub struct HeldItems {
 }
 
 impl HeldItems {
-    pub fn new(assets_root: &Path) -> Self {
+    pub fn new(assets_root: &Path, sheets: Sheets) -> Self {
         Self {
             assets_root: assets_root.to_path_buf(),
+            sheets,
             items: HashMap::new(),
             blocks: HashMap::new(),
             heads: HashMap::new(),
@@ -65,9 +112,10 @@ impl HeldItems {
             (key.1, key.0.count()),
             key.0.variant.as_deref(),
             None,
+            &|id| self.sheets.find(id),
         )
         .and_then(|held| {
-            upload(renderer, held)
+            upload(renderer, &self.sheets, held)
                 .map_err(|e| eprintln!("Item {name} in der Hand nicht hochgeladen: {e:#}"))
                 .ok()
         });
@@ -92,9 +140,11 @@ impl HeldItems {
         let name = stack.item.registry_key;
         let held =
             ItemModel::resolve_in_use(&self.assets_root, name, None, (using, Count::ONE), None)
-                .and_then(|item| item.held_with_skin(&self.assets_root, Some(skin)))
+                .and_then(|item| {
+                    item.held_with_skin(&self.assets_root, Some(skin), &|id| self.sheets.find(id))
+                })
                 .and_then(|held| {
-                    upload(renderer, held)
+                    upload(renderer, &self.sheets, held)
                         .map_err(|e| eprintln!("Kopf in der Hand nicht hochgeladen: {e:#}"))
                         .ok()
                 });
@@ -109,23 +159,18 @@ impl HeldItems {
             return;
         }
         let held = ItemModel::block(&self.assets_root, model)
-            .and_then(|item| item.held(&self.assets_root))
+            .and_then(|item| item.held(&self.assets_root, &|id| self.sheets.find(id)))
             .and_then(|held| {
-                upload(renderer, held)
+                upload(renderer, &self.sheets, held)
                     .map_err(|e| eprintln!("Block {model} nicht hochgeladen: {e:#}"))
                     .ok()
             });
         self.blocks.insert(model, held);
     }
 
-    /// The mesh and texture of a prepared block model, centred on the
-    pub fn block(&self, model: &str) -> Option<(MeshId, TextureId, bool)> {
-        let uploaded = self.blocks.get(model)?.as_ref()?;
-        Some((
-            uploaded.meshes[HandPose::Ground as usize],
-            uploaded.texture,
-            uploaded.translucent,
-        ))
+    /// The meshes and textures of a prepared block model, centred on the
+    pub fn block(&self, model: &str) -> impl Iterator<Item = (MeshId, TextureId, bool)> + '_ {
+        draws(self.blocks.get(model).and_then(Option::as_ref), HandPose::Ground)
     }
 
     /// Moves the animated items' textures to the frame showing at `tick`
@@ -137,13 +182,13 @@ impl HeldItems {
             .flatten()
             .chain(self.heads.values_mut().filter_map(|(_, u)| u.as_mut()));
         for item in uploaded {
-            let Some((animation, shown)) = &mut item.animation else {
+            let (Some((animation, shown)), Some(own)) = (&mut item.animation, item.own) else {
                 continue;
             };
             let frame = animation.frame_at(tick);
             if frame != *shown {
                 *shown = frame;
-                renderer.update_texture(item.texture, 0, 0, 0, animation.frames[frame].clone());
+                renderer.update_texture(own, 0, 0, 0, animation.frames[frame].clone());
             }
         }
     }
@@ -161,19 +206,15 @@ impl HeldItems {
         }
     }
 
-    /// The mesh and texture for `stack` held in `pose`, in use or not, and
+    /// The meshes and textures for `stack` held in `pose`, in use or not,
+    /// one per part (opaque ones first), each blended or not.
     pub fn get(
         &self,
         stack: &ItemStack,
         pose: HandPose,
         using: impl Into<HeldUse>,
-    ) -> Option<(MeshId, TextureId, bool)> {
-        let uploaded = self.uploaded(stack, using.into())?;
-        Some((
-            uploaded.meshes[pose as usize],
-            uploaded.texture,
-            uploaded.translucent,
-        ))
+    ) -> impl Iterator<Item = (MeshId, TextureId, bool)> + '_ {
+        draws(self.uploaded(stack, using.into()), pose)
     }
 
     /// The lowest point and the depth of `stack`'s model on the ground.
@@ -202,46 +243,82 @@ impl HeldItems {
     }
 }
 
+fn draws(
+    uploaded: Option<&Uploaded>,
+    pose: HandPose,
+) -> impl Iterator<Item = (MeshId, TextureId, bool)> + '_ {
+    uploaded
+        .into_iter()
+        .flat_map(|u| u.parts.iter())
+        .map(move |part| (part.meshes[pose as usize], part.texture, part.translucent))
+}
+
 fn free(renderer: &mut Renderer, uploaded: Uploaded) {
-    renderer.free_texture(uploaded.texture);
-    for mesh in uploaded.meshes {
-        renderer.free_mesh(mesh);
+    if let Some(own) = uploaded.own {
+        renderer.free_texture(own);
+    }
+    for part in uploaded.parts {
+        for mesh in part.meshes {
+            renderer.free_mesh(mesh);
+        }
     }
 }
 
-fn upload(renderer: &mut Renderer, held: HeldItem) -> anyhow::Result<Uploaded> {
-    let texture = renderer.load_texture(&held.texture)?;
-    let mut meshes = Vec::with_capacity(HandPose::ALL.len());
-    for vertices in &held.meshes {
-        match renderer.upload_mesh(vertices) {
-            Ok(mesh) => meshes.push(mesh),
-            Err(e) => {
-                for mesh in meshes {
-                    renderer.free_mesh(mesh);
+fn upload(renderer: &mut Renderer, sheets: &Sheets, held: HeldItem) -> anyhow::Result<Uploaded> {
+    let own = match &held.texture {
+        Some(texture) => Some(renderer.load_texture(texture)?),
+        None => None,
+    };
+    let mut uploaded = Uploaded {
+        parts: Vec::with_capacity(held.parts.len()),
+        own,
+        ground: ground_bounds(&held),
+        animation: held.animation.map(|animation| (animation, 0)),
+    };
+    for part in &held.parts {
+        let texture = match part.sheet {
+            Sheet::Items => sheets.items,
+            Sheet::Blocks => sheets.blocks,
+            Sheet::Own => own.expect("an own part comes with its texture"),
+        };
+        let mut meshes = Vec::with_capacity(HandPose::ALL.len());
+        for vertices in &part.meshes {
+            match renderer.upload_mesh(vertices) {
+                Ok(mesh) => meshes.push(mesh),
+                Err(e) => {
+                    meshes.into_iter().for_each(|m| renderer.free_mesh(m));
+                    free(renderer, uploaded);
+                    return Err(e);
                 }
-                return Err(e);
             }
         }
+        let meshes =
+            <[MeshId; 10]>::try_from(meshes).unwrap_or_else(|_| unreachable!("one per pose"));
+        uploaded.parts.push(Part {
+            texture,
+            translucent: part.translucent,
+            meshes,
+        });
     }
-    let meshes = <[MeshId; 10]>::try_from(meshes).unwrap_or_else(|_| unreachable!("one per pose"));
-    let animation = held.animation.map(|animation| (animation, 0));
-    let ground = &held.meshes[HandPose::Ground as usize];
-    let fold = |axis: usize, init: f32, f: fn(f32, f32) -> f32| {
-        ground.iter().fold(init, |acc, v| f(acc, v.pos[axis]))
-    };
-    let ground = if ground.is_empty() {
-        (0.0, 0.0)
-    } else {
-        (
-            fold(1, f32::MAX, f32::min),
-            fold(2, f32::MIN, f32::max) - fold(2, f32::MAX, f32::min),
-        )
-    };
-    Ok(Uploaded {
-        ground,
-        texture,
-        translucent: held.translucent,
-        meshes,
-        animation,
-    })
+    Ok(uploaded)
+}
+
+/// The lowest point of the ground pose over every part, and its depth.
+fn ground_bounds(held: &HeldItem) -> (f32, f32) {
+    let mut points = held
+        .parts
+        .iter()
+        .flat_map(|part| &part.meshes[HandPose::Ground as usize])
+        .map(|v| v.pos)
+        .peekable();
+    if points.peek().is_none() {
+        return (0.0, 0.0);
+    }
+    let (mut min_y, mut min_z, mut max_z) = (f32::MAX, f32::MAX, f32::MIN);
+    for [_, y, z] in points {
+        min_y = min_y.min(y);
+        min_z = min_z.min(z);
+        max_z = max_z.max(z);
+    }
+    (min_y, max_z - min_z)
 }

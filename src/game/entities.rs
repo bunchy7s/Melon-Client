@@ -495,9 +495,8 @@ impl InWorld {
             * Mat4::rot_y_deg(y_rot);
         let map = entity.item.item.registry_key == "filled_map";
         let model = FRAME_MODELS[usize::from(glow) * 2 + usize::from(map)];
-        if !entity.appearance.invisible()
-            && let Some((mesh, atlas, translucent)) = assets.held.block(model)
-        {
+        let frame = assets.held.block(model);
+        for (mesh, atlas, translucent) in frame.filter(|_| !entity.appearance.invisible()) {
             out.push(EntityDraw {
                 mesh,
                 atlas,
@@ -1137,24 +1136,24 @@ fn submit_mob(
 
 /// `IronGolemFlowerLayer`: a poppy held out in the right arm. The mesh is
 fn submit_flower(assets: &WorldResources, arm: Mat4, placed: Placed, out: &mut Vec<EntityDraw>) {
-    let Some((mesh, atlas, translucent)) = assets.held.block(mobs::golem::FLOWER_MODEL) else {
-        return;
-    };
+    let parts: Vec<_> = assets.held.block(mobs::golem::FLOWER_MODEL).collect();
     let model = arm
         * Mat4::from_translation(Vec3::new(-1.1875 + 0.5, 1.0625 + 0.5, -0.9375 + 0.5))
         * Mat4::from_scale(Vec3::splat(0.5))
         * Mat4::rot_x_deg(-90.0);
-    out.push(EntityDraw {
-        mesh,
-        atlas,
-        model,
-        origin: placed.origin,
-        layer: placed.layer,
-        blend: crate::renderer::Blending::of(translucent),
-        light: Some(placed.light),
-        overlay: 0.0,
-        glint: Glint::None,
-    });
+    for &(mesh, atlas, translucent) in &parts {
+        out.push(EntityDraw {
+            mesh,
+            atlas,
+            model,
+            origin: placed.origin,
+            layer: placed.layer,
+            blend: crate::renderer::Blending::of(translucent),
+            light: Some(placed.light),
+            overlay: 0.0,
+            glint: Glint::None,
+        });
+    }
 }
 
 /// `SnowGolemHeadLayer`: a carved pumpkin on the head, five eighths of a
@@ -1165,24 +1164,24 @@ fn submit_pumpkin(
     overlay: f32,
     out: &mut Vec<EntityDraw>,
 ) {
-    let Some((mesh, atlas, translucent)) = assets.held.block(mobs::SNOW_GOLEM_HEAD) else {
-        return;
-    };
+    let parts: Vec<_> = assets.held.block(mobs::SNOW_GOLEM_HEAD).collect();
     let model = head
         * Mat4::from_translation(Vec3::new(0.0, -0.34375, 0.0))
         * Mat4::rot_y_deg(180.0)
         * Mat4::from_scale(Vec3::new(0.625, -0.625, -0.625));
-    out.push(EntityDraw {
-        mesh,
-        atlas,
-        model,
-        origin: placed.origin,
-        layer: placed.layer,
-        blend: crate::renderer::Blending::of(translucent),
-        light: Some(placed.light),
-        overlay,
-        glint: Glint::None,
-    });
+    for &(mesh, atlas, translucent) in &parts {
+        out.push(EntityDraw {
+            mesh,
+            atlas,
+            model,
+            origin: placed.origin,
+            layer: placed.layer,
+            blend: crate::renderer::Blending::of(translucent),
+            light: Some(placed.light),
+            overlay,
+            glint: Glint::None,
+        });
+    }
 }
 
 /// `MushroomCowMushroomLayer`: two mushrooms on the back and one on the
@@ -1195,9 +1194,7 @@ fn submit_mushrooms(
     overlay: f32,
     out: &mut Vec<EntityDraw>,
 ) {
-    let Some((mesh, atlas, translucent)) = assets.held.block(model) else {
-        return;
-    };
+    let parts: Vec<_> = assets.held.block(model).collect();
     let flip = Mat4::from_scale(Vec3::new(-1.0, -1.0, 1.0));
     let back = root * Mat4::from_translation(Vec3::new(0.2, -0.35, 0.5));
     let places = [
@@ -1209,17 +1206,19 @@ fn submit_mushrooms(
         head * Mat4::from_translation(Vec3::new(0.0, -0.7, -0.2)) * Mat4::rot_y_deg(-78.0) * flip,
     ];
     for model in places {
-        out.push(EntityDraw {
-            mesh,
-            atlas,
-            model,
-            origin: placed.origin,
-            layer: placed.layer,
-            blend: crate::renderer::Blending::of(translucent),
-            light: Some(placed.light),
-            overlay,
-            glint: Glint::None,
-        });
+        for &(mesh, atlas, translucent) in &parts {
+            out.push(EntityDraw {
+                mesh,
+                atlas,
+                model,
+                origin: placed.origin,
+                layer: placed.layer,
+                blend: crate::renderer::Blending::of(translucent),
+                light: Some(placed.light),
+                overlay,
+                glint: Glint::None,
+            });
+        }
     }
 }
 
@@ -1267,20 +1266,20 @@ fn submit_item(
     placed: Placed,
     out: &mut Vec<EntityDraw>,
 ) {
-    let Some((mesh, atlas, translucent)) = assets.held.get(stack, pose, using) else {
-        return;
-    };
-    out.push(EntityDraw {
-        mesh,
-        atlas,
-        model: at,
-        origin: placed.origin,
-        layer: placed.layer,
-        blend: crate::renderer::Blending::of(translucent),
-        light: Some(placed.light),
-        overlay: 0.0,
-        glint: Glint::entity(crate::world::glint::has_foil(stack)),
-    });
+    let parts: Vec<_> = assets.held.get(stack, pose, using).collect();
+    for &(mesh, atlas, translucent) in &parts {
+        out.push(EntityDraw {
+            mesh,
+            atlas,
+            model: at,
+            origin: placed.origin,
+            layer: placed.layer,
+            blend: crate::renderer::Blending::of(translucent),
+            light: Some(placed.light),
+            overlay: 0.0,
+            glint: Glint::entity(crate::world::glint::has_foil(stack)),
+        });
+    }
 }
 
 fn tinted(light: [f32; 3], tint: [f32; 3]) -> [f32; 3] {

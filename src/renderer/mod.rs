@@ -4,6 +4,7 @@
 mod blur;
 mod capture;
 mod context;
+mod descriptor_pools;
 mod device_info;
 mod device_pick;
 mod frame;
@@ -45,7 +46,9 @@ pub use frame::{
 use ash::vk;
 
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
-/// Descriptor sets for 2D textures and cube maps. Every baked item icon is
+/// Descriptor sets for 2D textures and cube maps in the first pool. Every
+/// baked item icon is one; a full pool is followed by one twice its size
+/// (see [`descriptor_pools`]).
 const MAX_TEXTURES: u32 = 4096;
 const VERTEX_CAPACITY: usize = 1 << 16;
 
@@ -276,7 +279,7 @@ struct Textures {
     update_staging: Vec<staging::Staging>,
     /// A 1x1 white texture, for untextured quads.
     white: TextureId,
-    descriptor_pool: vk::DescriptorPool,
+    descriptor_pools: descriptor_pools::DescriptorPools,
     /// Nearest: UI sprites and font (vanilla look).
     nearest_sampler: vk::Sampler,
     /// Nearest within a level, blended between levels: the block atlas.
@@ -395,8 +398,6 @@ impl Drop for Renderer {
                 .destroy_sampler(self.textures.repeat_sampler, None);
             self.device
                 .destroy_sampler(self.textures.linear_repeat_sampler, None);
-            self.device
-                .destroy_descriptor_pool(self.textures.descriptor_pool, None);
             self.pipelines.ui.destroy(&self.device);
             self.pipelines.sky.destroy(&self.device);
             self.pipelines.solid.destroy(&self.device);
@@ -429,9 +430,10 @@ impl Drop for Renderer {
             }
             self.device
                 .destroy_descriptor_set_layout(self.pipelines.layout, None);
-            let (device, pool) = (self.device.clone(), self.textures.descriptor_pool);
+            let (device, pools) = (self.device.clone(), &self.textures.descriptor_pools);
             self.post
-                .destroy(&self.device, &|t| free_effect_texture(&device, pool, t));
+                .destroy(&self.device, &|t| free_effect_texture(&device, pools, t));
+            self.textures.descriptor_pools.destroy(&self.device);
             self.device.destroy_render_pass(self.render_pass, None);
             self.device.destroy_render_pass(self.overwrite_pass, None);
             self.device.destroy_render_pass(self.split_pass, None);
@@ -458,11 +460,11 @@ struct DepthImage {
 /// Frees a texture a post chain owns outside the texture list.
 unsafe fn free_effect_texture(
     device: &ash::Device,
-    pool: vk::DescriptorPool,
+    pools: &descriptor_pools::DescriptorPools,
     texture: texture::Texture,
 ) {
     device.destroy_image_view(texture.view, None);
     device.destroy_image(texture.image, None);
     device.free_memory(texture.memory, None);
-    let _ = device.free_descriptor_sets(pool, &[texture.descriptor_set]);
+    pools.free(device, texture.descriptor_set);
 }

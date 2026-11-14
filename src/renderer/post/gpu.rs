@@ -295,6 +295,13 @@ impl Post {
         !self.chains.is_empty()
     }
 
+    /// The chains' own textures, whose sets come from the texture pools.
+    pub fn textures_mut(&mut self) -> impl Iterator<Item = &mut Texture> {
+        self.chains
+            .values_mut()
+            .flat_map(|chain| chain.textures.iter_mut().map(|e| &mut e.texture))
+    }
+
     /// Builds the chains of `sources`, with their textures (`uploaded`, in
     pub unsafe fn set_chains(
         &mut self,
