@@ -1,31 +1,59 @@
 //! The sounds of the world: the player's own (breaking, placing and hitting
 
-use super::{InWorld, minecraft_yaw};
+use super::InWorld;
 use crate::audio::SoundInstance;
 use crate::audio::block_sounds::{BlockSound, SoundType};
 use crate::audio::level_sounds::LevelSound;
 use crate::audio::source::SoundSource;
 use crate::network::play::game::sound::{BREAK_BLOCK, Explosion, LevelEvent, ServerSound, SoundAt};
+use crate::world::{block_motion, physics};
+use glam::DVec3;
+use pumpkin_data::tag::{self, Taggable};
 use pumpkin_data::{Block, BlockStateId};
 use std::time::{Duration, Instant};
 
 /// `Entity.moveDist` grows by this much per block walked.
 const STEP_FACTOR: f64 = 0.6;
-/// How far below the feet the block being walked on is (`getOnPos`).
-const ON_POS_OFFSET: f64 = 0.2;
+/// `Entity.getOnPos()`: the supporting block itself.
+const ON_POS: f64 = 1.0e-5_f32 as f64;
+/// `Entity.getOnPosLegacy()`: the block a step or landing is heard from.
+const ON_POS_LEGACY: f64 = 0.2_f32 as f64;
+const SMALL_FALL: &str = "entity.player.small_fall";
+const BIG_FALL: &str = "entity.player.big_fall";
 /// How far from the camera a global level event is heard.
 const GLOBAL_DISTANCE: f64 = 2.0;
 /// A server sound this close to one the client just played itself is the
 const ECHO_RANGE: f64 = 1.5;
 const ECHO_WINDOW: Duration = Duration::from_millis(750);
 
-/// `Entity.moveDist`, `nextStep` and `fallDistance`.
-#[derive(Default)]
+/// Where the sounds are heard from: vanilla's `ListenerTransform`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ears {
+    pub position: [f64; 3],
+    pub forward: [f32; 3],
+    pub up: [f32; 3],
+}
+
+/// `Entity.moveDist`, `nextStep` and the amethyst chime's state.
 pub(super) struct Footsteps {
-    last: Option<[f64; 3]>,
+    last: Option<DVec3>,
     move_dist: f64,
     next_step: f64,
-    fall_distance: f64,
+    /// `Entity.crystalSoundIntensity` and `lastCrystalSoundPlayTick`.
+    crystal_intensity: f32,
+    last_crystal_tick: u64,
+}
+
+impl Default for Footsteps {
+    fn default() -> Self {
+        Self {
+            last: None,
+            move_dist: 0.0,
+            next_step: 1.0,
+            crystal_intensity: 0.0,
+            last_crystal_tick: 0,
+        }
+    }
 }
 
 /// What the client played itself lately: a server that tells every player
@@ -144,15 +172,32 @@ fn block_name(state: u16) -> &'static str {
 }
 
 impl InWorld {
+    /// Sounds with a subtitle that just started, for the subtitle overlay.
+    pub fn hear(&mut self, heard: Vec<crate::audio::Heard>, lang: &crate::i18n::Lang) {
+        let now = Instant::now();
+        for heard in heard {
+            self.hud.subtitles.hear(heard, lang, now);
+        }
+    }
+
     /// The sounds queued since the last call.
     pub fn take_sounds(&mut self) -> Vec<SoundInstance<'static>> {
         std::mem::take(&mut self.sounds)
     }
 
-    /// Where the player's ears are and which way they face, for the sounds
-    pub fn listener(&self) -> ([f64; 3], f32) {
-        let eye = self.player.tick_eye();
-        ([eye.x, eye.y, eye.z], minecraft_yaw(self.player.yaw()))
+    /// `SoundEngine.updateSource(camera)`: the last rendered camera, else
+    /// the eye looking along the player's yaw and pitch.
+    pub fn listener(&self) -> Ears {
+        self.ears.unwrap_or_else(|| {
+            let eye = self.player.tick_eye();
+            let forward =
+                crate::world::player::forward_vector_for(self.player.yaw(), self.player.pitch());
+            Ears {
+                position: [eye.x, eye.y, eye.z],
+                forward: forward.to_array(),
+                up: [0.0, 1.0, 0.0],
+            }
+        })
     }
 
     /// Queues what block `state` sounds like for `kind`, heard from `at`.
@@ -262,48 +307,202 @@ impl InWorld {
         [0, 1, 2].map(|i| eye[i] + delta[i] / length * distance)
     }
 
-    /// `Entity.move`'s step and landing sounds, after the player moved.
+    /// `Entity.move` after the player moved: `checkFallDamage`'s landing
+    /// sounds, then `applyMovementEmissionAndPlaySound`'s footsteps.
     pub(super) fn tick_footsteps(&mut self) {
         let feet = self.player.feet();
-        let now = [feet.x, feet.y, feet.z];
-        let Some(last) = self.footsteps.last.replace(now) else {
+        let landing = self.player.take_landing();
+        let Some(last) = self.footsteps.last.replace(feet) else {
             return;
         };
-        let steps = &mut self.footsteps;
-        let on_ground = self.player.on_ground();
-        if !on_ground {
-            if now[1] < last[1] {
-                steps.fall_distance += last[1] - now[1];
-            }
+        if self.game_mode.current.is_spectator() || self.player.riding() {
             return;
         }
-        let below = self.block_below_feet(ON_POS_OFFSET);
-        let landed = std::mem::take(&mut self.footsteps.fall_distance) > 0.0;
-        if landed {
-            self.queue_block_sound(below, BlockSound::Fall, now);
-            self.footsteps.next_step = self.footsteps.move_dist.floor() + 1.0;
+        if let Some(fallen) = landing {
+            self.landing_sounds(fallen);
         }
-        if self.keys.sneak || self.player.flying() {
+        // `Player.getMovementEmission`: flying or sneaking on the ground is silent.
+        if self.player.flying() || (self.player.on_ground() && self.keys.sneak) {
             return;
         }
-        let walked = (now[0] - last[0]).hypot(now[2] - last[2]);
+        let moved = feet - last;
+        let support = self.player.supporting_block();
+        let supporting_pos = block_motion::on_pos(&self.level, feet, support, ON_POS);
+        let supporting = self.state_at(supporting_pos);
+        let horizontal = moved.x.hypot(moved.z);
+        let walked = if climbable(supporting) {
+            moved.length()
+        } else {
+            horizontal
+        };
         self.footsteps.move_dist += walked * STEP_FACTOR;
-        if self.footsteps.move_dist > self.footsteps.next_step {
+        if self.footsteps.move_dist <= self.footsteps.next_step || is_air(supporting) {
+            return;
+        }
+        let effect_pos = block_motion::on_pos(&self.level, feet, support, ON_POS_LEGACY);
+        let effect = self.state_at(effect_pos);
+        let mut stepped = self.step_effects(effect_pos, effect, true, moved.y);
+        if effect_pos != supporting_pos {
+            stepped |= self.step_effects(supporting_pos, supporting, false, moved.y);
+        }
+        if stepped || self.player.in_water() {
             self.footsteps.next_step = self.footsteps.move_dist.floor() + 1.0;
-            self.queue_block_sound(below, BlockSound::Step, now);
+        }
+        if !stepped && self.player.in_water() {
+            self.swim_sound();
         }
     }
 
-    fn block_below_feet(&self, offset: f64) -> u16 {
-        let feet = self.player.feet();
-        self.level
-            .block_state(
-                feet.x.floor() as i32,
-                (feet.y - offset).floor() as i32,
-                feet.z.floor() as i32,
-            )
-            .unwrap_or(0)
+    /// `Entity.vibrationAndSoundEffectsFromBlock`: whether the block counts
+    /// as stepped on, and its sound if `sound`.
+    fn step_effects(
+        &mut self,
+        pos: (i32, i32, i32),
+        state: u16,
+        sound: bool,
+        moved_y: f64,
+    ) -> bool {
+        if is_air(state) {
+            return false;
+        }
+        let touching = self.player.on_ground()
+            || climbable(state)
+            || (self.player.crouching() && moved_y == 0.0);
+        if !touching || self.player.swimming() {
+            return false;
+        }
+        if sound {
+            self.walking_step_sound(pos, state);
+        }
+        true
     }
+
+    /// `Entity.walkingStepSound` with `Player.playStepSound`: a carpet, snow
+    /// layer or the like on top is heard over the block under it.
+    fn walking_step_sound(&mut self, (x, y, z): (i32, i32, i32), state: u16) {
+        if self.player.in_water() {
+            self.swim_sound();
+            self.queue_step(state, BlockSound::MuffledStep);
+        } else {
+            let above = self.state_at((x, y + 1, z));
+            let above_block = block_of(above);
+            if above_block.has_tag(&tag::Block::MINECRAFT_COMBINATION_STEP_SOUND_BLOCKS) {
+                self.queue_step(above, BlockSound::Step);
+                self.queue_step(state, BlockSound::MuffledStep);
+            } else if above_block.has_tag(&tag::Block::MINECRAFT_INSIDE_STEP_SOUND_BLOCKS) {
+                self.queue_step(above, BlockSound::Step);
+            } else {
+                self.queue_step(state, BlockSound::Step);
+            }
+        }
+        let ticks = self.ticks;
+        let steps = &mut self.footsteps;
+        if block_of(state).has_tag(&tag::Block::MINECRAFT_CRYSTAL_SOUND_BLOCKS)
+            && ticks >= steps.last_crystal_tick + 20
+        {
+            // `Entity.playAmethystStepSound`.
+            let since = (ticks - steps.last_crystal_tick) as f64;
+            steps.crystal_intensity *= 0.997_f64.powf(since) as f32;
+            steps.crystal_intensity = (steps.crystal_intensity + 0.07).min(1.0);
+            let intensity = steps.crystal_intensity;
+            steps.last_crystal_tick = ticks;
+            let pitch = 0.5 + intensity * rand::random::<f32>() * 1.2;
+            self.queue_player_sound("block.amethyst_block.chime", 0.1 + intensity * 1.2, pitch);
+        }
+    }
+
+    /// `Entity.waterSwimSound` for the player itself.
+    fn swim_sound(&mut self) {
+        let v = self.player.velocity();
+        let speed = (v.x * v.x * 0.2 + v.y * v.y + v.z * v.z * 0.2).sqrt() as f32;
+        let volume = (speed * 0.35).min(1.0);
+        let pitch = 1.0 + (rand::random::<f32>() - rand::random::<f32>()) * 0.4;
+        self.queue_player_sound("entity.player.swim", volume, pitch);
+    }
+
+    /// `Block.fallOn` and `LivingEntity.causeFallDamage` on landing: the
+    /// fall sounds only come with fall damage, except honey's slide and
+    /// powder snow's thud.
+    fn landing_sounds(&mut self, fallen: f64) {
+        let feet = self.player.feet();
+        let support = self.player.supporting_block();
+        let on = block_of(self.state_at(block_motion::on_pos(
+            &self.level,
+            feet,
+            support,
+            ON_POS_LEGACY,
+        )));
+        let modifier = match on.name {
+            "hay_block" => 0.2,
+            "honey_block" => {
+                self.queue_player_sound("block.honey_block.slide", 1.0, 1.0);
+                0.2
+            }
+            "slime_block" if !self.keys.sneak => 0.0,
+            "powder_snow" => {
+                if fallen >= 4.0 {
+                    let event = if fallen < 7.0 { SMALL_FALL } else { BIG_FALL };
+                    self.queue_player_sound(event, 1.0, 1.0);
+                }
+                return;
+            }
+            _ => 1.0,
+        };
+        // `Player.causeFallDamage`: no damage, and so no sound, for who may fly.
+        if self.player.abilities().may_fly {
+            return;
+        }
+        let attributes = self.player.attributes();
+        let power = fallen + 1.0e-6 - attributes.safe_fall_distance();
+        let damage = (power * modifier * attributes.fall_damage_multiplier()).floor();
+        if damage <= 0.0 {
+            return;
+        }
+        self.queue_player_sound(if damage > 4.0 { BIG_FALL } else { SMALL_FALL }, 1.0, 1.0);
+        // `LivingEntity.playBlockFallSound`: the plain cell 0.2 under the feet.
+        let below = (feet - DVec3::new(0.0, f64::from(0.2_f32), 0.0)).floor();
+        let state = self.state_at((below.x as i32, below.y as i32, below.z as i32));
+        if !is_air(state) {
+            self.queue_step(state, BlockSound::Fall);
+        }
+    }
+
+    /// A block's step or fall sound, heard from the player's feet.
+    fn queue_step(&mut self, state: u16, kind: BlockSound) {
+        let feet = self.player.feet();
+        self.queue_block_sound(state, kind, [feet.x, feet.y, feet.z]);
+    }
+
+    /// `Player.playSound`: on the player's source, from its feet.
+    fn queue_player_sound(&mut self, event: &'static str, volume: f32, pitch: f32) {
+        let feet = self.player.feet();
+        let sound = SoundInstance::of(event)
+            .on(SoundSource::Players)
+            .volume(volume)
+            .pitch(pitch)
+            .at([feet.x, feet.y, feet.z]);
+        self.echoes.remember(&sound, [feet.x, feet.y, feet.z]);
+        self.sounds.push(sound);
+    }
+
+    fn state_at(&self, (x, y, z): (i32, i32, i32)) -> u16 {
+        physics::block_at(&self.level, x, y, z)
+    }
+}
+
+fn block_of(state: u16) -> &'static Block {
+    Block::from_state_id(BlockStateId::new_or_air(state))
+}
+
+/// `BlockState.isAir`.
+fn is_air(state: u16) -> bool {
+    matches!(block_of(state).name, "air" | "cave_air" | "void_air")
+}
+
+/// `Entity.isStateClimbable`.
+fn climbable(state: u16) -> bool {
+    let block = block_of(state);
+    block.has_tag(&tag::Block::MINECRAFT_CLIMBABLE) || block.name == "powder_snow"
 }
 
 #[cfg(test)]
@@ -325,6 +524,21 @@ mod tests {
         assert!(breaks_silently(Block::FIRE.default_state.id.as_u16()));
         assert!(breaks_silently(Block::SOUL_FIRE.default_state.id.as_u16()));
         assert!(!breaks_silently(Block::STONE.default_state.id.as_u16()));
+    }
+
+    #[test]
+    fn the_step_tags_hold_vanilla_blocks() {
+        let combination = &tag::Block::MINECRAFT_COMBINATION_STEP_SOUND_BLOCKS;
+        let inside = &tag::Block::MINECRAFT_INSIDE_STEP_SOUND_BLOCKS;
+        assert!(Block::SNOW.has_tag(combination));
+        assert!(Block::WHITE_CARPET.has_tag(combination));
+        assert!(Block::MOSS_CARPET.has_tag(combination));
+        assert!(Block::POWDER_SNOW.has_tag(inside));
+        assert!(Block::PINK_PETALS.has_tag(inside));
+        assert!(!Block::SNOW_BLOCK.has_tag(combination));
+        assert!(Block::AMETHYST_BLOCK.has_tag(&tag::Block::MINECRAFT_CRYSTAL_SOUND_BLOCKS));
+        assert!(climbable(Block::LADDER.default_state.id.as_u16()));
+        assert!(is_air(0));
     }
 
     #[test]

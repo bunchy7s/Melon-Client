@@ -10,17 +10,25 @@ use crate::settings::options::Config;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MelonOption {
     PresentMode,
+    SpeakerLayout,
 }
 
-static SECTIONS: [Section<MelonOption>; 1] = [Section {
-    header: Some("melon.options.presentation.header"),
-    options: &[MelonOption::PresentMode],
-}];
+static SECTIONS: [Section<MelonOption>; 2] = [
+    Section {
+        header: Some("melon.options.presentation.header"),
+        options: &[MelonOption::PresentMode],
+    },
+    Section {
+        header: Some("melon.options.audio.header"),
+        options: &[MelonOption::SpeakerLayout],
+    },
+];
 
 impl OptionEntry for MelonOption {
     fn press(self, _ctx: &ScreenContext) -> ConfigChange {
         Box::new(move |config| match self {
             Self::PresentMode => config.present_mode = config.present_mode.next(),
+            Self::SpeakerLayout => config.speaker_layout = config.speaker_layout.next(),
         })
     }
 
@@ -31,12 +39,18 @@ impl OptionEntry for MelonOption {
                 "melon.options.presentMode",
                 lang.get(config.present_mode.key()),
             ),
+            Self::SpeakerLayout => value_label(
+                lang,
+                "melon.options.speakerLayout",
+                lang.get(config.speaker_layout.key()),
+            ),
         }
     }
 
     fn tooltip(self, config: &Config) -> Option<&'static str> {
         match self {
             Self::PresentMode => Some(config.present_mode.tooltip_key()),
+            Self::SpeakerLayout => Some("melon.options.speakerLayout.tooltip"),
         }
     }
 }

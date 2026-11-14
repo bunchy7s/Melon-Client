@@ -133,6 +133,14 @@ impl PlayerAttributes {
     pub fn friction_modifier(&self) -> f32 {
         self.value(A::FRICTION_MODIFIER.id, 1.0) as f32
     }
+    /// `Attributes.SAFE_FALL_DISTANCE`.
+    pub fn safe_fall_distance(&self) -> f64 {
+        self.value(A::SAFE_FALL_DISTANCE.id, 3.0)
+    }
+    /// `Attributes.FALL_DAMAGE_MULTIPLIER`.
+    pub fn fall_damage_multiplier(&self) -> f64 {
+        self.value(A::FALL_DAMAGE_MULTIPLIER.id, 1.0)
+    }
 }
 
 /// `LivingEntity.computeModifiedFriction`.

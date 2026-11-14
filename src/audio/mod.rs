@@ -13,15 +13,14 @@ use crate::assets::Assets;
 use library::{Sound, SoundEvents};
 use rodio::buffer::SamplesBuffer;
 use rodio::mixer::Mixer;
-use rodio::source::UniformSourceIterator;
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Sample, Source};
 use source::{SoundSource, Volumes};
-use spatial::{Listener, Spatial};
+use spatial::{Layout, Listener, Placed};
 use stats::{AudioStats, Counted};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -29,8 +28,6 @@ use std::time::Duration;
 const CLICK: &str = "ui.button.click";
 /// How often a playing sound looks at its source's volume.
 const VOLUME_POLL: Duration = Duration::from_millis(10);
-/// What a sound with a place is turned into before it is panned.
-const STEREO: rodio::ChannelCount = std::num::NonZeroU16::new(2).unwrap();
 /// `SoundEngine.calculatePitch`.
 const PITCH_RANGE: (f32, f32) = (0.5, 2.0);
 
@@ -101,9 +98,29 @@ impl Gains {
 /// `MELON_SOUND_SOURCE=<name>` plays every sound on that source, to try
 const FORCED_SOURCE_VAR: &str = "MELON_SOUND_SOURCE";
 
+/// A sound that started with a subtitle, for `SubtitleOverlay.onPlaySound`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Heard {
+    /// The subtitle's translation key.
+    pub subtitle: Arc<str>,
+    /// Where it was heard from; `None` for a sound without a place.
+    pub at: Option<[f64; 3]>,
+    /// `SoundEngine.getRange`: how far off it can still be heard, infinite
+    /// for a sound without a place.
+    pub range: f32,
+}
+
 pub struct AudioEngine {
     _stream: Option<MixerDeviceSink>,
     mixer: Option<Mixer>,
+    /// The output's speakers, which every sound is rendered into.
+    layout: Layout,
+    /// The channels asked for, `None` for what the device prefers.
+    channels: Option<u16>,
+    device: String,
+    /// Whether the subtitles are shown, and so whether [`Heard`]s are kept.
+    listening: AtomicBool,
+    heard: Mutex<Vec<Heard>>,
     forced_source: Option<SoundSource>,
     listener: Arc<Listener>,
     events: SoundEvents,
@@ -116,12 +133,13 @@ pub struct AudioEngine {
 
 impl AudioEngine {
     /// Missing device or sound file: playing is a no-op. `device` is the
-    pub fn init(assets: &Assets, device: &str) -> Self {
-        let stream = open_output(device);
+    pub fn init(assets: &Assets, device: &str, channels: Option<u16>) -> Self {
+        let stream = open_output(device, channels);
         if stream.is_none() {
             eprintln!("Audio-Ausgabe nicht verfuegbar, Sounds bleiben stumm");
         }
         let mixer = stream.as_ref().map(|s| s.mixer().clone());
+        let layout = layout_of(stream.as_ref());
         let forced_source = std::env::var(FORCED_SOURCE_VAR)
             .ok()
             .and_then(|name| SoundSource::from_name(&name));
@@ -130,6 +148,11 @@ impl AudioEngine {
         Self {
             _stream: stream,
             mixer,
+            layout,
+            channels,
+            device: device.to_owned(),
+            listening: AtomicBool::new(false),
+            heard: Mutex::default(),
             forced_source,
             listener: Arc::new(Listener::default()),
             events: SoundEvents::load(assets.root()),
@@ -154,13 +177,49 @@ impl AudioEngine {
 
     /// Moves the output to the device with this name (the system default
     pub fn set_device(&mut self, device: &str) {
-        self._stream = open_output(device);
-        self.mixer = self._stream.as_ref().map(|s| s.mixer().clone());
+        self.device = device.to_owned();
+        self.reopen();
     }
 
-    /// Where the player's ears are, for sounds that have a place: call it
-    pub fn set_listener(&self, position: [f64; 3], yaw: f32) {
-        self.listener.set(position, yaw);
+    /// Opens the output with `channels` channels (`None`: what the device
+    /// prefers, else its own choice when it cannot).
+    pub fn set_channels(&mut self, channels: Option<u16>) {
+        self.channels = channels;
+        self.reopen();
+    }
+
+    fn reopen(&mut self) {
+        self._stream = None;
+        self._stream = open_output(&self.device, self.channels);
+        self.mixer = self._stream.as_ref().map(|s| s.mixer().clone());
+        self.layout = layout_of(self._stream.as_ref());
+    }
+
+    /// How many channels the output really has.
+    pub fn output_channels(&self) -> usize {
+        self.layout.channels()
+    }
+
+    /// The camera, for sounds that have a place (`SoundEngine.updateSource`):
+    /// call it every frame.
+    pub fn set_listener(&self, position: [f64; 3], forward: [f32; 3], up: [f32; 3]) {
+        self.listener.set(position, forward, up);
+    }
+
+    /// Whether to keep the subtitles of the sounds that start.
+    pub fn set_subtitles(&self, on: bool) {
+        self.listening.store(on, Ordering::Relaxed);
+        if !on && let Ok(mut heard) = self.heard.lock() {
+            heard.clear();
+        }
+    }
+
+    /// The sounds with a subtitle that started since the last call.
+    pub fn take_heard(&self) -> Vec<Heard> {
+        self.heard
+            .lock()
+            .map(|mut heard| std::mem::take(&mut *heard))
+            .unwrap_or_default()
     }
 
     /// The sliders changed: every sound, playing or not, follows.
@@ -194,18 +253,32 @@ impl AudioEngine {
         let Some(sound) = self.events.pick(&instance.event, rand::random::<f32>()) else {
             return false;
         };
+        let range = instance.volume.max(1.0) * sound.attenuation_distance;
+        if self.listening.load(Ordering::Relaxed)
+            && let Some(subtitle) = self.events.subtitle(&instance.event)
+            && let Ok(mut heard) = self.heard.lock()
+        {
+            heard.push(Heard {
+                subtitle: Arc::clone(subtitle),
+                at: instance.position,
+                range: if instance.position.is_some() {
+                    range
+                } else {
+                    f32::INFINITY
+                },
+            });
+        }
         let volume = instance.volume.clamp(0.0, 1.0) * sound.volume;
         let voice = Voice {
             mixer: mixer.clone(),
+            layout: self.layout,
             listener: Arc::clone(&self.listener),
             gains: Arc::clone(&self.gains),
             stats: Arc::clone(&self.stats),
             volume,
             pitch: (instance.pitch * sound.pitch).clamp(PITCH_RANGE.0, PITCH_RANGE.1),
             source: self.forced_source.unwrap_or(instance.source),
-            place: instance
-                .position
-                .map(|at| (at, instance.volume.max(1.0) * sound.attenuation_distance)),
+            place: instance.position.map(|at| (at, range)),
         };
         let cached = if sound.stream {
             None
@@ -271,6 +344,7 @@ impl AudioEngine {
 /// A sound about to start: where it goes and how loud, everything it needs
 struct Voice {
     mixer: Mixer,
+    layout: Layout,
     listener: Arc<Listener>,
     gains: Arc<Gains>,
     stats: Arc<AudioStats>,
@@ -284,14 +358,10 @@ struct Voice {
 impl Voice {
     fn add(self, input: Box<dyn Source<Item = Sample> + Send>) {
         let input = input.speed(self.pitch);
-        let input: Box<dyn Source<Item = Sample> + Send> = match self.place {
-            Some((at, range)) => {
-                let rate = input.sample_rate();
-                let stereo = UniformSourceIterator::new(input, STEREO, rate);
-                Box::new(Spatial::new(stereo, self.listener, at, range))
-            }
-            None => Box::new(input),
-        };
+        let place = self
+            .place
+            .map(|(at, range)| (Arc::clone(&self.listener), at, range));
+        let input = Placed::new(input, self.layout, place);
         let (volume, source, gains) = (self.volume, self.source, self.gains);
         let input =
             input
@@ -326,13 +396,31 @@ fn load_buffer(
     entry.clone()
 }
 
-/// The named device, else the best the system has.
-fn open_output(name: &str) -> Option<MixerDeviceSink> {
+/// The named device, else the best the system has; with `channels`
+/// channels if it takes them, else with its own.
+fn open_output(name: &str, channels: Option<u16>) -> Option<MixerDeviceSink> {
     let picked = device::find_output_device(name).or_else(device::pick_output_device);
-    let opened = picked
-        .and_then(|d| DeviceSinkBuilder::from_device(d).ok())
-        .and_then(|b| b.open_stream().ok());
+    let open = |device: &rodio::cpal::Device, count: Option<rodio::ChannelCount>| {
+        let builder = DeviceSinkBuilder::from_device(device.clone()).ok()?;
+        match count {
+            Some(count) => builder.with_channels(count).open_stream(),
+            None => builder.open_stream(),
+        }
+        .inspect_err(|e| eprintln!("Audio: Ausgabe nicht offen ({e})"))
+        .ok()
+    };
+    let wanted = channels.and_then(rodio::ChannelCount::new);
+    let opened = picked.and_then(|device| {
+        wanted
+            .and_then(|count| open(&device, Some(count)))
+            .or_else(|| open(&device, None))
+    });
     opened.or_else(|| DeviceSinkBuilder::open_default_sink().ok())
+}
+
+/// The speakers of the opened output; stereo while there is none.
+fn layout_of(stream: Option<&MixerDeviceSink>) -> Layout {
+    Layout::for_channels(stream.map_or(2, |s| s.config().channel_count().get()))
 }
 
 fn decode(assets_root: &Path, name: &str) -> Option<SamplesBuffer> {

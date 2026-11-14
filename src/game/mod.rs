@@ -278,6 +278,8 @@ pub struct InWorld {
     /// Sounds the player made, for the app to play.
     sounds: Vec<crate::audio::SoundInstance<'static>>,
     footsteps: sounds::Footsteps,
+    /// The last rendered camera as the sounds hear it: position, forward, up.
+    ears: Option<sounds::Ears>,
     /// What the client played itself lately, to not play it again when
     echoes: sounds::Echoes,
     /// `Minecraft.rightClickDelay`.
@@ -454,6 +456,7 @@ impl InWorld {
             destroy_delay: 0,
             sounds: Vec::new(),
             footsteps: sounds::Footsteps::default(),
+            ears: None,
             echoes: sounds::Echoes::default(),
             right_click_delay: 0,
             miss_time: 0,

@@ -28,6 +28,9 @@ pub enum BlockSound {
     Hit,
     /// A footstep (`Entity.playStepSound`).
     Step,
+    /// The block under a carpet or snow layer, or under water
+    /// (`Entity.playMuffledStepSound`).
+    MuffledStep,
     /// Landing (`LivingEntity.playBlockFallSound`).
     Fall,
 }
@@ -66,6 +69,12 @@ impl SoundType {
                 self.step_sound,
                 self.volume * 0.15,
                 self.pitch,
+                SoundSource::Players,
+            ),
+            BlockSound::MuffledStep => (
+                self.step_sound,
+                self.volume * 0.05,
+                self.pitch * 0.8,
                 SoundSource::Players,
             ),
             BlockSound::Fall => (
@@ -126,6 +135,8 @@ mod tests {
             (step.volume, step.pitch, step.source),
             (0.15, 1.0, SoundSource::Players)
         );
+        let muffled = stone.sound(BlockSound::MuffledStep).unwrap();
+        assert_eq!((muffled.volume, muffled.pitch), (0.05, 0.8));
         let fall = stone.sound(BlockSound::Fall).unwrap();
         assert_eq!((fall.volume, fall.pitch), (0.5, 0.75));
     }

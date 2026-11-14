@@ -8,6 +8,7 @@ pub mod item_icon;
 pub mod item_slot;
 pub mod player_tab;
 pub mod sidebar;
+pub mod subtitles;
 
 use pumpkin_data::item_stack::ItemStack;
 
@@ -173,6 +174,8 @@ pub struct Hud {
     title_ticks: i32,
     /// `titleFadeInTime`, `titleStayTime`, `titleFadeOutTime`.
     title_times: Option<[i32; 3]>,
+    /// `Gui.subtitleOverlay`.
+    pub subtitles: subtitles::SubtitleOverlay,
 }
 
 /// `Hud.DEFAULT_TITLE_*`: 10, 70 and 20 ticks.

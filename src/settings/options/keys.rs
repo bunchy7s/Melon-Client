@@ -232,6 +232,11 @@ pub(super) const KEYS: &[OptionKey] = &[
         write: |c| c.vsync.to_string(),
     },
     OptionKey {
+        name: "speakerLayout",
+        read: |c, v| c.speaker_layout = SpeakerLayout::from_id(v.trim_matches('"')),
+        write: |c| c.speaker_layout.id().to_owned(),
+    },
+    OptionKey {
         name: "presentMode",
         read: |c, v| c.present_mode = PresentMode::from_id(v.trim_matches('"')),
         write: |c| c.present_mode.id().to_owned(),

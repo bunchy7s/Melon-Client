@@ -786,6 +786,46 @@ mod tests {
         assert_eq!(found, Some((0, 63, 0)));
     }
 
+    /// The cells a step on snow is heard from: `getOnPos()` (the supporting
+    /// block) and `getOnPosLegacy()` (0.2 under the feet in its column).
+    fn snow_step_cells(layers: u8) -> ((i32, i32, i32), (i32, i32, i32)) {
+        let mut level = floor_level();
+        let snow = state(&Block::SNOW, &[("layers", &layers.to_string())]);
+        put(&mut level, [0, 64, 0], snow);
+        let feet = DVec3::new(0.5, 64.0 + f64::from(layers - 1) * 2.0 / 16.0, 0.5);
+        let b = Aabb::at_feet(feet, 0.6_f32.into(), 1.8_f32.into());
+        let support = update_support(&level, &b, feet, true, DVec3::ZERO, Support::default());
+        let on =
+            |offset: f64| crate::world::block_motion::on_pos(&level, feet, support.block, offset);
+        (on(f64::from(1.0e-5_f32)), on(f64::from(0.2_f32)))
+    }
+
+    #[test]
+    fn thin_snow_is_heard_over_the_block_under_it() {
+        // One layer has no collision: the stone carries the player, and
+        // the snow above it makes the step a combination sound.
+        assert_eq!(snow_step_cells(1), ((0, 63, 0), (0, 63, 0)));
+        // Two layers carry the player, but 0.2 under the feet is the stone.
+        assert_eq!(snow_step_cells(2), ((0, 64, 0), (0, 63, 0)));
+        // From three layers on the snow alone is stepped on.
+        assert_eq!(snow_step_cells(3), ((0, 64, 0), (0, 64, 0)));
+        assert_eq!(snow_step_cells(8), ((0, 64, 0), (0, 64, 0)));
+    }
+
+    #[test]
+    fn over_an_edge_the_step_is_heard_from_the_supporting_block() {
+        let mut level = floor_level();
+        put(&mut level, [1, 63, 0], 0);
+        // Feet over the hole at x=1, the box still on the block at x=0.
+        let feet = DVec3::new(1.2, 64.0, 0.5);
+        let b = Aabb::at_feet(feet, 0.6_f32.into(), 1.8_f32.into());
+        let support = update_support(&level, &b, feet, true, DVec3::ZERO, Support::default());
+        assert_eq!(support.block, Some((0, 63, 0)));
+        let on =
+            crate::world::block_motion::on_pos(&level, feet, support.block, f64::from(0.2_f32));
+        assert_eq!(on, (0, 63, 0));
+    }
+
     #[test]
     fn a_player_sized_box_is_the_float_dimension() {
         let b = Aabb::at_feet(DVec3::ZERO, 0.6_f32.into(), 1.8_f32.into());

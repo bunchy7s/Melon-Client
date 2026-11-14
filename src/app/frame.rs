@@ -135,12 +135,14 @@ impl RunningState {
         };
         world.profiler.mark("receive");
         let ticks = world.advance(dt, blocked, &env.world_context(size));
-        let (ears, yaw) = world.listener();
-        env.audio.set_listener(ears, yaw);
+        let ears = world.listener();
+        env.audio.set_listener(ears.position, ears.forward, ears.up);
         world.sample_subsystems(env.audio.stats());
+        env.audio.set_subtitles(env.config.show_subtitles);
         for sound in world.take_sounds() {
             env.audio.play(&sound);
         }
+        world.hear(env.audio.take_heard(), &env.lang);
         world_resources.animate(&mut self.renderer, ticks);
         if let Some(screen) = self.screens.top_mut() {
             screen.tick();

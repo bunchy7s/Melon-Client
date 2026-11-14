@@ -77,6 +77,11 @@ impl InWorld {
             fov
         };
         camera.fov = narrowed(camera.fov);
+        self.ears = Some(super::sounds::Ears {
+            position: camera.position.as_dvec3().to_array(),
+            forward: camera.forward().to_array(),
+            up: camera.up().to_array(),
+        });
         self.name_view = Some(super::nametags::NameView::of(&camera, aspect));
         let hand_fov = narrowed(HAND_FOV);
         let first_person = self.camera_mode == CameraMode::FirstPerson;

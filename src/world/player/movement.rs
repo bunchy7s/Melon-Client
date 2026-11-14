@@ -470,6 +470,17 @@ impl PlayerState {
             self.horizontal_collision && is_minor_deflection(self.intent, moved);
         self.on_ground = delta.y < 0.0 && moved.y != delta.y;
         self.update_supporting_block(level, moved);
+        if self.on_ground {
+            let last = if !self.in_water && moved.y < 0.0 {
+                -moved.y
+            } else {
+                0.0
+            };
+            let fallen = self.fall_distance + last;
+            if fallen > 0.0 {
+                self.landed_fall = Some(fallen);
+            }
+        }
         if self.on_ground || self.in_water {
             self.fall_distance = 0.0;
         } else if moved.y < 0.0 {

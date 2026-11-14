@@ -46,6 +46,9 @@ struct Entry {
 #[derive(Debug, Default)]
 pub struct SoundEvents {
     events: HashMap<Box<str>, Vec<Entry>>,
+    /// `WeighedSoundEvents.getSubtitle`: the translation key of each event
+    /// that has one.
+    subtitles: HashMap<Box<str>, Arc<str>>,
 }
 
 /// `minecraft:` is the default namespace; names are kept without it.
@@ -78,6 +81,9 @@ impl SoundEvents {
             if event.get("replace").and_then(Value::as_bool) == Some(true) {
                 self.events.remove(&key);
             }
+            if let Some(subtitle) = event.get("subtitle").and_then(Value::as_str) {
+                self.subtitles.insert(key.clone(), subtitle.into());
+            }
             let Some(sounds) = event.get("sounds").and_then(Value::as_array) else {
                 continue;
             };
@@ -105,6 +111,7 @@ impl SoundEvents {
         };
         Self {
             events: HashMap::from([(CLICK_EVENT.into(), vec![click])]),
+            subtitles: HashMap::new(),
         }
     }
 
@@ -122,6 +129,7 @@ impl SoundEvents {
             Self::builtin()
         } else {
             events.events.shrink_to_fit();
+            events.subtitles.shrink_to_fit();
             events.events.values_mut().for_each(Vec::shrink_to_fit);
             events
         }
@@ -133,6 +141,11 @@ impl SoundEvents {
 
     pub fn is_empty(&self) -> bool {
         self.events.is_empty()
+    }
+
+    /// The subtitle's translation key of `event`, if it has one.
+    pub fn subtitle(&self, event: &str) -> Option<&Arc<str>> {
+        self.subtitles.get(plain(event))
     }
 
     /// The sound `event` plays this time: a weighted pick, `roll` in
@@ -282,6 +295,11 @@ mod tests {
     #[test]
     fn events_pointing_at_events_multiply_and_cannot_loop() {
         let events = SoundEvents::parse(JSON).unwrap();
+        assert_eq!(
+            events.subtitle("minecraft:block.stone.break").map(|s| &**s),
+            Some("subtitles.block.generic.break")
+        );
+        assert!(events.subtitle("ui.button.click").is_none());
         let alias = events.pick("alias", 0.0).unwrap();
         assert_eq!(&*alias.name, "dig/stone1");
         assert_eq!(alias.volume, 0.5);

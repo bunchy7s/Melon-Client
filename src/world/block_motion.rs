@@ -21,27 +21,42 @@ pub fn block_below(level: &Level, feet: DVec3) -> &'static Block {
     block_at(level, feet - DVec3::new(0.0, BELOW, 0.0))
 }
 
-/// `Entity.getOnPos(offset)` for an entity with a supporting block: the cell
-pub fn block_on(
+/// `Entity.getOnPos(offset)`: with a supporting block, its column at
+/// `feet.y - offset` (the block itself for an offset of `1e-5` or less, or
+/// when it is a fence, wall or gate); without one, the cell under the feet.
+pub fn on_pos(
     level: &Level,
     feet: DVec3,
     supporting: Option<(i32, i32, i32)>,
     offset: f64,
-) -> &'static Block {
+) -> (i32, i32, i32) {
     let Some((x, y, z)) = supporting else {
-        return block_at(level, feet - DVec3::new(0.0, offset, 0.0));
+        let cell = (feet - DVec3::new(0.0, offset, 0.0)).floor();
+        return (cell.x as i32, cell.y as i32, cell.z as i32);
     };
+    if offset <= f64::from(1.0e-5_f32) {
+        return (x, y, z);
+    }
     let id = physics::block_at(level, x, y, z);
     let support = Block::from_state_id(BlockStateId::new_or_air(id));
     if (offset <= 0.5 && support.has_tag(&tag::Block::MINECRAFT_FENCES))
         || support.has_tag(&tag::Block::MINECRAFT_WALLS)
         || support.has_tag(&tag::Block::MINECRAFT_FENCE_GATES)
     {
-        return support;
+        return (x, y, z);
     }
-    let below_y = (feet.y - offset).floor() as i32;
-    let id = physics::block_at(level, x, below_y, z);
-    Block::from_state_id(BlockStateId::new_or_air(id))
+    (x, (feet.y - offset).floor() as i32, z)
+}
+
+/// The block at [`on_pos`].
+pub fn block_on(
+    level: &Level,
+    feet: DVec3,
+    supporting: Option<(i32, i32, i32)>,
+    offset: f64,
+) -> &'static Block {
+    let (x, y, z) = on_pos(level, feet, supporting, offset);
+    Block::from_state_id(BlockStateId::new_or_air(physics::block_at(level, x, y, z)))
 }
 
 /// `Entity.getBlockPosBelowThatAffectsMyMovement` (`getOnPos(0.500001F)`).

@@ -111,6 +111,9 @@ pub struct PlayerState {
     jump_boost: u32,
     /// `Entity.fallDistance`, reset while climbing. Only the edge rules of
     fall_distance: f64,
+    /// The fall distance of the last move that ended on the ground
+    /// (`Entity.checkFallDamage` hands it to `Block.fallOn`), for the sounds.
+    landed_fall: Option<f64>,
     /// `Camera.eyeHeight` and a tick ago: the pose's eye height, chased by
     camera_eye: f32,
     camera_eye_old: f32,
@@ -214,6 +217,7 @@ impl PlayerState {
             stuck: DVec3::ZERO,
             jump_boost: 0,
             fall_distance: 0.0,
+            landed_fall: None,
             camera_eye: EYE_HEIGHT,
             camera_eye_old: EYE_HEIGHT,
             support: Default::default(),
@@ -548,6 +552,25 @@ impl PlayerState {
 
     pub fn on_ground(&self) -> bool {
         self.on_ground
+    }
+
+    /// `Entity.mainSupportingBlockPos`.
+    pub fn supporting_block(&self) -> Option<(i32, i32, i32)> {
+        self.support.block
+    }
+
+    /// `Entity.isCrouching`.
+    pub fn crouching(&self) -> bool {
+        self.crouching
+    }
+
+    pub fn attributes(&self) -> &PlayerAttributes {
+        &self.attributes
+    }
+
+    /// How far the player fell before the last landing, once.
+    pub fn take_landing(&mut self) -> Option<f64> {
+        self.landed_fall.take()
     }
 
     pub fn horizontal_collision(&self) -> bool {

@@ -48,6 +48,7 @@ fn reads_back_what_it_writes() {
         sound_device: "Built-in \"Audio\"".to_owned(),
         show_subtitles: true,
         directional_audio: true,
+        speaker_layout: SpeakerLayout::Surround51,
         music_frequency: MusicFrequency::Constant,
         music_toast: MusicToast::PauseAndToast,
         input: InputSettings {

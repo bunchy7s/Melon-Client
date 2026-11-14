@@ -181,7 +181,11 @@ impl App {
         let (gui_textures, _) = renderer.take_tracked();
         let lang = Lang::load(&assets, config.lang);
         let splashes = crate::gui::text::splash::load_splashes(&assets);
-        let audio = AudioEngine::init(&assets, &config.sound_device);
+        let audio = AudioEngine::init(
+            &assets,
+            &config.sound_device,
+            config.speaker_layout.channels(),
+        );
         audio.set_volumes(&config.sound_volumes);
         let background = load_panorama(&mut renderer, &assets);
 

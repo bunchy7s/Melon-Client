@@ -64,6 +64,12 @@ impl RunningState {
             self.env.audio.set_device(&config.sound_device);
             self.env.audio.play_click();
         }
+        if config.speaker_layout != old.speaker_layout {
+            self.env
+                .audio
+                .set_channels(config.speaker_layout.channels());
+            self.env.audio.play_click();
+        }
         if config.sound_volumes != old.sound_volumes {
             self.env.audio.set_volumes(&config.sound_volumes);
         }

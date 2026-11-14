@@ -106,6 +106,8 @@ pub struct Config {
     pub show_subtitles: bool,
     /// `Options.directionalAudio`.
     pub directional_audio: bool,
+    /// The output's speakers (Melon's own).
+    pub speaker_layout: SpeakerLayout,
     pub music_frequency: MusicFrequency,
     pub music_toast: MusicToast,
     /// Mouse, toggles, sprint window and key binds.
@@ -165,6 +167,7 @@ impl Default for Config {
             sound_device: String::new(),
             show_subtitles: false,
             directional_audio: false,
+            speaker_layout: SpeakerLayout::Auto,
             music_frequency: MusicFrequency::Default,
             music_toast: MusicToast::Never,
             input: InputSettings::default(),

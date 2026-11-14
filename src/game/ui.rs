@@ -75,6 +75,25 @@ impl InWorld {
             .bosses
             .draw(draw_list, &assets.hud.boss, painter, size, self.hud.ticks());
         self.hud.draw_title(draw_list, painter, size, partial);
+        if config.show_subtitles {
+            let ears = self.listener();
+            let listener = crate::gui::hud::subtitles::Listener {
+                position: ears.position,
+                forward: ears.forward,
+                up: ears.up,
+            };
+            let background = config.chat.world_background_opacity(0.8);
+            self.hud.subtitles.draw(
+                draw_list,
+                painter,
+                listener,
+                size,
+                background,
+                Instant::now(),
+            );
+        } else {
+            self.hud.subtitles.clear();
+        }
         let chat_open = self.overlay_kind() == Some(OverlayKind::Chat);
         self.chat
             .draw(draw_list, font, pages, white, lang, size.1, chat_open);

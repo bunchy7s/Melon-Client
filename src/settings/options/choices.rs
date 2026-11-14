@@ -100,6 +100,76 @@ impl Cycle for PresentMode {
     ];
 }
 
+/// The speakers sounds are rendered for (Melon's own option; vanilla
+/// leaves this to OpenAL Soft's `alsoft.conf`). `Auto` opens the device
+/// with the channels it prefers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SpeakerLayout {
+    #[default]
+    Auto,
+    Mono,
+    Stereo,
+    Quad,
+    Surround51,
+    Surround71,
+}
+
+impl SpeakerLayout {
+    /// The `options.txt` value.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Mono => "mono",
+            Self::Stereo => "stereo",
+            Self::Quad => "quad",
+            Self::Surround51 => "surround51",
+            Self::Surround71 => "surround71",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Self {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|layout| layout.id() == id)
+            .unwrap_or_default()
+    }
+
+    /// The output channels to ask the device for; `None` for its own.
+    pub fn channels(self) -> Option<u16> {
+        match self {
+            Self::Auto => None,
+            Self::Mono => Some(1),
+            Self::Stereo => Some(2),
+            Self::Quad => Some(4),
+            Self::Surround51 => Some(6),
+            Self::Surround71 => Some(8),
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Auto => "melon.options.speakerLayout.auto",
+            Self::Mono => "melon.options.speakerLayout.mono",
+            Self::Stereo => "melon.options.speakerLayout.stereo",
+            Self::Quad => "melon.options.speakerLayout.quad",
+            Self::Surround51 => "melon.options.speakerLayout.surround51",
+            Self::Surround71 => "melon.options.speakerLayout.surround71",
+        }
+    }
+}
+
+impl Cycle for SpeakerLayout {
+    const ALL: &'static [Self] = &[
+        Self::Auto,
+        Self::Mono,
+        Self::Stereo,
+        Self::Quad,
+        Self::Surround51,
+        Self::Surround71,
+    ];
+}
+
 /// `PrioritizeChunkUpdates`, the "Chunk Builder": which block changes are
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ChunkBuilder {
