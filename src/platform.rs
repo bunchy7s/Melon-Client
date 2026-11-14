@@ -265,6 +265,114 @@ pub fn resident_set_bytes() -> Option<u64> {
     None
 }
 
+/// `DebugEntryDetailedMemory`'s Rust side: where the process's memory is,
+/// in bytes. Linux reads `/proc/self/status`; Windows has no split between
+/// anonymous and mapped memory, so those stay `None`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MemoryDetails {
+    /// In RAM now (`VmRSS` / working set).
+    pub resident: u64,
+    /// The most ever in RAM (`VmHWM` / peak working set).
+    pub peak_resident: u64,
+    /// Private memory committed (`VmData` / pagefile usage): the heap's share.
+    pub committed: u64,
+    /// Address space reserved (`VmSize`).
+    pub reserved: Option<u64>,
+    /// In RAM: anonymous (heap, stacks) and backed by files (code, mapped).
+    pub anonymous: Option<u64>,
+    pub file: Option<u64>,
+    pub swapped: Option<u64>,
+}
+
+pub fn memory_details() -> Option<MemoryDetails> {
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        return parse_proc_status(&status);
+    }
+    #[cfg(windows)]
+    {
+        #[repr(C)]
+        struct ProcessMemoryCounters {
+            cb: u32,
+            page_fault_count: u32,
+            peak_working_set_size: usize,
+            working_set_size: usize,
+            quota: [usize; 4],
+            pagefile_usage: usize,
+            peak_pagefile_usage: usize,
+        }
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetCurrentProcess() -> isize;
+            fn K32GetProcessMemoryInfo(
+                process: isize,
+                counters: *mut ProcessMemoryCounters,
+                cb: u32,
+            ) -> i32;
+        }
+        let mut c = ProcessMemoryCounters {
+            cb: std::mem::size_of::<ProcessMemoryCounters>() as u32,
+            page_fault_count: 0,
+            peak_working_set_size: 0,
+            working_set_size: 0,
+            quota: [0; 4],
+            pagefile_usage: 0,
+            peak_pagefile_usage: 0,
+        };
+        let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) };
+        return (ok != 0).then_some(MemoryDetails {
+            resident: c.working_set_size as u64,
+            peak_resident: c.peak_working_set_size as u64,
+            committed: c.pagefile_usage as u64,
+            ..MemoryDetails::default()
+        });
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
+/// `/proc/self/status`'s memory lines, in kB there.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_proc_status(status: &str) -> Option<MemoryDetails> {
+    let field = |name: &str| {
+        status.lines().find_map(|line| {
+            let rest = line.strip_prefix(name)?.strip_prefix(':')?;
+            let kb: u64 = rest.trim().trim_end_matches("kB").trim().parse().ok()?;
+            Some(kb * 1024)
+        })
+    };
+    let file = match (field("RssFile"), field("RssShmem")) {
+        (Some(f), s) => Some(f + s.unwrap_or(0)),
+        (None, s) => s,
+    };
+    Some(MemoryDetails {
+        resident: field("VmRSS")?,
+        peak_resident: field("VmHWM").unwrap_or(0),
+        committed: field("VmData").unwrap_or(0),
+        reserved: field("VmSize"),
+        anonymous: field("RssAnon"),
+        file,
+        swapped: field("VmSwap"),
+    })
+}
+
+#[cfg(test)]
+mod memory_tests {
+    #[test]
+    fn proc_status_reads_in_bytes() {
+        let status = "Name:\tmelon\nVmSize:\t  2048 kB\nVmHWM:\t   300 kB\nVmRSS:\t   200 kB\nVmData:\t  1000 kB\nRssAnon:\t  150 kB\nRssFile:\t  40 kB\nRssShmem:\t  10 kB\nVmSwap:\t  0 kB\n";
+        let m = super::parse_proc_status(status).unwrap();
+        assert_eq!(m.resident, 200 * 1024);
+        assert_eq!(m.peak_resident, 300 * 1024);
+        assert_eq!(m.committed, 1000 * 1024);
+        assert_eq!(m.reserved, Some(2048 * 1024));
+        assert_eq!(m.anonymous, Some(150 * 1024));
+        assert_eq!(m.file, Some(50 * 1024));
+        assert_eq!(m.swapped, Some(0));
+    }
+}
+
 /// The program's name for the desktop: the `.desktop` file, the app id.
 #[cfg(target_os = "linux")]
 const APP_ID: &str = "melon";

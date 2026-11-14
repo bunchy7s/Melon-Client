@@ -226,12 +226,48 @@ impl InWorld {
                 block.max(sky)
             ));
         }
+        let server = if on(Entry::Heightmap)
+            || on(Entry::LocalDifficulty)
+            || on(Entry::EntitySpawnCounts)
+            || on(Entry::ChunkGenerationStats)
+        {
+            self.server_world()
+        } else {
+            None
+        };
         if on(Entry::Heightmap) && self.level.block_state(bx, by, bz).is_some() {
-            // The server's heightmaps only the integrated vanilla server has.
+            // The server's heightmaps: Pumpkin's, in singleplayer.
             extras.heightmaps = vec![
                 client_heightmaps(&self.level, bx, bz),
-                "SH S: ?? O: ?? M: ?? ML: ??".to_owned(),
+                match &server {
+                    Some(world) => crate::singleplayer::debug::server_heightmaps(world, bx, bz),
+                    None => "SH S: ?? O: ?? M: ?? ML: ??".to_owned(),
+                },
             ];
+        }
+        if let Some(world) = &server {
+            let at = [f64::from(feet.x), f64::from(feet.y), f64::from(feet.z)];
+            if on(Entry::LocalDifficulty) {
+                extras.local_difficulty = crate::singleplayer::debug::local_difficulty(world, at);
+            }
+            if on(Entry::EntitySpawnCounts) {
+                extras.spawn_counts = crate::singleplayer::debug::spawn_counts(world);
+            }
+            if on(Entry::ChunkGenerationStats) {
+                // `DebugEntryChunkGeneration`: sampled again only when the
+                // feet move to another block.
+                let pos = [bx, by, bz];
+                let mut cache = self.chunk_generation.borrow_mut();
+                if cache.as_ref().is_none_or(|(at, _)| *at != pos) {
+                    *cache = Some((
+                        pos,
+                        crate::singleplayer::debug::chunk_generation(world, pos),
+                    ));
+                }
+                if let Some((_, lines)) = cache.as_ref() {
+                    extras.chunk_generation = lines.clone();
+                }
+            }
         }
         if on(Entry::SoundMood) {
             let [used, streaming] = self.sound_channels;

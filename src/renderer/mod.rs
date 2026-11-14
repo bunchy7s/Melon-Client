@@ -236,6 +236,9 @@ struct Frames {
     number: u64,
     /// Where the last [`Renderer::render`] waited.
     last_waits: FrameWaits,
+    /// The post chains the last world frame ran, the entity outline's left
+    /// out (`GameRenderer.getAppliedPostEffects`).
+    applied_post_effects: Vec<String>,
 }
 
 /// What one [`Renderer::render`] spent blocked, for the F3 profiler.

@@ -224,6 +224,7 @@ impl RunningState {
             aspect,
             now,
             &env.config,
+            (&env.gui_assets.font, &env.gui_assets.font_textures),
         );
         world.profiler.mark("scene");
 

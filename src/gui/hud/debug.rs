@@ -98,6 +98,13 @@ pub struct DebugExtras {
     /// `DebugEntrySoundMood`, `DebugEntrySoundCache`.
     pub sound_mood: Option<String>,
     pub sound_cache: Option<String>,
+    /// The integrated server's: `DebugEntryLocalDifficulty`,
+    /// `DebugEntrySpawnCounts`, `DebugEntryChunkGeneration`.
+    pub local_difficulty: Option<String>,
+    pub spawn_counts: Option<String>,
+    pub chunk_generation: Vec<String>,
+    /// `DebugEntryPostEffects`: the chains the last frame ran.
+    pub post_effects: Vec<String>,
 }
 
 /// What the culling let through this frame.
@@ -225,15 +232,21 @@ impl DebugLines {
                 context.render.terrain_draws
             )),
             Entry::LocalTime => self.line(format!("Local time: {}", context.day_time)),
+            Entry::DetailedMemory => self.group("memory", detailed_memory()),
+            Entry::ChunkGenerationStats => {
+                self.group("chunk_generation", extras.chunk_generation.clone());
+            }
+            Entry::LocalDifficulty => self.regular.extend(extras.local_difficulty.clone()),
+            Entry::EntitySpawnCounts => self.regular.extend(extras.spawn_counts.clone()),
+            Entry::PostEffects => {
+                if !extras.post_effects.is_empty() {
+                    self.line(format!("Post: {}", extras.post_effects.join(", ")));
+                }
+            }
             // Drawn into the world, or nothing Melon has.
             Entry::EntityHitboxes
             | Entry::ChunkBorders
             | Entry::ThreeDimensionalCrosshair
-            | Entry::DetailedMemory
-            | Entry::ChunkGenerationStats
-            | Entry::LocalDifficulty
-            | Entry::EntitySpawnCounts
-            | Entry::PostEffects
             | Entry::ChunkSectionPaths
             | Entry::ChunkSectionOctree
             | Entry::VisualizeWaterLevels
@@ -328,6 +341,34 @@ fn memory(context: &DebugContext<'_>) -> Vec<String> {
             allocated / 1024 / 1024
         ),
     ]
+}
+
+/// `DebugEntryDetailedMemory`'s JVM heap and non-heap pools, in a Rust
+/// process's terms: what it holds in RAM now and at most, the private
+/// memory it committed (the allocator's heap), and of what it holds, how
+/// much is its own (anonymous) and how much mapped files (code, libraries).
+fn detailed_memory() -> Vec<String> {
+    let Some(m) = crate::platform::memory_details() else {
+        return vec!["Memory (process): unknown".to_owned()];
+    };
+    let mib = |bytes: u64| bytes / 1024 / 1024;
+    let mut lines = vec![format!(
+        "Memory (process): u={:03}MiB p={:03}MiB c={:03}MiB{}",
+        mib(m.resident),
+        mib(m.peak_resident),
+        mib(m.committed),
+        m.reserved
+            .map_or_else(String::new, |r| format!(" r={:03}MiB", mib(r))),
+    )];
+    if let (Some(anonymous), Some(file)) = (m.anonymous, m.file) {
+        lines.push(format!(
+            "Memory (resident): anon={:03}MiB file={:03}MiB swap={:03}MiB",
+            mib(anonymous),
+            mib(file),
+            mib(m.swapped.unwrap_or(0)),
+        ));
+    }
+    lines
 }
 
 /// `DebugEntrySystemSpecs`.

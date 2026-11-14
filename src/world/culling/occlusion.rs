@@ -142,6 +142,16 @@ pub struct OcclusionMask {
     /// The lowest layer of the open sky the walk left out, `height` when
     sky_from: i32,
     sky: Sky,
+    /// What F3's `chunk_section_paths` draws, kept only when asked for.
+    trace: Option<Box<Trace>>,
+}
+
+/// Per grid slot: the walk's steps from the camera's section
+/// (`SectionOcclusionGraph.Node.step`) and the directions it came in by
+/// (`sourceDirections`), as step directions.
+struct Trace {
+    step: Vec<u16>,
+    entered: Vec<u8>,
 }
 
 /// How the open sky above a walk counts (see [`walk_grid`]).
@@ -164,6 +174,7 @@ impl OcclusionMask {
             bits: vec![0; cells.div_ceil(64)],
             sky_from: height,
             sky: Sky::All(false),
+            trace: None,
         }
     }
 
@@ -206,6 +217,31 @@ impl OcclusionMask {
                 seen && within_view_distance(x - self.center.0, z - self.center.1, self.radius - 1)
             }
         }
+    }
+
+    /// The walk's steps to a reached section and the directions it stepped
+    /// in by (bit per [`Direction`]), if the walk was traced.
+    pub fn trace(&self, pos: SectionPos) -> Option<(u16, u8)> {
+        let trace = self.trace.as_ref()?;
+        let slot = self.slot(pos)?;
+        (pos.1 < self.sky_from && self.has(slot)).then(|| (trace.step[slot], trace.entered[slot]))
+    }
+
+    /// The reached sections below the open sky, if the walk was traced.
+    pub fn traced_sections(&self) -> impl Iterator<Item = SectionPos> + '_ {
+        let side = 2 * self.radius + 1;
+        let traced = self.trace.is_some();
+        (0..self.sky_from.min(self.height))
+            .flat_map(move |y| (0..side).flat_map(move |z| (0..side).map(move |x| (x, y, z))))
+            .filter(move |_| traced)
+            .filter(move |&(x, y, z)| self.has(((y * side + z) * side + x) as usize))
+            .map(move |(x, y, z)| {
+                (
+                    x + self.center.0 - self.radius,
+                    y,
+                    z + self.center.1 - self.radius,
+                )
+            })
     }
 
     /// How many sections the walk reached, the open sky above included.
@@ -264,7 +300,7 @@ pub fn walk(
     section: impl Fn(SectionPos) -> SectionState,
 ) -> OcclusionMask {
     let grid = SectionGrid::from_fn((camera.0, camera.2), view_distance, height, section);
-    walk_grid(camera, view_distance, eye, &grid, true)
+    walk_grid(camera, view_distance, eye, &grid, true, false)
 }
 
 /// A section waiting in [`walk_grid`]'s queue, by its place on the grid.
@@ -273,6 +309,8 @@ struct Queued {
     x: u16,
     y: u16,
     z: u16,
+    /// Steps from the camera's section.
+    step: u16,
 }
 
 /// [`walk`] over a grid centred on the camera's chunk. Sections are found
@@ -282,6 +320,7 @@ fn walk_grid(
     eye: Option<Eye>,
     grid: &SectionGrid,
     sky_band: bool,
+    traced: bool,
 ) -> OcclusionMask {
     let radius = view_distance + 1;
     let height = grid.height;
@@ -302,6 +341,12 @@ fn walk_grid(
         x: radius as u16,
         y: camera.1.clamp(0, height - 1) as u16,
         z: radius as u16,
+        step: 0,
+    };
+    let mut steps = if traced {
+        vec![0u16; (area * height) as usize]
+    } else {
+        Vec::new()
     };
     let top = if sky_band {
         let open = VisibilitySet::ALL.bits();
@@ -360,13 +405,24 @@ fn walk_grid(
                 entered[next] = exit.bit();
                 travelled[next] = path | exit.bit();
                 mask.set(next);
+                let step = at.step.saturating_add(1);
+                if traced {
+                    steps[next] = step;
+                }
                 queue.push(Queued {
                     x: nx as u16,
                     y: ny as u16,
                     z: nz as u16,
+                    step,
                 });
             }
         }
+    }
+    if traced {
+        mask.trace = Some(Box::new(Trace {
+            step: steps,
+            entered,
+        }));
     }
     mask.sky_from = top + 1;
     mask.sky = if eye.is_none() {
@@ -528,9 +584,15 @@ pub struct WalkJob {
     view_distance: i32,
     eye: Option<Eye>,
     grid: SectionGrid,
+    traced: bool,
 }
 
 impl WalkJob {
+    /// Keeps what F3's `chunk_section_paths` draws ([`OcclusionMask::trace`]).
+    pub fn traced(self, traced: bool) -> Self {
+        Self { traced, ..self }
+    }
+
     pub fn new(
         camera: SectionPos,
         height: i32,
@@ -544,6 +606,7 @@ impl WalkJob {
             view_distance,
             eye,
             grid,
+            traced: false,
         }
     }
 
@@ -555,11 +618,20 @@ impl WalkJob {
                 self.height,
             );
         }
-        walk_grid(self.camera, self.view_distance, self.eye, &self.grid, true)
+        walk_grid(
+            self.camera,
+            self.view_distance,
+            self.eye,
+            &self.grid,
+            true,
+            self.traced,
+        )
     }
 }
 
-type Key = (SectionPos, u64, i32);
+/// The camera's section, the level's revision, the view distance and
+/// whether the walk is traced.
+type Key = (SectionPos, u64, i32, bool);
 
 /// The thread walks run on, and the walk in flight.
 struct Worker {
@@ -601,15 +673,21 @@ pub struct OcclusionCache {
 }
 
 impl OcclusionCache {
+    /// The mask the last [`Self::update`] gave.
+    pub fn mask(&self) -> Option<&OcclusionMask> {
+        self.mask.as_ref()
+    }
+
     /// The newest finished mask, after asking for a walk if `camera`,
     pub fn update(
         &mut self,
         camera: SectionPos,
         revision: u64,
         view_distance: i32,
+        traced: bool,
         job: impl FnOnce() -> WalkJob,
     ) -> &OcclusionMask {
-        let key = (camera, revision, view_distance);
+        let key = (camera, revision, view_distance, traced);
         if self.worker.is_none() {
             self.worker = Worker::spawn();
         }
@@ -700,6 +778,21 @@ mod tests {
             })
         });
         assert_eq!(mask.count(), 1 + 6);
+    }
+
+    #[test]
+    fn a_traced_walk_knows_each_sections_steps_and_way_in() {
+        let grid = SectionGrid::from_fn((0, 0), 3, HEIGHT, |_| {
+            SectionState::Loaded(VisibilitySet::ALL)
+        });
+        let mask = walk_grid((0, 4, 0), 3, None, &grid, true, true);
+        assert_eq!(mask.trace((0, 4, 0)), Some((0, 0)));
+        let (step, entered) = mask.trace((2, 4, 0)).unwrap();
+        assert_eq!(step, 2);
+        assert_eq!(entered, Direction::East.bit());
+        assert!(mask.traced_sections().any(|p| p == (2, 4, 0)));
+        let untraced = walk_grid((0, 4, 0), 3, None, &grid, true, false);
+        assert_eq!(untraced.trace((2, 4, 0)), None);
     }
 
     #[test]
@@ -800,8 +893,8 @@ mod tests {
                 f64::from(camera.2 * 16) + 12.7,
             );
             for eye in [None, eye] {
-                let whole = walk_grid(camera, r - 1, eye, &grid, false);
-                let banded = walk_grid(camera, r - 1, eye, &grid, true);
+                let whole = walk_grid(camera, r - 1, eye, &grid, false, false);
+                let banded = walk_grid(camera, r - 1, eye, &grid, true, false);
                 if eye.is_none() {
                     assert_eq!(whole.count(), banded.count());
                 }
@@ -831,7 +924,7 @@ mod tests {
         let mut cache = OcclusionCache::default();
         let mut walks = 0;
         for _ in 0..3 {
-            cache.update((0, 0, 0), 7, 2, || {
+            cache.update((0, 0, 0), 7, 2, false, || {
                 walks += 1;
                 open_job((0, 0, 0))
             });
@@ -839,7 +932,7 @@ mod tests {
         assert_eq!(walks, 1);
         let mut mask_for_new = false;
         for _ in 0..1000 {
-            let mask = cache.update((1, 0, 0), 7, 2, || {
+            let mask = cache.update((1, 0, 0), 7, 2, false, || {
                 walks += 1;
                 open_job((1, 0, 0))
             });

@@ -469,6 +469,33 @@ impl Level {
         min_y
     }
 
+    /// `LayerLightSectionStorage.SectionType.display` for the light section
+    /// at section coordinates `(x, y, z)` (`y` in world sections): `"0"`
+    /// light kept and blocks in it, `"1"` light kept only, `"2"` neither.
+    /// Melon keeps no light for a section that is dark all through, so a
+    /// dark section reads as empty where vanilla keeps its zeros.
+    pub fn light_section_type(&self, sky: bool, (x, y, z): (i32, i32, i32)) -> &'static str {
+        let Some(loaded) = self.chunks.get(&(x, z)) else {
+            return "2";
+        };
+        let chunk = &loaded.chunk;
+        let light = &chunk.light;
+        let slot = y - (light.min_y() >> 4);
+        let layer = if sky { &light.sky } else { &light.block };
+        let has_light = usize::try_from(slot)
+            .ok()
+            .and_then(|i| layer.get(i))
+            .is_some_and(|l| matches!(l, crate::world::chunk::LightSection::Data(_)));
+        if !has_light {
+            return "2";
+        }
+        let blocks = usize::try_from(y - (self.height.min_y >> 4))
+            .ok()
+            .and_then(|i| chunk.sections.get(i))
+            .is_some_and(|section| !section.is_empty());
+        if blocks { "0" } else { "1" }
+    }
+
     /// Block and sky light at a world position, `(0, 0)` if the column is
     pub fn light_at(&self, x: i32, y: i32, z: i32) -> (u8, u8) {
         self.chunks

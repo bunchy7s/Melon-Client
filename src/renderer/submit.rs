@@ -21,6 +21,13 @@ impl Renderer {
         self.frames.last_waits
     }
 
+    /// `GameRenderer.getAppliedPostEffects`: the post chains of the last
+    /// frame that showed the world, the entity outline's not among them
+    /// (vanilla runs that one apart from the requested effects).
+    pub fn applied_post_effects(&self) -> &[String] {
+        &self.frames.applied_post_effects
+    }
+
     /// F3's GPU lines: the frame's GPU time and each pass's share, empty
     pub fn gpu_profile(&self) -> Vec<String> {
         self.gpu_timer.lines()
@@ -173,6 +180,15 @@ impl Renderer {
             .scene
             .map(|scene| self.post_chains(scene))
             .unwrap_or_default();
+        if frame.scene.is_some_and(|scene| scene.world.is_some()) {
+            self.frames.applied_post_effects.clear();
+            self.frames.applied_post_effects.extend(
+                chains
+                    .iter()
+                    .filter(|c| *c != super::post::record::OUTLINE_CHAIN)
+                    .cloned(),
+            );
+        }
         let split = !chains.is_empty() && self.swapchain.depth_sampled;
         let render_pass_info = vk::RenderPassBeginInfo::default()
             .render_pass(if split {

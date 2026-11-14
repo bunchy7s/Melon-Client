@@ -236,7 +236,13 @@ impl InWorld {
             subsystems: self.subsystems.lines().to_vec(),
             day: self.clocks.environment(0.0).day,
             day_time: self.clocks.environment(0.0).day_time,
-            extras: self.debug_extras(frame.clouds, frame.biome_blend),
+            extras: {
+                let mut extras = self.debug_extras(frame.clouds, frame.biome_blend);
+                if entries.is_enabled(crate::gui::hud::debug_entries::Entry::PostEffects) {
+                    extras.post_effects = renderer.applied_post_effects().to_vec();
+                }
+                extras
+            },
         };
         // `DebugScreenOverlay`'s own scale: only ever smaller than the GUI's.
         let (gui_scale, debug_scale) = (frame.gui_scale, frame.debug_scale);

@@ -35,6 +35,7 @@ impl InWorld {
         aspect: f32,
         now: Instant,
         config: &Config,
+        font: (&crate::gui::text::font::Font, &[crate::renderer::TextureId]),
     ) -> (SceneFrame, RenderStats) {
         self.fps.tick(now);
         let far = camera::far_plane(config.render_distance);
@@ -124,10 +125,16 @@ impl InWorld {
             position: camera.position.as_dvec3(),
             min_y,
         });
+        let traced = self
+            .debug
+            .entries()
+            .is_enabled(crate::gui::hud::debug_entries::Entry::ChunkSectionPaths);
         let mask = self
             .occlusion
-            .update(section, level.revision(), view_distance, || {
-                level.occlusion_job(section, view_distance, eye)
+            .update(section, level.revision(), view_distance, traced, || {
+                level
+                    .occlusion_job(section, view_distance, eye)
+                    .traced(traced)
             });
         let culler = culler.with_occlusion(mask);
         self.meshes.resort(renderer, camera.position);
@@ -370,7 +377,16 @@ impl InWorld {
             &mut entities,
         );
 
-        self.draw_debug_view(renderer, &camera, &visible_entities, partial, &mut entities);
+        let debug_frustum = camera.frustum_with_fov(aspect, camera.fov.max(f32::from(config.fov)));
+        self.draw_debug_view(
+            renderer,
+            &camera,
+            &debug_frustum,
+            &visible_entities,
+            partial,
+            font,
+            &mut entities,
+        );
 
         let celestials = self.sky_draws(assets, &look, &camera, renderer.white_texture());
         let (clouds, weather) = self.atmosphere_draws(

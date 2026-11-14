@@ -7,9 +7,13 @@ use serde::{Deserialize, Serialize};
 
 use super::InWorld;
 use super::camera::{Camera, CameraMode};
-use super::gizmos::{DEFAULT_WIDTH, GizmoMesh, Gizmos};
+use super::gizmos::{DEFAULT_WIDTH, GizmoMesh, Gizmos, TextView};
+use crate::gui::hud::debug_entries::Category;
+use crate::gui::text::font::Font;
 use crate::math::argb;
+use crate::renderer::TextureId;
 use crate::renderer::{EntityDraw, Renderer};
+use crate::world::culling::frustum::Frustum;
 use crate::world::physics::Aabb;
 
 /// `Window`'s default line width, pixels.
@@ -88,13 +92,17 @@ fn still_in_view(camera: &Camera) -> impl Fn(DVec3) -> DVec3 {
 }
 
 impl InWorld {
-    /// The hitboxes and chunk borders in view this frame, into `out`.
+    /// The hitboxes, chunk borders and the other world renderers F3 + F6
+    /// switched on, in view this frame, into `out`.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn draw_debug_view(
         &mut self,
         renderer: &mut Renderer,
         camera: &Camera,
+        frustum: &Frustum,
         visible: &[i32],
         partial: f32,
+        (font, pages): (&Font, &[TextureId]),
         out: &mut Vec<EntityDraw>,
     ) {
         use crate::gui::hud::debug_entries::Entry;
@@ -105,8 +113,11 @@ impl InWorld {
             && !self.game_mode.current.is_spectator();
         let hitboxes = entries.is_enabled(Entry::EntityHitboxes);
         let chunk_borders = entries.is_enabled(Entry::ChunkBorders);
+        let others = Entry::ALL
+            .iter()
+            .any(|&e| e.category() == Category::Renderer && e.works() && entries.is_enabled(e));
         drop(entries);
-        if !hitboxes && !chunk_borders && !crosshair {
+        if !hitboxes && !chunk_borders && !crosshair && !others {
             self.debug_view.clear(renderer);
             return;
         }
@@ -120,14 +131,26 @@ impl InWorld {
         if chunk_borders {
             self.chunk_border_gizmos(&mut gizmos);
         }
+        if others {
+            self.visualizer_gizmos(&mut gizmos, camera.position.as_dvec3(), frustum);
+        }
         let (width, height) = renderer.framebuffer_size();
         let per_pixel = 2.0 * (camera.fov.to_radians() / 2.0).tan() / height.max(1) as f32;
+        let forward = camera.forward();
+        let up = camera.up();
+        let text = TextView {
+            font,
+            pages,
+            right: forward.cross(up).normalize_or_zero(),
+            up,
+        };
         self.debug_view.mesh.draw(
             renderer,
             &gizmos,
             camera.position.as_dvec3(),
             per_pixel,
             width as f32 / 1920.0,
+            Some(text),
             out,
         );
     }

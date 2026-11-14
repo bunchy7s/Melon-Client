@@ -72,6 +72,17 @@ impl IntegratedServer {
         self.pumpkin.upgrade().map(|server| server.get_mspt())
     }
 
+    /// Pumpkin's world of `dimension` (e.g. `minecraft:overworld`), for the
+    /// F3 entries vanilla reads off its integrated server.
+    pub fn world(&self, dimension: &str) -> Option<Arc<pumpkin::world::World>> {
+        let server = self.pumpkin.upgrade()?;
+        let worlds = server.worlds.load();
+        worlds
+            .iter()
+            .find(|w| w.dimension.minecraft_name == dimension)
+            .cloned()
+    }
+
     /// Whether the server has stopped, by itself (`/stop`) or after a close.
     pub fn is_finished(&self) -> bool {
         self.thread.as_ref().is_none_or(JoinHandle::is_finished)

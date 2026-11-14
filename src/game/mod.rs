@@ -12,6 +12,7 @@ pub mod camera;
 pub mod controls;
 mod debug_info;
 mod debug_view;
+mod debug_visualizers;
 mod effects;
 mod entities;
 pub mod entity_models;
@@ -241,6 +242,10 @@ pub struct InWorld {
     /// The world border and the other settings the server sends for the level.
     border: crate::world::border::WorldBorder,
     border_mesh: border_mesh::BorderMesh,
+    /// What the slower F3 + F6 world renderers keep between frames.
+    visualizers: debug_visualizers::VisualizerCache,
+    /// `DebugEntryChunkGeneration`'s lines and the block they are for.
+    chunk_generation: std::cell::RefCell<Option<([i32; 3], Vec<String>)>>,
     /// The recipes the server unlocked, and what its machines accept.
     recipes: crate::world::recipes::RecipeBook,
     recipe_sets: crate::world::recipes::RecipeSets,
@@ -450,6 +455,8 @@ impl InWorld {
             weather: crate::world::weather::WeatherLevels::default(),
             border: Default::default(),
             border_mesh: Default::default(),
+            visualizers: Default::default(),
+            chunk_generation: Default::default(),
             recipes: crate::world::recipes::RecipeBook::with_layer(
                 crate::world::recipes::layers::current(),
             ),
@@ -530,6 +537,11 @@ impl InWorld {
     /// What the connection thread took in so far.
     pub fn net_stats(&self) -> &crate::network::play::stats::NetStats {
         self.joined.session.stats()
+    }
+
+    /// Pumpkin's world of the dimension the player is in, in singleplayer.
+    pub(super) fn server_world(&self) -> Option<std::sync::Arc<pumpkin::world::World>> {
+        self.joined.server.as_ref()?.world(&self.dimension)
     }
 
     /// The integrated server's ms per tick, in a singleplayer world.

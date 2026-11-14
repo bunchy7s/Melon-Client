@@ -72,7 +72,7 @@ entries! {
     Fps = "minecraft":"fps", Text, true;
     Tps = "minecraft":"tps", Text, true;
     Memory = "minecraft":"memory", Text, true;
-    DetailedMemory = "minecraft":"detailed_memory", Text, false;
+    DetailedMemory = "minecraft":"detailed_memory", Text, true;
     SystemSpecs = "minecraft":"system_specs", Text, true;
     LookingAtBlockState = "minecraft":"looking_at_block_state", Text, true;
     LookingAtBlockTags = "minecraft":"looking_at_block_tags", Text, true;
@@ -81,7 +81,7 @@ entries! {
     LookingAtEntity = "minecraft":"looking_at_entity", Text, true;
     LookingAtEntityTags = "minecraft":"looking_at_entity_tags", Text, true;
     ChunkRenderStats = "minecraft":"chunk_render_stats", Text, true;
-    ChunkGenerationStats = "minecraft":"chunk_generation_stats", Text, false;
+    ChunkGenerationStats = "minecraft":"chunk_generation_stats", Text, true;
     EntityRenderStats = "minecraft":"entity_render_stats", Text, true;
     ParticleRenderStats = "minecraft":"particle_render_stats", Text, true;
     ChunkSourceStats = "minecraft":"chunk_source_stats", Text, true;
@@ -91,29 +91,29 @@ entries! {
     LightLevels = "minecraft":"light_levels", Text, true;
     Heightmap = "minecraft":"heightmap", Text, true;
     Biome = "minecraft":"biome", Text, true;
-    LocalDifficulty = "minecraft":"local_difficulty", Text, false;
+    LocalDifficulty = "minecraft":"local_difficulty", Text, true;
     DayCount = "minecraft":"day_count", Text, true;
-    EntitySpawnCounts = "minecraft":"entity_spawn_counts", Text, false;
+    EntitySpawnCounts = "minecraft":"entity_spawn_counts", Text, true;
     SoundMood = "minecraft":"sound_mood", Text, true;
     SoundCache = "minecraft":"sound_cache", Text, true;
-    PostEffects = "minecraft":"post_effects", Text, false;
+    PostEffects = "minecraft":"post_effects", Text, true;
     EntityHitboxes = "minecraft":"entity_hitboxes", Renderer, true;
     ChunkBorders = "minecraft":"chunk_borders", Renderer, true;
     ThreeDimensionalCrosshair = "minecraft":"3d_crosshair", Renderer, true;
-    ChunkSectionPaths = "minecraft":"chunk_section_paths", Renderer, false;
+    ChunkSectionPaths = "minecraft":"chunk_section_paths", Renderer, true;
     GpuUtilization = "minecraft":"gpu_utilization", Text, true;
     SimplePerformanceImpactors = "minecraft":"simple_performance_impactors", Text, true;
-    ChunkSectionOctree = "minecraft":"chunk_section_octree", Renderer, false;
-    VisualizeWaterLevels = "minecraft":"visualize_water_levels", Renderer, false;
-    VisualizeHeightmap = "minecraft":"visualize_heightmap", Renderer, false;
-    VisualizeCollisionBoxes = "minecraft":"visualize_collision_boxes", Renderer, false;
-    VisualizeEntitySupportingBlocks = "minecraft":"visualize_entity_supporting_blocks", Renderer, false;
-    VisualizeBlockLightLevels = "minecraft":"visualize_block_light_levels", Renderer, false;
-    VisualizeSkyLightLevels = "minecraft":"visualize_sky_light_levels", Renderer, false;
-    VisualizeSolidFaces = "minecraft":"visualize_solid_faces", Renderer, false;
-    VisualizeChunksOnServer = "minecraft":"visualize_chunks_on_server", Renderer, false;
-    VisualizeSkyLightSections = "minecraft":"visualize_sky_light_sections", Renderer, false;
-    ChunkSectionVisibility = "minecraft":"chunk_section_visibility", Renderer, false;
+    ChunkSectionOctree = "minecraft":"chunk_section_octree", Renderer, true;
+    VisualizeWaterLevels = "minecraft":"visualize_water_levels", Renderer, true;
+    VisualizeHeightmap = "minecraft":"visualize_heightmap", Renderer, true;
+    VisualizeCollisionBoxes = "minecraft":"visualize_collision_boxes", Renderer, true;
+    VisualizeEntitySupportingBlocks = "minecraft":"visualize_entity_supporting_blocks", Renderer, true;
+    VisualizeBlockLightLevels = "minecraft":"visualize_block_light_levels", Renderer, true;
+    VisualizeSkyLightLevels = "minecraft":"visualize_sky_light_levels", Renderer, true;
+    VisualizeSolidFaces = "minecraft":"visualize_solid_faces", Renderer, true;
+    VisualizeChunksOnServer = "minecraft":"visualize_chunks_on_server", Renderer, true;
+    VisualizeSkyLightSections = "minecraft":"visualize_sky_light_sections", Renderer, true;
+    ChunkSectionVisibility = "minecraft":"chunk_section_visibility", Renderer, true;
     // Melon's own: the frame's time per phase, the GPU's per pass, the
     // connection, sound and threads, terrain draws, and the time of day.
     FrameProfile = "melon":"frame_profile", Text, true;
@@ -462,9 +462,9 @@ mod tests {
         entries.toggle_overlay();
         assert!(entries.is_enabled(Entry::Fps));
         assert!(!entries.is_enabled(Entry::Biome));
-        // Listed, but nothing Melon has.
         entries.set_status(Entry::LocalDifficulty, Status::AlwaysOn);
-        assert!(!entries.is_enabled(Entry::LocalDifficulty));
+        assert!(entries.is_enabled(Entry::LocalDifficulty));
+        assert!(Entry::ALL.iter().all(|e| e.works()));
         assert!(entries.profile.is_none());
     }
 

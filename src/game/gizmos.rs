@@ -1,8 +1,13 @@
 //! Debug lines in the world (vanilla's `Gizmos`): entity hitboxes
 
-use glam::{DVec3, IVec3, Mat4};
+use glam::{DVec3, IVec3, Mat4, Vec3};
 
-use crate::renderer::{EntityDraw, MeshId, RenderLayer, Renderer, WorldVertex};
+use crate::gui::text::font::Font;
+use crate::renderer::quad::{DrawList, Vertex};
+use crate::renderer::{
+    Blending, EntityDraw, MeshId, RenderLayer, Renderer, TextureId, WorldVertex,
+};
+use crate::world::block::direction::Direction;
 use crate::world::physics::Aabb;
 
 /// `GizmoStyle.stroke`'s width, in pixels on a 1920 wide window.
@@ -18,10 +23,32 @@ pub struct Line {
     pub width: f32,
 }
 
-/// The lines of one frame.
+/// A filled quad (`GizmoStyle.fill`), its corners in order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fill {
+    pub corners: [DVec3; 4],
+    pub color: [f32; 4],
+}
+
+/// `TextGizmo`: text turned to the camera, centred on `at`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldText {
+    pub at: DVec3,
+    pub text: String,
+    pub color: [f32; 4],
+    /// `TextGizmo.Style.scale`: sixteenths of a block per text pixel.
+    pub scale: f32,
+}
+
+/// `TextGizmo.Style.DEFAULT_SCALE`.
+pub const TEXT_SCALE: f32 = 0.32;
+
+/// The lines, faces and text of one frame.
 #[derive(Default)]
 pub struct Gizmos {
     lines: Vec<Line>,
+    fills: Vec<Fill>,
+    texts: Vec<WorldText>,
 }
 
 impl Gizmos {
@@ -81,8 +108,82 @@ impl Gizmos {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.lines.is_empty()
+    /// `Gizmos.rect` with a fill: the face of the box `min`..`max` toward
+    /// `face`.
+    pub fn face(&mut self, min: DVec3, max: DVec3, face: Direction, color: [f32; 4]) {
+        let (lo, hi) = (min, max);
+        let corners = match face {
+            Direction::Down => [
+                DVec3::new(lo.x, lo.y, lo.z),
+                DVec3::new(hi.x, lo.y, lo.z),
+                DVec3::new(hi.x, lo.y, hi.z),
+                DVec3::new(lo.x, lo.y, hi.z),
+            ],
+            Direction::Up => [
+                DVec3::new(lo.x, hi.y, lo.z),
+                DVec3::new(lo.x, hi.y, hi.z),
+                DVec3::new(hi.x, hi.y, hi.z),
+                DVec3::new(hi.x, hi.y, lo.z),
+            ],
+            Direction::North => [
+                DVec3::new(lo.x, lo.y, lo.z),
+                DVec3::new(lo.x, hi.y, lo.z),
+                DVec3::new(hi.x, hi.y, lo.z),
+                DVec3::new(hi.x, lo.y, lo.z),
+            ],
+            Direction::South => [
+                DVec3::new(lo.x, lo.y, hi.z),
+                DVec3::new(hi.x, lo.y, hi.z),
+                DVec3::new(hi.x, hi.y, hi.z),
+                DVec3::new(lo.x, hi.y, hi.z),
+            ],
+            Direction::West => [
+                DVec3::new(lo.x, lo.y, lo.z),
+                DVec3::new(lo.x, lo.y, hi.z),
+                DVec3::new(lo.x, hi.y, hi.z),
+                DVec3::new(lo.x, hi.y, lo.z),
+            ],
+            Direction::East => [
+                DVec3::new(hi.x, lo.y, lo.z),
+                DVec3::new(hi.x, hi.y, lo.z),
+                DVec3::new(hi.x, hi.y, hi.z),
+                DVec3::new(hi.x, lo.y, hi.z),
+            ],
+        };
+        self.fills.push(Fill { corners, color });
+    }
+
+    /// `Gizmos.cuboid` with a fill: all six faces.
+    pub fn filled_cuboid(&mut self, bounds: &Aabb, color: [f32; 4]) {
+        for face in Direction::ALL {
+            self.face(bounds.min, bounds.max, face, color);
+        }
+    }
+
+    /// `Gizmos.billboardText`.
+    pub fn text(&mut self, at: DVec3, text: impl Into<String>, color: [f32; 4], scale: f32) {
+        self.texts.push(WorldText {
+            at,
+            text: text.into(),
+            color,
+            scale,
+        });
+    }
+
+    pub fn extend_fills(&mut self, fills: &[Fill]) {
+        self.fills.extend_from_slice(fills);
+    }
+
+    pub fn extend_lines(&mut self, lines: &[Line]) {
+        self.lines.extend_from_slice(lines);
+    }
+
+    pub fn extend_texts(&mut self, texts: &[WorldText]) {
+        self.texts.extend_from_slice(texts);
+    }
+
+    pub fn take_fills(&mut self) -> Vec<Fill> {
+        std::mem::take(&mut self.fills)
     }
 
     #[cfg(test)]
@@ -91,16 +192,80 @@ impl Gizmos {
     }
 }
 
-/// The mesh of the last frame's lines.
+/// The meshes of the last frame's gizmos: the lines, the filled faces
+/// (blended), and the text, one mesh per font page.
 #[derive(Default)]
 pub struct GizmoMesh {
+    lines: Slot,
+    fills: Slot,
+    texts: Vec<(TextureId, Slot)>,
+}
+
+/// The font and the camera's axes, for [`Gizmos::text`].
+#[derive(Clone, Copy)]
+pub struct TextView<'a> {
+    pub font: &'a Font,
+    pub pages: &'a [TextureId],
+    /// The camera's right and up, in the world.
+    pub right: Vec3,
+    pub up: Vec3,
+}
+
+/// One uploaded mesh, kept while its vertices stay the same.
+#[derive(Default)]
+struct Slot {
     mesh: Option<MeshId>,
     built: Vec<WorldVertex>,
     origin: IVec3,
 }
 
+impl Slot {
+    fn update(&mut self, renderer: &mut Renderer, vertices: Vec<WorldVertex>, origin: IVec3) {
+        if vertices.is_empty() {
+            self.release(renderer);
+            return;
+        }
+        if self.mesh.is_some() && self.origin == origin && self.built == vertices {
+            return;
+        }
+        self.release(renderer);
+        match renderer.upload_mesh(&vertices) {
+            Ok(mesh) => {
+                self.mesh = Some(mesh);
+                self.built = vertices;
+                self.origin = origin;
+            }
+            Err(e) => eprintln!("Gizmo-Mesh fehlgeschlagen: {e:#}"),
+        }
+    }
+
+    fn release(&mut self, renderer: &mut Renderer) {
+        if let Some(mesh) = self.mesh.take() {
+            renderer.free_mesh(mesh);
+        }
+        self.built.clear();
+    }
+
+    fn draw(&self, atlas: TextureId, layer: RenderLayer, blend: Blending) -> Option<EntityDraw> {
+        Some(EntityDraw {
+            mesh: self.mesh?,
+            atlas,
+            model: Mat4::IDENTITY,
+            origin: self.origin,
+            layer,
+            blend,
+            light: None,
+            overlay: 0.0,
+            glint: crate::renderer::Glint::None,
+        })
+    }
+}
+
 impl GizmoMesh {
     /// `gizmos` seen from `camera`, into `out`. `per_pixel` is how many
+    /// blocks a pixel covers one block ahead; `scale` the window's width
+    /// over 1920. Text needs `text`; without it, none is drawn.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         renderer: &mut Renderer,
@@ -108,49 +273,122 @@ impl GizmoMesh {
         camera: DVec3,
         per_pixel: f32,
         scale: f32,
+        text: Option<TextView<'_>>,
         out: &mut Vec<EntityDraw>,
     ) {
-        if gizmos.is_empty() {
-            self.release(renderer);
-            return;
-        }
         let origin = camera.floor().as_ivec3();
-        let vertices = ribbons(&gizmos.lines, origin, camera, per_pixel, scale);
-        if vertices.is_empty() {
-            self.release(renderer);
-            return;
+        let white = renderer.white_texture();
+        let lines = ribbons(&gizmos.lines, origin, camera, per_pixel, scale);
+        self.lines.update(renderer, lines, origin);
+        let fills = fill_quads(&gizmos.fills, origin);
+        self.fills.update(renderer, fills, origin);
+        let mut pages: Vec<(TextureId, Vec<WorldVertex>)> = Vec::new();
+        if let Some(view) = text {
+            text_quads(&gizmos.texts, origin, view, &mut pages);
         }
-        if self.mesh.is_none() || self.origin != origin || self.built != vertices {
-            self.release(renderer);
-            match renderer.upload_mesh(&vertices) {
-                Ok(mesh) => {
-                    self.mesh = Some(mesh);
-                    self.built = vertices;
-                    self.origin = origin;
-                }
-                Err(e) => eprintln!("Gizmo-Mesh fehlgeschlagen: {e:#}"),
+        self.texts.retain_mut(|(texture, slot)| {
+            if pages.iter().any(|(t, _)| t == texture) {
+                true
+            } else {
+                slot.release(renderer);
+                false
             }
+        });
+        for (texture, vertices) in pages {
+            let at = match self.texts.iter().position(|(t, _)| *t == texture) {
+                Some(at) => at,
+                None => {
+                    self.texts.push((texture, Slot::default()));
+                    self.texts.len() - 1
+                }
+            };
+            self.texts[at].1.update(renderer, vertices, origin);
         }
-        if let Some(mesh) = self.mesh {
-            out.push(EntityDraw {
-                mesh,
-                atlas: renderer.white_texture(),
-                model: Mat4::IDENTITY,
-                origin,
-                layer: RenderLayer::Shadows,
-                blend: crate::renderer::Blending::Opaque,
-                light: None,
-                overlay: 0.0,
-                glint: crate::renderer::Glint::None,
-            });
+        out.extend(
+            self.lines
+                .draw(white, RenderLayer::Shadows, Blending::Opaque),
+        );
+        out.extend(
+            self.fills
+                .draw(white, RenderLayer::Shadows, Blending::Translucent),
+        );
+        for (texture, slot) in &self.texts {
+            out.extend(slot.draw(*texture, RenderLayer::Entities, Blending::Text));
         }
     }
 
     pub fn release(&mut self, renderer: &mut Renderer) {
-        if let Some(mesh) = self.mesh.take() {
-            renderer.free_mesh(mesh);
+        self.lines.release(renderer);
+        self.fills.release(renderer);
+        for (_, mut slot) in self.texts.drain(..) {
+            slot.release(renderer);
         }
-        self.built.clear();
+    }
+}
+
+/// Both sides of each filled quad, relative to `origin`.
+fn fill_quads(fills: &[Fill], origin: IVec3) -> Vec<WorldVertex> {
+    let origin = origin.as_dvec3();
+    let mut out = Vec::with_capacity(fills.len() * 8);
+    for fill in fills {
+        let q = fill
+            .corners
+            .map(|p| WorldVertex::rgba((p - origin).as_vec3().to_array(), [0.0, 0.0], fill.color));
+        out.extend_from_slice(&q);
+        out.extend_from_slice(&[q[3], q[2], q[1], q[0]]);
+    }
+    out
+}
+
+/// `GizmoFeatureRenderer.buildTexts`: each text laid out by the font, at
+/// `scale / 16` blocks a pixel, turned to the camera; one vertex list per
+/// font page.
+fn text_quads(
+    texts: &[WorldText],
+    origin: IVec3,
+    view: TextView<'_>,
+    pages: &mut Vec<(TextureId, Vec<WorldVertex>)>,
+) {
+    let origin = origin.as_dvec3();
+    let mut list = DrawList::new();
+    for text in texts {
+        list.clear();
+        let width = view.font.text_width(&text.text);
+        view.font.push_text_flat(
+            &mut list,
+            view.pages,
+            &text.text,
+            -width / 2.0,
+            0.0,
+            text.color,
+        );
+        let pixel = text.scale / 16.0;
+        let at = (text.at - origin).as_vec3();
+        let place = |v: &Vertex| {
+            let p = at + view.right * (v.pos[0] * pixel) - view.up * (v.pos[1] * pixel);
+            WorldVertex::rgba(p.to_array(), v.uv, v.color)
+        };
+        for call in &list.calls {
+            let from = (call.first / 6 * 4) as usize;
+            let quads = &list.vertices[from..from + (call.count / 6 * 4) as usize];
+            let at = match pages.iter().position(|(t, _)| *t == call.texture) {
+                Some(at) => at,
+                None => {
+                    pages.push((call.texture, Vec::new()));
+                    pages.len() - 1
+                }
+            };
+            for quad in quads.as_chunks::<4>().0 {
+                let q = [
+                    place(&quad[0]),
+                    place(&quad[1]),
+                    place(&quad[2]),
+                    place(&quad[3]),
+                ];
+                pages[at].1.extend_from_slice(&q);
+                pages[at].1.extend_from_slice(&[q[3], q[2], q[1], q[0]]);
+            }
+        }
     }
 }
 

@@ -284,6 +284,29 @@ impl LevelMeshes {
             })
     }
 
+    /// Whether the section has anything to draw
+    /// (`SectionMesh.hasRenderableLayers`).
+    pub fn section_filled(&self, (x, y, z): SectionPos) -> bool {
+        usize::try_from(y)
+            .ok()
+            .filter(|&y| y < 32)
+            .is_some_and(|y| {
+                self.columns
+                    .get(&(x, z))
+                    .is_some_and(|column| column.filled & (1 << y) != 0)
+            })
+    }
+
+    /// Each chunk column with something to draw and which of its sections
+    /// do (bit per section): what [`Self::visible_sections`] culls, a
+    /// column's box first, then its sections.
+    pub fn filled_columns(&self) -> impl Iterator<Item = ((i32, i32), u32)> + '_ {
+        self.columns
+            .iter()
+            .filter(|(_, c)| c.filled != 0)
+            .map(|(&pos, c)| (pos, c.filled))
+    }
+
     /// Puts a built section in place of its old meshes.
     fn install(&mut self, sink: &mut impl MeshSink, finished: FinishedMesh) {
         let FinishedMesh { pos, mesh, .. } = finished;

@@ -3,7 +3,7 @@
 pub mod config;
 pub(in crate::renderer) mod gpu;
 pub mod load;
-mod record;
+pub(super) mod record;
 pub use gpu::ChainSource;
 pub mod shader;
 pub mod uniform;

@@ -457,6 +457,7 @@ impl Renderer {
                 current: 0,
                 number: 0,
                 last_waits: super::FrameWaits::default(),
+                applied_post_effects: Vec::new(),
             },
             ui_vertices: super::UiVertices {
                 buffers: ui_vertex_buffers,
