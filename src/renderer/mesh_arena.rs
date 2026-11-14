@@ -4,6 +4,7 @@ use ash::vk;
 
 use super::create_buffer;
 use super::staging::Staging;
+use super::vk_util::{DEVICE_OR_HOST, create_buffer_in};
 
 /// Bytes per arena block. A mesh larger than that gets a block of its own
 const BLOCK_BYTES: u64 = 64 << 20;
@@ -110,6 +111,8 @@ pub struct MeshArena {
     index: Option<(vk::Buffer, vk::DeviceMemory)>,
     /// How blocks are bound.
     usage: vk::BufferUsageFlags,
+    /// The queued copies are in the frame being recorded.
+    recorded: bool,
 }
 
 impl MeshArena {
@@ -136,6 +139,7 @@ impl MeshArena {
                 Kind::Vertices => vk::BufferUsageFlags::VERTEX_BUFFER,
                 Kind::Quads => vk::BufferUsageFlags::STORAGE_BUFFER,
             },
+            recorded: false,
         };
         if kind == Kind::Vertices {
             let indices: Vec<u16> = (0..QUADS_PER_DRAW)
@@ -232,12 +236,12 @@ impl MeshArena {
                 Some(found) => found,
                 None => {
                     let capacity = count.max(self.block_elements);
-                    let (buffer, memory) = create_buffer(
+                    let (buffer, memory) = create_buffer_in(
                         device,
                         mem_props,
                         u64::from(capacity) * self.element_size,
                         self.usage | vk::BufferUsageFlags::TRANSFER_DST,
-                        vk::MemoryPropertyFlags::DEVICE_LOCAL,
+                        &DEVICE_OR_HOST,
                     )?;
                     let mut free = FreeList::new(capacity);
                     let offset = free.alloc(count).expect("a new block fits its mesh");
@@ -282,6 +286,36 @@ impl MeshArena {
             if slot.count > 0 {
                 self.retired.push((frame_number, slot));
             }
+        }
+    }
+
+    /// Room in this frame's staging buffer for the queued copies: done
+    /// before the frame acquires an image, so running out of memory skips
+    /// the frame instead of breaking it halfway.
+    pub unsafe fn prepare(
+        &mut self,
+        device: &ash::Device,
+        mem_props: &vk::PhysicalDeviceMemoryProperties,
+        frame: usize,
+    ) -> anyhow::Result<()> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        self.staging[frame].ensure(device, mem_props, self.pending_bytes.len() as u64, 1 << 20)
+    }
+
+    /// The frame with the copies [`Self::record`] recorded was submitted:
+    /// they are done. Until then they stay queued, so a frame that fails
+    /// after recording them doesn't leave meshes drawn that were never
+    /// filled (whose garbage quads index past the quad table).
+    pub fn submitted(&mut self) {
+        if !std::mem::take(&mut self.recorded) {
+            return;
+        }
+        self.pending.clear();
+        self.pending_bytes.clear();
+        if self.pending_bytes.capacity() > 64 << 20 {
+            self.pending_bytes = Vec::new();
         }
     }
 
@@ -352,11 +386,7 @@ impl MeshArena {
             &[],
             &[],
         );
-        self.pending.clear();
-        self.pending_bytes.clear();
-        if self.pending_bytes.capacity() > 64 << 20 {
-            self.pending_bytes = Vec::new();
-        }
+        self.recorded = true;
         Ok(())
     }
 

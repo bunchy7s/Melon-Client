@@ -73,6 +73,7 @@ impl ConnectingScreen {
     }
 
     fn failed(reason: String) -> ScreenAction {
+        eprintln!("Verbindung fehlgeschlagen: {reason}");
         ScreenAction::Replace(Box::new(disconnected_screen(
             "connect.failed",
             reason,

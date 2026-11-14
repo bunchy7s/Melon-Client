@@ -44,6 +44,39 @@ impl Renderer {
         self.gpu_timer.last_stats()
     }
 
+    /// The staging and draw buffers this frame grows into.
+    unsafe fn prepare_frame(&mut self, frame: &Frame<'_>) -> anyhow::Result<()> {
+        let current = self.frames.current;
+        super::texture_update::prepare(
+            &mut self.textures.update_staging[current],
+            &self.device,
+            &self.mem_props,
+            &self.textures.pending_updates,
+        )?;
+        for arena in [&mut self.meshes, &mut self.quad_meshes] {
+            arena.prepare(&self.device, &self.mem_props, current)?;
+        }
+        if let (Some(indirect), Some(world)) = (
+            &mut self.indirect,
+            frame.scene.and_then(|s| s.world.as_ref()),
+        ) {
+            let draws: u32 = world
+                .chunks
+                .iter()
+                .chain(&world.cutout)
+                .map(|chunk| {
+                    chunk
+                        .range
+                        .len()
+                        .div_ceil(mesh_arena::QUADS_PER_DRAW as usize)
+                        .max(1) as u32
+                })
+                .sum();
+            indirect.prepare(&self.device, &self.mem_props, current, draws)?;
+        }
+        Ok(())
+    }
+
     pub(super) unsafe fn render_inner(&mut self, frame: &Frame<'_>) -> anyhow::Result<()> {
         let ui_vertices = frame.ui.vertices.len().min(VERTEX_CAPACITY);
         if ui_vertices < frame.ui.vertices.len() {
@@ -63,6 +96,12 @@ impl Renderer {
         self.frames.number += 1;
         self.destroy_retired_textures();
         waits.gpu = started.elapsed();
+
+        // Every allocation the frame needs, before an image is acquired:
+        // past that point a failure would leave the image acquired and its
+        // semaphore signalled with nothing to wait on it. Out of memory
+        // (another program holding the VRAM) now just skips the frame.
+        self.prepare_frame(frame)?;
 
         let started = Instant::now();
         let acquire = self.swapchain.loader.acquire_next_image(
@@ -97,24 +136,6 @@ impl Renderer {
         );
 
         self.draw_cursor.set(0);
-        if let (Some(indirect), Some(world)) = (
-            &mut self.indirect,
-            frame.scene.and_then(|s| s.world.as_ref()),
-        ) {
-            let draws: u32 = world
-                .chunks
-                .iter()
-                .chain(&world.cutout)
-                .map(|chunk| {
-                    chunk
-                        .range
-                        .len()
-                        .div_ceil(mesh_arena::QUADS_PER_DRAW as usize)
-                        .max(1) as u32
-                })
-                .sum();
-            indirect.prepare(&self.device, &self.mem_props, self.frames.current, draws)?;
-        }
 
         let globals = frame
             .scene
@@ -282,6 +303,9 @@ impl Renderer {
             .command_buffers(&command_buffers)
             .signal_semaphores(&signal_semaphores);
         self.device.queue_submit(self.queue, &[submit], fence)?;
+        for arena in [&mut self.meshes, &mut self.quad_meshes] {
+            arena.submitted();
+        }
         if let Some(readback) = readback {
             self.device.wait_for_fences(&[fence], true, u64::MAX)?;
             self.finish_capture(readback);

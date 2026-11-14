@@ -15,6 +15,20 @@ pub struct PendingUpdate {
     pub pixels: RgbaImage,
 }
 
+/// Room in `staging` for `updates`, before the frame acquires an image.
+pub unsafe fn prepare(
+    staging: &mut Staging,
+    device: &ash::Device,
+    mem_props: &vk::PhysicalDeviceMemoryProperties,
+    updates: &[PendingUpdate],
+) -> anyhow::Result<()> {
+    if updates.is_empty() {
+        return Ok(());
+    }
+    let total: u64 = updates.iter().map(|u| u.pixels.as_raw().len() as u64).sum();
+    staging.ensure(device, mem_props, total, 64 * 1024)
+}
+
 /// Copies `updates` into `staging` and records their uploads into `cmd`,
 pub unsafe fn record(
     staging: &mut Staging,

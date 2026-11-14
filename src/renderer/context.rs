@@ -133,13 +133,41 @@ impl Renderer {
         if let (true, Some(name)) = (latest_ready, latest_ready_extension) {
             device_extensions.push(name.as_ptr());
         }
+        // `VK_EXT_pageable_device_local_memory`: when another program fills
+        // the VRAM, the driver moves allocations to system memory instead of
+        // failing them (as DXVK and vkd3d ask too), so the game keeps running
+        // slower rather than losing its swapchain and textures.
+        let offers = |name: &CStr| {
+            offered
+                .iter()
+                .any(|e| CStr::from_ptr(e.extension_name.as_ptr()) == name)
+        };
+        let pageable = offers(ash::ext::pageable_device_local_memory::NAME)
+            && offers(ash::ext::memory_priority::NAME)
+            && {
+                let mut query = vk::PhysicalDevicePageableDeviceLocalMemoryFeaturesEXT::default();
+                let mut features = vk::PhysicalDeviceFeatures2::default().push_next(&mut query);
+                instance.get_physical_device_features2(physical_device, &mut features);
+                query.pageable_device_local_memory == vk::TRUE
+            };
+        if pageable {
+            device_extensions.push(ash::ext::memory_priority::NAME.as_ptr());
+            device_extensions.push(ash::ext::pageable_device_local_memory::NAME.as_ptr());
+        }
         let multi_draw = std::env::var_os("MELON_NO_MULTIDRAW").is_none()
             && supported.multi_draw_indirect == vk::TRUE
             && supported.draw_indirect_first_instance == vk::TRUE
             && supported_11.shader_draw_parameters == vk::TRUE;
         // Pipeline statistics: how much each pass shades, for the benchmark.
         let statistics = supported.pipeline_statistics_query == vk::TRUE;
+        // `robustBufferAccess`: a read past a buffer's end gives zeros instead
+        // of a GPU page fault that loses the device (Xid 13 on NVIDIA). A
+        // safety net for broken data; `MELON_NO_ROBUST_BUFFERS` drops it to
+        // measure what it costs.
+        let robust = std::env::var_os("MELON_NO_ROBUST_BUFFERS").is_none()
+            && supported.robust_buffer_access == vk::TRUE;
         let features = vk::PhysicalDeviceFeatures::default()
+            .robust_buffer_access(robust)
             .multi_draw_indirect(multi_draw)
             .draw_indirect_first_instance(multi_draw)
             .pipeline_statistics_query(statistics);
@@ -149,11 +177,17 @@ impl Renderer {
         if latest_ready {
             features_11.p_next = std::ptr::from_mut(&mut enabled_latest).cast();
         }
-        let device_info = vk::DeviceCreateInfo::default()
+        let mut enabled_pageable =
+            vk::PhysicalDevicePageableDeviceLocalMemoryFeaturesEXT::default()
+                .pageable_device_local_memory(true);
+        let mut device_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_infos)
             .enabled_features(&features)
             .push_next(&mut features_11)
             .enabled_extension_names(&device_extensions);
+        if pageable {
+            device_info = device_info.push_next(&mut enabled_pageable);
+        }
         let device = instance.create_device(physical_device, &device_info, None)?;
         let queue = device.get_device_queue(queue_family, 0);
 

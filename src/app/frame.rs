@@ -48,6 +48,13 @@ impl RunningState {
         } else {
             self.draw_menus(dt);
         }
+        if self.device_lost {
+            // Leaving saves a singleplayer world; a renderer on a lost
+            // device would only fail again every frame.
+            self.leave_world(None);
+            event_loop.exit();
+            return;
+        }
         self.sync_cursor();
         self.sync_ime();
         self.sync_ime_area();
@@ -124,7 +131,7 @@ impl RunningState {
             blur,
         };
         if let Err(e) = self.renderer.render(&frame) {
-            eprintln!("Render-Fehler: {e:#}");
+            self.device_lost |= render_failed(&e);
         }
         let renderer = &mut self.renderer;
         self.screenshots
@@ -323,7 +330,7 @@ impl RunningState {
             blur,
         };
         if let Err(e) = self.renderer.render(&frame) {
-            eprintln!("Render-Fehler: {e:#}");
+            self.device_lost |= render_failed(&e);
         }
         world.recycle(scene);
         if let Some(path) = probe_shot {
@@ -363,6 +370,19 @@ impl RunningState {
             None => false,
         }
     }
+}
+
+/// Reports a frame that failed; whether the device is lost for good.
+fn render_failed(e: &anyhow::Error) -> bool {
+    if crate::renderer::is_device_lost(e) {
+        eprintln!(
+            "Render-Fehler: Die GPU hat das Vulkan-Geraet verloren ({e:#}). \
+             Melon verlaesst die Welt und beendet sich; siehe `journalctl -k` (Xid) fuer die Ursache."
+        );
+        return true;
+    }
+    eprintln!("Render-Fehler (Frame uebersprungen): {e:#}");
+    false
 }
 
 /// The blur behind `screen`, if it has one: everything in `draw_list` so far

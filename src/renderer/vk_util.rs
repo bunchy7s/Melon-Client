@@ -44,6 +44,17 @@ pub(super) const MAPPED_FOR_GPU: [vk::MemoryPropertyFlags; 2] = [
     ),
 ];
 
+/// Memory for what the GPU reads and only a copy writes (meshes): VRAM,
+/// else, while another program holds the VRAM, host memory over PCIe:
+/// slower to draw from, but drawn.
+pub(super) const DEVICE_OR_HOST: [vk::MemoryPropertyFlags; 2] = [
+    vk::MemoryPropertyFlags::DEVICE_LOCAL,
+    vk::MemoryPropertyFlags::from_raw(
+        vk::MemoryPropertyFlags::HOST_VISIBLE.as_raw()
+            | vk::MemoryPropertyFlags::HOST_COHERENT.as_raw(),
+    ),
+];
+
 /// Memory for buffers the GPU writes and the CPU reads back: cached, as
 /// reading uncached (write-combined) memory costs the CPU many times more.
 pub(super) const READBACK: [vk::MemoryPropertyFlags; 2] = [
@@ -88,29 +99,37 @@ pub(super) unsafe fn create_buffer_in(
     )?;
     let requirements = device.get_buffer_memory_requirements(buffer);
     let mut last = anyhow::anyhow!("kein passender Vulkan-Speichertyp gefunden");
+    let mut out_of_memory = false;
     for &flags in choices {
-        let index = match find_memory_type(mem_props, requirements.memory_type_bits, flags) {
-            Ok(index) => index,
-            Err(e) => {
-                last = e;
-                continue;
-            }
-        };
-        match device.allocate_memory(
-            &vk::MemoryAllocateInfo::default()
-                .allocation_size(requirements.size)
-                .memory_type_index(index),
-            None,
-        ) {
-            Ok(memory) => {
-                if let Err(e) = device.bind_buffer_memory(buffer, memory, 0) {
-                    device.free_memory(memory, None);
-                    device.destroy_buffer(buffer, None);
-                    return Err(e.into());
+        // Every type with the flags, not only the first: a full heap (the
+        // VRAM, the BAR window) can have a type the next heap shares flags with.
+        for index in memory_types(mem_props, requirements.memory_type_bits, flags) {
+            match device.allocate_memory(
+                &vk::MemoryAllocateInfo::default()
+                    .allocation_size(requirements.size)
+                    .memory_type_index(index),
+                None,
+            ) {
+                Ok(memory) => {
+                    if let Err(e) = device.bind_buffer_memory(buffer, memory, 0) {
+                        device.free_memory(memory, None);
+                        device.destroy_buffer(buffer, None);
+                        return Err(e.into());
+                    }
+                    if out_of_memory {
+                        note_memory_fallback(flags);
+                    }
+                    return Ok((buffer, memory));
                 }
-                return Ok((buffer, memory));
+                Err(e) => {
+                    out_of_memory |= matches!(
+                        e,
+                        vk::Result::ERROR_OUT_OF_DEVICE_MEMORY
+                            | vk::Result::ERROR_OUT_OF_HOST_MEMORY
+                    );
+                    last = e.into();
+                }
             }
-            Err(e) => last = e.into(),
         }
     }
     device.destroy_buffer(buffer, None);
@@ -341,6 +360,32 @@ pub(super) unsafe fn create_depth_image(
         None,
     )?;
     Ok((image, memory, view))
+}
+
+/// The memory types with `flags` among `type_bits`, in the device's order.
+fn memory_types(
+    props: &vk::PhysicalDeviceMemoryProperties,
+    type_bits: u32,
+    flags: vk::MemoryPropertyFlags,
+) -> impl Iterator<Item = u32> + '_ {
+    (0..props.memory_type_count).filter(move |&i| {
+        (type_bits & (1 << i)) != 0
+            && props.memory_types[i as usize]
+                .property_flags
+                .contains(flags)
+    })
+}
+
+/// Once per run: a buffer went to a fallback memory because the preferred
+/// one was full (another program on the GPU), which can cost frame time.
+fn note_memory_fallback(flags: vk::MemoryPropertyFlags) {
+    static NOTED: std::sync::Once = std::sync::Once::new();
+    NOTED.call_once(|| {
+        eprintln!(
+            "Vulkan: bevorzugter Speicher ist voll (ein anderes Programm belegt die GPU?), \
+             weiche aus auf {flags:?}"
+        );
+    });
 }
 
 pub(crate) fn find_memory_type(

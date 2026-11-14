@@ -386,6 +386,14 @@ pub(crate) fn configure_loop(
             pid if pid == config::CLEAR_DIALOG.0 => crate::dialog::connection::clear(),
             pid if pid == config::SERVER_LINKS.0 => crate::dialog::connection::read_links(&body)?,
             pid if pid == config::UPDATE_TAGS.0 => crate::dialog::connection::read_tags(&body)?,
+            // `ClientboundDisconnectPacket`: the server's reason, not the
+            // closed socket that follows it.
+            pid if pid == config::DISCONNECT.0 => {
+                bail!(
+                    "{}",
+                    Reader::new(&body).component_text().unwrap_or_default()
+                );
+            }
             id::CB_CONFIG_CODE_OF_CONDUCT => {
                 lock(writer).write_packet(id::SB_CONFIG_ACCEPT_CODE_OF_CONDUCT, |_| Ok(()))?;
             }

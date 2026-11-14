@@ -318,6 +318,13 @@ impl Renderer {
     }
 }
 
+/// Whether a renderer error is `VK_ERROR_DEVICE_LOST`: the driver gave the
+/// device up (a GPU fault or reset), and nothing on it works again.
+pub fn is_device_lost(e: &anyhow::Error) -> bool {
+    e.chain()
+        .any(|cause| cause.downcast_ref::<vk::Result>() == Some(&vk::Result::ERROR_DEVICE_LOST))
+}
+
 impl Drop for Renderer {
     fn drop(&mut self) {
         unsafe {

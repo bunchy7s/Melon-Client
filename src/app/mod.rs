@@ -125,6 +125,9 @@ struct RunningState {
     last_frame: Instant,
     /// When the framerate limit lets the next frame start.
     next_frame: Option<Instant>,
+    /// The GPU dropped the device (`VK_ERROR_DEVICE_LOST`): nothing can be
+    /// drawn any more, the game ends after this frame.
+    device_lost: bool,
     /// The UI's quads, cleared and refilled every frame.
     draw_list: DrawList,
     /// `--bench`: the run being recorded.
@@ -215,6 +218,7 @@ impl App {
             input: InputState::new(),
             last_frame: Instant::now(),
             next_frame: None,
+            device_lost: false,
             draw_list: DrawList::new(),
             bench: None,
             world_icon: world_icon::WorldIcon::new(),
@@ -436,6 +440,7 @@ impl RunningState {
     }
 
     fn show_failure(&mut self, reason: String) {
+        eprintln!("Verbindung verloren: {reason}");
         if self.screens.is_empty() {
             return;
         }
