@@ -1,6 +1,6 @@
 [package]
 name = "melon"
-version = "0.7.9+mc26.3"
+version = "0.8.0+mc26.3"
 authors = ["Zinedin Polic"]
 edition = "2024"
 rust-version = "1.99.1"
@@ -22,7 +22,7 @@ crossbeam-channel = "0.5.17"
 flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
 glam = "0.34.3"
 # NVML (`libnvidia-ml`) for the benchmark, loaded only if it is there.
-libloading = "0.8.9"
+libloading = "0.9.1"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 # Pack PNGs with wrong checksums, which `image` refuses and vanilla reads.
 png = "0.18.1"
