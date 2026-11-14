@@ -11,7 +11,7 @@ use crate::world::inventory::empty;
 pub const HOTBARS: usize = 9;
 const SLOTS: usize = 9;
 /// `SharedConstants.getCurrentVersion().dataVersion()` for 26.3's world
-const DATA_VERSION: i32 = 4671;
+pub const DATA_VERSION: i32 = 4671;
 
 pub struct Hotbars {
     path: PathBuf,

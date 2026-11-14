@@ -3,6 +3,7 @@
 pub mod bars;
 pub mod boss;
 pub mod debug;
+pub mod debug_entries;
 pub mod effects;
 pub mod item_icon;
 pub mod item_slot;

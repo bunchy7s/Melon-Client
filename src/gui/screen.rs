@@ -43,6 +43,8 @@ pub enum ScreenAction {
     },
     /// The answer to the server's resource pack prompt.
     AnswerServerPacks(bool),
+    /// F3 + T: the resource packs read again.
+    ReloadResources,
 }
 
 impl ScreenAction {

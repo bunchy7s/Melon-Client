@@ -22,6 +22,8 @@ pub(super) struct InputState {
     cursor: PhysicalPosition<f64>,
     /// Whether the window has the keyboard: the cursor is only grabbed then.
     focused: bool,
+    /// `Minecraft.lastActiveTime`: when the window last had the focus.
+    last_active: Instant,
     /// Shift, Control and friends.
     modifiers: ModifiersState,
     /// Hidden by other windows or minimized.
@@ -45,6 +47,7 @@ impl InputState {
         Self {
             cursor: PhysicalPosition::new(0.0, 0.0),
             focused: true,
+            last_active: Instant::now(),
             modifiers: ModifiersState::empty(),
             occluded: false,
             last_input: Instant::now(),
@@ -449,6 +452,23 @@ impl RunningState {
                 PhysicalPosition::new(px, py),
                 winit::dpi::PhysicalSize::new(1.0, (below - py).max(1.0)),
             );
+        }
+    }
+
+    /// `Minecraft.pauseIfInactive`: half a second without the focus pauses a
+    /// world that nothing else covers.
+    pub(super) fn pause_if_inactive(&mut self) {
+        let now = Instant::now();
+        if self.input.focused || !self.env.config.pause_on_lost_focus {
+            self.input.last_active = now;
+            return;
+        }
+        if self.world.is_some()
+            && self.screens.top().is_none()
+            && !self.overlay_open()
+            && now.duration_since(self.input.last_active) > std::time::Duration::from_millis(500)
+        {
+            self.open_pause_menu();
         }
     }
 

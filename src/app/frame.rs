@@ -37,6 +37,7 @@ impl RunningState {
         }
         self.poll_server_packs();
         self.report_screenshots();
+        self.pause_if_inactive();
 
         if self.world.is_some() {
             if self.draw_world(now, dt.as_secs_f32()) {
@@ -248,20 +249,46 @@ impl RunningState {
             &env.config,
             size,
         );
+        let physical = self.window.inner_size();
+        let density = self.window.scale_factor();
+        let refresh_rate = if world.debug_shown() {
+            self.window
+                .current_monitor()
+                .and_then(|m| m.refresh_rate_millihertz())
+                .map(crate::gui::hud::debug::refresh_rate_label)
+        } else {
+            None
+        };
+        let debug = DebugFrame {
+            render,
+            clouds: env.config.clouds,
+            biome_blend: env.config.biome_blend,
+            framerate_limit,
+            frame_seconds: dt,
+            window: (
+                (f64::from(physical.width) / density).round() as u32,
+                (f64::from(physical.height) / density).round() as u32,
+                density,
+            ),
+            refresh_rate,
+            screen_open: self.screens.top().is_some(),
+            gui_scale: scale.scale(),
+            debug_scale: {
+                let (w, h) = self.renderer.framebuffer_size();
+                match env.config.debug_gui_scale {
+                    -1 => scale.scale(),
+                    0 => crate::gui::screen::calculate_scale(0, w, h) / 2,
+                    n => crate::gui::screen::calculate_scale(n as u32, w, h),
+                }
+            },
+        };
+        world.draw_debug(&mut self.draw_list, gui, &self.renderer, debug, size.0);
         let mut blur = None;
         if let Some(screen) = self.screens.top() {
             blur = menu_blur(screen, &mut self.draw_list, true);
             let mut ui = Ui::new(&mut self.draw_list, gui, &env.lang, size);
             screen.draw(&mut ui, &env.ctx(scale));
         }
-        let debug = DebugFrame {
-            render,
-            clouds: env.config.clouds,
-            biome_blend: env.config.biome_blend,
-            framerate_limit,
-            vsync: env.config.vsync,
-        };
-        world.draw_debug(&mut self.draw_list, gui, &self.renderer, debug, size.0);
         world.profiler.mark("ui");
         if icon_path.is_some() {
             self.draw_list.clear();

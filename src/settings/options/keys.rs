@@ -227,6 +227,16 @@ pub(super) const KEYS: &[OptionKey] = &[
         write: |c| c.fullscreen.to_string(),
     },
     OptionKey {
+        name: "debugGuiScale",
+        read: |c, v| c.debug_gui_scale = v.parse::<i32>().unwrap_or(0).max(-1),
+        write: |c| c.debug_gui_scale.to_string(),
+    },
+    OptionKey {
+        name: "pauseOnLostFocus",
+        read: |c, v| c.pause_on_lost_focus = flag(v),
+        write: |c| c.pause_on_lost_focus.to_string(),
+    },
+    OptionKey {
         name: "enableVsync",
         read: |c, v| c.vsync = flag(v),
         write: |c| c.vsync.to_string(),

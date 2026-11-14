@@ -90,6 +90,12 @@ pub struct Config {
     pub fullscreen: bool,
     /// `Options.enableVsync`: present at the display's refresh rate.
     pub vsync: bool,
+    /// `Options.pauseOnLostFocus` (F3 + P): the pause menu opens when the
+    /// window loses the focus.
+    pub pause_on_lost_focus: bool,
+    /// `Options.debugGuiScale`: the F3 overlay's own GUI scale, `-1` the
+    /// game's, `0` half the largest.
+    pub debug_gui_scale: i32,
     /// How frames are presented; anything but `Auto` overrides `vsync`.
     pub present_mode: PresentMode,
     /// `Options.framerateLimit`; [`MAX_FPS_RANGE`]'s top is unlimited.
@@ -158,6 +164,8 @@ impl Default for Config {
             gui_scale: 0,
             fullscreen: false,
             vsync: true,
+            pause_on_lost_focus: true,
+            debug_gui_scale: 0,
             present_mode: PresentMode::Auto,
             max_fps: MAX_FPS_DEFAULT,
             inactivity_fps_limit: InactivityFpsLimit::Afk,

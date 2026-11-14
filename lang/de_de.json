@@ -127,6 +127,7 @@
   "melon.options.speakerLayout.surround51": "Surround 5.1",
   "melon.options.speakerLayout.surround71": "Surround 7.1",
   "melon.options.speakerLayout.tooltip": "Auf welche Lautsprecher Sounds verteilt werden. Automatisch nimmt, was das Ausgabegeraet bevorzugt. Nimmt das Geraet die gewaehlten Kanaele nicht, bleibt es bei seinen eigenen. Mit Richtungsaudio immer Stereo.",
+  "melon.debug.options.missing.tooltip": "Gibt es in Melon noch nicht, zeigt daher nichts an.",
   "melon.options.presentMode": "Present-Modus",
   "melon.options.presentMode.auto": "Automatisch",
   "melon.options.presentMode.fifo": "FIFO",

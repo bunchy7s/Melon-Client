@@ -26,6 +26,8 @@ fn reads_back_what_it_writes() {
         gui_scale: 3,
         fullscreen: true,
         vsync: false,
+        pause_on_lost_focus: false,
+        debug_gui_scale: 2,
         present_mode: PresentMode::Mailbox,
         max_fps: 60,
         inactivity_fps_limit: InactivityFpsLimit::Minimized,

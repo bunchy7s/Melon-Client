@@ -14,6 +14,30 @@ use crate::world::game_mode::GameMode;
 use crate::world::inventory::HOTBAR_SLOTS;
 use winit::keyboard::{Key, NamedKey};
 
+use crate::gui::hud::debug_entries::Entry;
+
+/// `VersionCommand.dumpVersion` for what Melon knows of its version: the
+/// build time and the pack formats are not among it.
+fn version_lines(lang: &crate::i18n::Lang) -> Vec<String> {
+    let version = env!("CARGO_PKG_VERSION");
+    let minecraft = version.split_once("+mc").map_or("?", |(_, mc)| mc);
+    let protocol = crate::network::PROTOCOL_VERSION;
+    vec![
+        lang.format("commands.version.id", &[minecraft]),
+        lang.format("commands.version.name", &[minecraft]),
+        lang.format(
+            "commands.version.data",
+            &[&crate::world::hotbars::DATA_VERSION.to_string()],
+        ),
+        lang.format("commands.version.series", &["main"]),
+        lang.format(
+            "commands.version.protocol",
+            &[&protocol.to_string(), &format!("0x{protocol:x}")],
+        ),
+        lang.get("commands.version.stable.yes").to_owned(),
+    ]
+}
+
 impl InWorld {
     pub(super) fn can_switch_game_mode(&self) -> bool {
         self.permission_level >= GAMEMASTER_LEVEL
@@ -125,14 +149,11 @@ impl InWorld {
                     feedback(self, "debug.gamemodes.error");
                 }
             }
+            // `keyDebugDebugOptions`: the screen choosing the entries.
             Key::Named(NamedKey::F6) => {
-                self.debug_view.extended = !self.debug_view.extended;
-                let state = if self.debug_view.extended {
-                    "shown"
-                } else {
-                    "hidden"
-                };
-                self.debug_line(ui.lang, ui.font, &format!("Optional F3 entries: {state}"));
+                action = ScreenAction::open(
+                    crate::gui::screens::options::debug::debug_options_screen(self.debug.shared()),
+                );
             }
             Key::Character(c) => match c.to_ascii_lowercase().as_str() {
                 "a" => {
@@ -140,12 +161,11 @@ impl InWorld {
                     feedback(self, "debug.reload_chunks.message");
                 }
                 "b" => {
-                    self.debug_view.hitboxes = !self.debug_view.hitboxes;
-                    let key = on_off(
-                        self.debug_view.hitboxes,
-                        "debug.show_hitboxes.on",
-                        "debug.show_hitboxes.off",
-                    );
+                    let on = self
+                        .debug
+                        .entries_mut()
+                        .toggle_status(Entry::EntityHitboxes);
+                    let key = on_off(on, "debug.show_hitboxes.on", "debug.show_hitboxes.off");
                     feedback(self, key);
                 }
                 "c" => {
@@ -163,13 +183,36 @@ impl InWorld {
                 }
                 "d" => self.chat.clear_messages(),
                 "g" => {
-                    self.debug_view.chunk_borders = !self.debug_view.chunk_borders;
+                    let on = self.debug.entries_mut().toggle_status(Entry::ChunkBorders);
                     let key = on_off(
-                        self.debug_view.chunk_borders,
+                        on,
                         "debug.chunk_boundaries.on",
                         "debug.chunk_boundaries.off",
                     );
                     feedback(self, key);
+                }
+                // `keyDebugFocusPause`.
+                "p" => {
+                    let on = !ui.config.pause_on_lost_focus;
+                    action = ScreenAction::ChangeConfig(Box::new(move |config| {
+                        config.pause_on_lost_focus = on;
+                    }));
+                    feedback(
+                        self,
+                        on_off(on, "debug.pause_focus.on", "debug.pause_focus.off"),
+                    );
+                }
+                // `keyDebugReloadResourcePacks`.
+                "t" => {
+                    feedback(self, "debug.reload_resourcepacks.message");
+                    action = ScreenAction::ReloadResources;
+                }
+                // `keyDebugDumpVersion`: `VersionCommand.dumpVersion`.
+                "v" => {
+                    feedback(self, "debug.version.header");
+                    for line in version_lines(ui.lang) {
+                        self.show_client_message(StyledText::plain(&line), ui.font);
+                    }
                 }
                 "h" => {
                     let on = !item_slot::advanced_tooltips();

@@ -312,7 +312,17 @@ pub struct DebugFrame {
     pub clouds: crate::world::clouds::CloudStatus,
     pub biome_blend: u8,
     pub framerate_limit: Option<u32>,
-    pub vsync: bool,
+    /// The frame's time, for the GPU's share of it.
+    pub frame_seconds: f32,
+    /// The window's logical size and pixel density.
+    pub window: (u32, u32, f64),
+    /// `VideoMode.refreshRateLabel` of the window's monitor.
+    pub refresh_rate: Option<String>,
+    /// A screen is open, which shows F3 over a hidden HUD.
+    pub screen_open: bool,
+    /// The GUI's scale, and the one F3 is drawn at (`debugGuiScale`).
+    pub gui_scale: u32,
+    pub debug_scale: u32,
 }
 
 /// What the server's packets this frame mean for the screens.
@@ -343,7 +353,8 @@ impl InWorld {
     /// `game_dir` holds `hotbar.nbt` and `command_history.txt`.
     pub fn enter(mut joined: Joined, game_dir: &Path) -> Self {
         let (debug_view, debug_visible) = debug_view::DebugView::load(game_dir);
-        let mut debug = DebugOverlay::default();
+        let mut debug =
+            DebugOverlay::new(crate::gui::hud::debug_entries::DebugEntries::load(game_dir));
         debug.set_visible(debug_visible);
         let mut player = PlayerState::new(DVec3::new(8.0, 80.0, 8.0));
         let chat_types = std::mem::take(&mut joined.session.info.chat_types);
@@ -532,9 +543,16 @@ impl InWorld {
         self.sound_channels = used;
     }
 
-    /// Whether F3 shows the optional entries, which ask for more to show.
+    /// Whether any F3 entry shows now.
+    pub fn debug_shown(&self) -> bool {
+        self.debug.entries().shows_anything()
+    }
+
+    /// Whether F3 shows the sound cache, which asks the engine for it.
     pub fn debug_extended(&self) -> bool {
-        self.debug.visible() && self.debug_view.extended
+        self.debug
+            .entries()
+            .is_enabled(crate::gui::hud::debug_entries::Entry::SoundCache)
     }
 
     /// `AudioEngine::cache_stats`, for F3.
@@ -543,7 +561,7 @@ impl InWorld {
     }
 
     pub fn sample_subsystems(&mut self, audio: &crate::audio::stats::AudioStats) {
-        if !self.debug.visible() {
+        if !self.debug.entries().shows_anything() {
             self.subsystems.reset();
             return;
         }

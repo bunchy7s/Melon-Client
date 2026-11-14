@@ -2,6 +2,7 @@
 
 pub mod chat;
 pub mod controls;
+pub mod debug;
 pub mod keybinds;
 pub mod language;
 pub mod melon;

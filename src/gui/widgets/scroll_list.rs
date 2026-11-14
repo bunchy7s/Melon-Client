@@ -205,6 +205,16 @@ impl ScrollList {
     }
 
     /// Row `index`'s area. `repositionEntries` lays entries out from
+    /// The top of the list's band.
+    pub fn top(&self) -> f32 {
+        self.top
+    }
+
+    /// The bottom of the list's band.
+    pub fn bottom(&self) -> f32 {
+        self.bottom
+    }
+
     pub fn row_rect(&self, index: usize) -> Rect {
         let y = self.top + 2.0 - self.scroll.trunc() + index as f32 * self.row_h;
         Rect::new(self.row_left(), y, self.row_w, self.row_h)

@@ -20,26 +20,20 @@ const MAJOR: u32 = 0xFF40_40FF;
 const CELL: u32 = 0xFF00_9B9B;
 const YELLOW: u32 = 0xFFFF_FF00;
 
-/// What F3 and its combos have switched on, kept between runs
+/// Whether F3 was open and F3 + H on, kept between runs; which entries
+/// show is `debug-profile.json`'s ([`crate::gui::hud::debug_entries`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DebugSettings {
     pub overlay: bool,
-    pub hitboxes: bool,
-    pub chunk_borders: bool,
-    pub extended: bool,
     pub advanced_tooltips: bool,
 }
 
 const FILE: &str = "debug_settings.json";
 
-/// Which debug renderers are on, and their mesh.
+/// The debug renderers' mesh.
 #[derive(Default)]
 pub struct DebugView {
-    pub hitboxes: bool,
-    pub chunk_borders: bool,
-    /// F3+F6: the optional F3 entries (what is looked at, light, biome...).
-    pub extended: bool,
     /// The GUI scale, which sizes the 3D crosshair (`guiScale`).
     pub gui_scale: f32,
     mesh: GizmoMesh,
@@ -54,9 +48,6 @@ impl DebugView {
         crate::gui::hud::item_slot::set_advanced_tooltips(saved.advanced_tooltips);
         (
             Self {
-                hitboxes: saved.hitboxes,
-                chunk_borders: saved.chunk_borders,
-                extended: saved.extended,
                 path: Some(path),
                 ..Self::default()
             },
@@ -69,18 +60,11 @@ impl DebugView {
         let Some(path) = &self.path else { return };
         let settings = DebugSettings {
             overlay,
-            hitboxes: self.hitboxes,
-            chunk_borders: self.chunk_borders,
-            extended: self.extended,
             advanced_tooltips: crate::gui::hud::item_slot::advanced_tooltips(),
         };
         if let Err(e) = crate::json_file::save(path, &settings) {
             eprintln!("F3-Einstellungen nicht gespeichert: {e}");
         }
-    }
-
-    pub fn any(&self) -> bool {
-        self.hitboxes || self.chunk_borders
     }
 
     pub fn clear(&mut self, renderer: &mut Renderer) {
@@ -113,11 +97,16 @@ impl InWorld {
         partial: f32,
         out: &mut Vec<EntityDraw>,
     ) {
-        let crosshair = self.debug.visible()
+        use crate::gui::hud::debug_entries::Entry;
+        let entries = self.debug.entries();
+        let crosshair = entries.is_enabled(Entry::ThreeDimensionalCrosshair)
             && !self.hud_hidden
             && self.camera_mode == CameraMode::FirstPerson
             && !self.game_mode.current.is_spectator();
-        if !self.debug_view.any() && !crosshair {
+        let hitboxes = entries.is_enabled(Entry::EntityHitboxes);
+        let chunk_borders = entries.is_enabled(Entry::ChunkBorders);
+        drop(entries);
+        if !hitboxes && !chunk_borders && !crosshair {
             self.debug_view.clear(renderer);
             return;
         }
@@ -125,10 +114,10 @@ impl InWorld {
         if crosshair {
             self.crosshair_gizmos(&mut gizmos, camera);
         }
-        if self.debug_view.hitboxes {
+        if hitboxes {
             self.hitbox_gizmos(&mut gizmos, visible, partial);
         }
-        if self.debug_view.chunk_borders {
+        if chunk_borders {
             self.chunk_border_gizmos(&mut gizmos);
         }
         let (width, height) = renderer.framebuffer_size();
@@ -330,13 +319,11 @@ mod tests {
     fn what_f3_switched_on_comes_back_next_run() {
         let dir = std::env::temp_dir().join(format!("melon-debug-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let (mut view, overlay) = DebugView::load(&dir);
-        assert!(!overlay && !view.hitboxes && !view.chunk_borders && !view.extended);
-        view.hitboxes = true;
-        view.extended = true;
+        let (view, overlay) = DebugView::load(&dir);
+        assert!(!overlay);
         view.save(true);
-        let (again, overlay) = DebugView::load(&dir);
-        assert!(overlay && again.hitboxes && again.extended && !again.chunk_borders);
+        let (_, overlay) = DebugView::load(&dir);
+        assert!(overlay);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

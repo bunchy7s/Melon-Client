@@ -58,7 +58,11 @@ impl InWorld {
                     main_arm: config.main_hand,
                     target_ready: self.attack_target_ready(),
                 },
-                self.camera_mode == CameraMode::FirstPerson && !self.debug.visible(),
+                // `Hud.extractCrosshair`: the 3D one stands in for it.
+                self.camera_mode == CameraMode::FirstPerson
+                    && !self.debug.entries().is_enabled(
+                        crate::gui::hud::debug_entries::Entry::ThreeDimensionalCrosshair,
+                    ),
                 size,
             );
             if self.game_mode.current.is_spectator() {
@@ -202,14 +206,22 @@ impl InWorld {
         frame: DebugFrame,
         width: f32,
     ) {
-        if !self.debug.visible() {
+        if !self.debug.shown(self.hud_hidden, frame.screen_open) {
             return;
         }
+        let entries = self.debug.entries();
+        // `getGpuUtilization`: the GPU's time over the frame's.
+        let gpu_ms = renderer.gpu_last_frame().0;
+        let gpu_utilization = (gpu_ms > 0.0 && frame.frame_seconds > 0.0)
+            .then(|| f64::from(gpu_ms) / (f64::from(frame.frame_seconds) * 1000.0) * 100.0);
         let context = crate::gui::hud::debug::DebugContext {
+            entries: &entries,
             fps: self.fps.fps,
             framerate_limit: frame.framerate_limit,
-            vsync: frame.vsync,
             present_mode: renderer.present_mode_name(),
+            refresh_rate: frame.refresh_rate.clone(),
+            window: frame.window,
+            gpu_utilization,
             position: self.player.pos(),
             yaw_degrees: self.player.yaw(),
             pitch_degrees: self.player.pitch(),
@@ -226,6 +238,15 @@ impl InWorld {
             day_time: self.clocks.environment(0.0).day_time,
             extras: self.debug_extras(frame.clouds, frame.biome_blend),
         };
+        // `DebugScreenOverlay`'s own scale: only ever smaller than the GUI's.
+        let (gui_scale, debug_scale) = (frame.gui_scale, frame.debug_scale);
+        let smaller = debug_scale > 0 && debug_scale < gui_scale;
+        let width = if smaller {
+            (renderer.framebuffer_size().0 / debug_scale) as f32
+        } else {
+            width
+        };
+        let start = draw_list.vertices_len();
         self.debug.draw(
             draw_list,
             &gui.font,
@@ -234,6 +255,9 @@ impl InWorld {
             &context,
             width,
         );
+        if smaller {
+            draw_list.scale_since(start, debug_scale as f32 / gui_scale as f32);
+        }
     }
 }
 

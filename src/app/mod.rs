@@ -329,6 +329,7 @@ impl RunningState {
                     self.reload_resources();
                 }
             }
+            ScreenAction::ReloadResources => self.reload_resources(),
             ScreenAction::AnswerServerPacks(accept) => {
                 self.close_top_screen();
                 self.answer_server_packs(accept);
@@ -440,7 +441,7 @@ impl RunningState {
         self.screens.push(Box::new(screen), &ctx);
     }
 
-    fn open_pause_menu(&mut self) {
+    pub(super) fn open_pause_menu(&mut self) {
         let local_server = self.world.as_ref().is_some_and(InWorld::is_integrated);
         let scale = self.scale();
         let pause = PauseScreen::new(local_server);

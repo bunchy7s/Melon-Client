@@ -139,12 +139,36 @@ impl BlockHit {
 
 /// `BlockGetter.clip` with `ClipContext.Block.OUTLINE` and no fluid clip.
 pub fn clip_blocks(level: &Level, start: DVec3, end: DVec3) -> Option<BlockHit> {
-    clip_blocks_where(level, start, end, |_| true)
+    clip_blocks_where(level, start, end, |_| true, false)
+}
+
+/// `BlockGetter.clip` with `ClipContext.Fluid.ANY`: a fluid's own shape
+/// (`FluidState.getShape`) stops the ray as well as the block's outline.
+pub fn clip_blocks_and_fluids(level: &Level, start: DVec3, end: DVec3) -> Option<BlockHit> {
+    clip_blocks_where(level, start, end, |_| true, true)
+}
+
+/// `FluidState.getShape`: as high as the fluid, a whole block with the
+/// same fluid above.
+fn fluid_shape(level: &Level, (x, y, z): (i32, i32, i32), id: u16) -> Option<Aabb> {
+    let fluid = crate::world::fluid::fluid_of(id)?;
+    let above = level.block_state(x, y + 1, z).unwrap_or(0);
+    let same_above = crate::world::fluid::fluid_of(above).is_some_and(|f| f.kind == fluid.kind);
+    let height = if same_above {
+        1.0
+    } else {
+        f64::from(fluid.own_height())
+    };
+    let origin = DVec3::new(f64::from(x), f64::from(y), f64::from(z));
+    Some(Aabb {
+        min: origin,
+        max: origin + DVec3::new(1.0, height, 1.0),
+    })
 }
 
 /// Sight for name tags. Vanilla writes framebuffer depth from drawn
 pub fn clip_blocks_for_nametag(level: &Level, start: DVec3, end: DVec3) -> Option<BlockHit> {
-    clip_blocks_where(level, start, end, occludes_name_tag)
+    clip_blocks_where(level, start, end, occludes_name_tag, false)
 }
 
 fn occludes_name_tag(id: u16) -> bool {
@@ -161,6 +185,7 @@ fn clip_blocks_where(
     start: DVec3,
     end: DVec3,
     keep: impl Fn(u16) -> bool,
+    fluids: bool,
 ) -> Option<BlockHit> {
     let delta = end - start;
     let length = delta.length();
@@ -189,7 +214,10 @@ fn clip_blocks_where(
         let mut best: Option<(f64, BlockHit)> = None;
         let id = level.block_state(cell.x, cell.y, cell.z).unwrap_or(0);
         if keep(id) {
-            for aabb in outline_shapes(level, (cell.x, cell.y, cell.z)) {
+            let fluid = fluids
+                .then(|| fluid_shape(level, (cell.x, cell.y, cell.z), id))
+                .flatten();
+            for aabb in outline_shapes(level, (cell.x, cell.y, cell.z)).chain(fluid) {
                 if let Some((hit_t, face, inside)) = clip_aabb(&aabb, start, dir, length)
                     && best.is_none_or(|(best_t, _)| hit_t < best_t)
                 {
