@@ -5,7 +5,7 @@ use serde::Deserialize;
 const UA: &str = concat!(
     "Melon/",
     env!("CARGO_PKG_VERSION"),
-    " (https://github.com/zinedinp/Melon)"
+    " (https://github.com/zinedinp/Melon-Client)"
 );
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 const WIKI_HASHES: &str = "https://minecraft.wiki/w/Module:Downloadlinks/hashes?action=raw";

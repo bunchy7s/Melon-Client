@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 const UA: &str = concat!(
     "Melon/",
     env!("CARGO_PKG_VERSION"),
-    " (https://github.com/zinedinp/Melon)"
+    " (https://github.com/zinedinp/Melon-Client)"
 );
 const MANIFEST: &str = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 const CDN: &str = "https://resources.download.minecraft.net";
