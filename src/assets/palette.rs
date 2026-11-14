@@ -55,10 +55,16 @@ fn palette_image(assets_root: &Path, id: &str) -> Option<RgbaImage> {
 
 /// Recolor `base` (`textures/<id>.png`) with `palette` (`minecraft:trim/gold`).
 pub fn recolor(assets_root: &Path, base_id: &str, palette_id: &str) -> Option<RgbaImage> {
+    permute(assets_root, base_id, "trim_base", palette_id)
+}
+
+/// `PalettedPermutations`: `base` (`textures/<id>.png`) with the colours of
+/// palette `key` swapped for those of `palette` (both `textures/palettes/`).
+pub fn permute(assets_root: &Path, base_id: &str, key: &str, palette: &str) -> Option<RgbaImage> {
     let (png, _) = crate::assets::texture_with_meta(assets_root, base_id)?;
     let base = crate::assets::decode_png(&png)?;
-    let key = palette_image(assets_root, "trim_base")?;
-    let target = palette_image(assets_root, palette_id)?;
+    let key = palette_image(assets_root, key)?;
+    let target = palette_image(assets_root, palette)?;
     Some(apply(&base, &mapping(&key, &target)))
 }
 

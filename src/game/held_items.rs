@@ -24,7 +24,7 @@ pub struct Sheets {
     pub items: TextureId,
     /// The item atlas's sprites and whether each is partly see-through, by
     /// `namespace:path`.
-    pub item_sprites: HashMap<String, ([f32; 4], bool)>,
+    pub item_sprites: Arc<HashMap<String, ([f32; 4], bool)>>,
     pub blocks: TextureId,
     pub models: Arc<BlockModels>,
 }
@@ -170,7 +170,10 @@ impl HeldItems {
 
     /// The meshes and textures of a prepared block model, centred on the
     pub fn block(&self, model: &str) -> impl Iterator<Item = (MeshId, TextureId, bool)> + '_ {
-        draws(self.blocks.get(model).and_then(Option::as_ref), HandPose::Ground)
+        draws(
+            self.blocks.get(model).and_then(Option::as_ref),
+            HandPose::Ground,
+        )
     }
 
     /// Moves the animated items' textures to the frame showing at `tick`

@@ -197,7 +197,11 @@ pub struct SpriteSheet {
 /// size; custom item packs use tall ones).
 pub fn pack_sprites(assets_root: &Path, ids: Vec<String>, max_side: u32) -> SpriteSheet {
     let loaded = atlas::parallel_map(ids, |id| {
-        let (png, meta) = crate::assets::texture_with_meta(assets_root, &id)?;
+        let Some((png, meta)) = crate::assets::texture_with_meta(assets_root, &id) else {
+            // A paletted permutation: no file of its own.
+            let image = crate::assets::texture_image(assets_root, &id)?;
+            return Some((id, Some(image)));
+        };
         let animated = meta.as_ref().is_some_and(|m| m.get("animation").is_some());
         // An animated one is loaded with its frames by the packer.
         let image = if animated {

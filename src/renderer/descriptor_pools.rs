@@ -99,7 +99,11 @@ impl DescriptorPools {
     pub fn needs_compaction(&self) -> bool {
         let inner = self.inner.borrow();
         let target = self.target_capacity(inner.owner.len());
-        inner.pools.len() > 1 || inner.pools.first().is_some_and(|p| p.capacity >= 4 * target)
+        inner.pools.len() > 1
+            || inner
+                .pools
+                .first()
+                .is_some_and(|p| p.capacity >= 4 * target)
     }
 
     /// The smallest `base · 2^k` holding `live` sets with a quarter to spare.
@@ -182,7 +186,12 @@ impl DescriptorPools {
     /// The pools' sizes, oldest first.
     #[cfg(test)]
     pub fn capacities(&self) -> Vec<u32> {
-        self.inner.borrow().pools.iter().map(|p| p.capacity).collect()
+        self.inner
+            .borrow()
+            .pools
+            .iter()
+            .map(|p| p.capacity)
+            .collect()
     }
 
     pub unsafe fn destroy(&self, device: &ash::Device) {

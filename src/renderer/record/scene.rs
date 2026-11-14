@@ -172,8 +172,8 @@ impl Renderer {
                         .iter()
                         .filter(|e| e.layer == layer)
                         .map(|e| {
-                            let sorted = layer == RenderLayer::Entities
-                                && e.blend == Blending::Translucent;
+                            let sorted =
+                                layer == RenderLayer::Entities && e.blend == Blending::Translucent;
                             let nearness = if sorted {
                                 let at = world.relative_to(e.model, e.origin).w_axis.truncate();
                                 -at.distance_squared(eye)

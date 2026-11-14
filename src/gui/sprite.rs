@@ -73,6 +73,9 @@ pub struct GuiSprite {
     columns: u32,
     /// `(frame, ticks)` in play order; empty for a still sprite.
     schedule: &'static [(u32, u32)],
+    /// The part of the texture the sprite is, `[u, v, width, height]`: all
+    /// of it, or one slot of a shared sheet.
+    region: [f32; 4],
 }
 
 impl From<TextureId> for GuiSprite {
@@ -84,6 +87,7 @@ impl From<TextureId> for GuiSprite {
             frame: [1.0, 1.0],
             columns: 1,
             schedule: &[],
+            region: [0.0, 0.0, 1.0, 1.0],
         }
     }
 }
@@ -124,6 +128,25 @@ impl GuiSprite {
         sprite.columns = columns;
         sprite.schedule = intern(schedule.iter().map(|&(f, t)| (f as u32, t)).collect());
         sprite
+    }
+
+    /// The sprite as `region` (`[u0, v0, u1, v1]`) of its texture: its
+    /// frames and scaling then cover that part only.
+    pub fn within(mut self, [u0, v0, u1, v1]: [f32; 4]) -> Self {
+        self.region = [u0, v0, u1 - u0, v1 - v0];
+        self
+    }
+
+    /// The frame showing now, as a [`Blit`] multiplied by `color`.
+    fn blit(&self, color: [f32; 4]) -> Blit {
+        let [ru, rv, rw, rh] = self.region;
+        let [ou, ov] = self.frame_origin();
+        Blit {
+            texture: self.texture,
+            origin: [ru + ou * rw, rv + ov * rh],
+            frame: [self.frame[0] * rw, self.frame[1] * rh],
+            color,
+        }
     }
 
     /// Whether it has more than one frame.
@@ -170,12 +193,7 @@ impl GuiSprite {
         if w <= 0.0 || h <= 0.0 {
             return;
         }
-        let blit = Blit {
-            texture: self.texture,
-            origin: self.frame_origin(),
-            frame: self.frame,
-            color,
-        };
+        let blit = self.blit(color);
         match self.scaling {
             Scaling::Stretch => blit.part(list, [x, y, w, h], [0.0, 0.0, 1.0, 1.0]),
             Scaling::Tile { width, height } => {
@@ -206,12 +224,7 @@ impl GuiSprite {
         let [sw, sh] = sprite_size;
         let [tx, ty] = tex;
         if self.scaling == Scaling::Stretch {
-            let blit = Blit {
-                texture: self.texture,
-                origin: self.frame_origin(),
-                frame: self.frame,
-                color: [1.0; 4],
-            };
+            let blit = self.blit([1.0; 4]);
             let uv = [tx / sw, ty / sh, (tx + w) / sw, (ty + h) / sh];
             blit.part(list, [x, y, w, h], uv);
         } else {

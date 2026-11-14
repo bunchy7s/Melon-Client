@@ -479,7 +479,8 @@ fn bake_held(
         animation = animate_packed(&own, textures, &image);
         texture = Some(image);
     }
-    let mut groups: Vec<(bool, Sheet)> = places.values().map(|p| (p.translucent, p.sheet)).collect();
+    let mut groups: Vec<(bool, Sheet)> =
+        places.values().map(|p| (p.translucent, p.sheet)).collect();
     groups.sort();
     groups.dedup();
     let parts: Vec<HeldPart> = groups
@@ -1661,12 +1662,24 @@ mod tests {
             assert!((u0..=u1).contains(&u) && (v0..=v1).contains(&w), "{u} {w}");
         }
 
+        // Trim permutations are recoloured into the atlas, not per item.
+        let trim = &atlas.sprites["minecraft:trims/items/chestplate_trim_gold"];
+        let [u0, v0, u1, v1] = trim.0;
+        assert!(u1 > u0 && v1 > v0);
+        let gold = crate::assets::texture_image(root, "minecraft:trims/items/chestplate_trim_gold")
+            .expect("gold chestplate trim");
+        assert!(gold.pixels().any(|p| p[3] == 255));
+
         let stone = held("stone");
         assert_eq!(sheets(&stone), [Sheet::Blocks]);
         assert!(stone.texture.is_none());
 
         let banner = held("red_banner");
-        assert!(sheets(&banner).contains(&Sheet::Own), "{:?}", sheets(&banner));
+        assert!(
+            sheets(&banner).contains(&Sheet::Own),
+            "{:?}",
+            sheets(&banner)
+        );
         assert!(banner.texture.is_some());
     }
 
@@ -1685,6 +1698,11 @@ mod tests {
         let held = item.held(root, &|_| None).expect("a sword can be held");
         assert!(held.texture.is_some(), "no atlas: its own texture");
         assert_eq!(held.parts.len(), 1, "one texture, opaque");
-        assert!(held.parts[0].meshes.iter().all(|mesh| mesh.len() == quads.len() * 4));
+        assert!(
+            held.parts[0]
+                .meshes
+                .iter()
+                .all(|mesh| mesh.len() == quads.len() * 4)
+        );
     }
 }

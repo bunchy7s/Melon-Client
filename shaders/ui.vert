@@ -10,6 +10,10 @@ layout(location = 2) in vec4 in_color;
 
 layout(location = 0) out vec2 frag_uv;
 layout(location = 1) out vec4 frag_color;
+// Where in its quad the vertex is, 0..1 (every quad is four vertices: top
+// left, bottom left, bottom right, top right). The glint scrolls over the
+// icon by it, whatever part of an atlas the icon samples.
+layout(location = 2) out vec2 frag_corner;
 
 layout(push_constant) uniform PushConstants {
     layout(offset = 0) vec2 viewport_size;
@@ -20,4 +24,6 @@ void main() {
     gl_Position = vec4(ndc, 0.0, 1.0);
     frag_uv = in_uv;
     frag_color = in_color;
+    const vec2 CORNERS[4] = vec2[](vec2(0.0, 0.0), vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0));
+    frag_corner = CORNERS[gl_VertexIndex % 4];
 }

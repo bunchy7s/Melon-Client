@@ -7,6 +7,7 @@
 
 layout(location = 0) in vec2 frag_uv;
 layout(location = 1) in vec4 frag_color;
+layout(location = 2) in vec2 frag_corner;
 
 layout(location = 0) out vec4 out_color;
 
@@ -29,8 +30,9 @@ void main() {
     if (color.a < 0.1) {
         discard;
     }
-    // `ITEM_SPRITE_SCALE`: vanilla's 8.0 is for atlas UVs; GUI icons are 0..1.
-    vec4 glint_color = g.glint_alpha * texture(glint_sampler, glint_uv(frag_uv, 8.0 * 16.0 / 1024.0, g.camera_offset.x));
+    // `ITEM_SPRITE_SCALE`: vanilla's 8.0 is for atlas UVs, a 16-texel sprite
+    // of a 1024 atlas; here over the icon's own quad, 0..1.
+    vec4 glint_color = g.glint_alpha * texture(glint_sampler, glint_uv(frag_corner, 8.0 * 16.0 / 1024.0, g.camera_offset.x));
     color.rgb += glint_color.rgb * glint_color.rgb;
     out_color = color;
 }

@@ -5,6 +5,7 @@ pub mod boss;
 pub mod debug;
 pub mod debug_entries;
 pub mod effects;
+pub mod icon_atlas;
 pub mod item_icon;
 pub mod item_slot;
 pub mod player_tab;

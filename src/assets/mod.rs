@@ -1,5 +1,6 @@
 //! The vanilla `assets/` tree: finding it, resolving texture identifiers
 
+pub mod atlas_sources;
 pub mod json_model;
 pub mod packs;
 pub mod palette;
@@ -77,9 +78,14 @@ pub fn texture_with_meta(
     assets_root: &Path,
     identifier: &str,
 ) -> Option<(Vec<u8>, Option<serde_json::Value>)> {
-    let (namespace, path) = split_id(identifier);
-    let path = format!("textures/{path}.png");
     let stack = packs::active();
+    let file = match atlas_sources::resolve(assets_root, &stack, identifier) {
+        Some(atlas_sources::SpriteFile::Texture(file)) => file,
+        Some(atlas_sources::SpriteFile::Paletted { .. }) => return None,
+        None => identifier.to_owned(),
+    };
+    let (namespace, path) = split_id(&file);
+    let path = format!("textures/{path}.png");
     let (bytes, layer) = stack.find(assets_root, namespace, &path)?;
     let meta = stack
         .find_metadata(assets_root, namespace, &path, layer)
@@ -91,6 +97,16 @@ pub fn texture_with_meta(
 pub fn texture_image(assets_root: &Path, identifier: &str) -> Option<image::RgbaImage> {
     texture_with_meta(assets_root, identifier)
         .and_then(|(bytes, _)| decode_png(&bytes))
+        .or_else(
+            || match atlas_sources::resolve(assets_root, &packs::active(), identifier)? {
+                atlas_sources::SpriteFile::Paletted {
+                    texture,
+                    key,
+                    palette,
+                } => palette::permute(assets_root, &texture, &key, &palette),
+                atlas_sources::SpriteFile::Texture(_) => None,
+            },
+        )
         .or_else(|| palette::resolve(assets_root, identifier))
 }
 

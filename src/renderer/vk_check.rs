@@ -536,7 +536,10 @@ fn texture_pools_grow_and_compact() {
         let after: std::collections::HashSet<vk::DescriptorSet> =
             textures.iter().map(|t| t.descriptor_set).collect();
         assert_eq!(after.len(), textures.len(), "every texture its own set");
-        assert!(before.iter().all(|old| !after.contains(old)), "every set moved");
+        assert!(
+            before.iter().all(|old| !after.contains(old)),
+            "every set moved"
+        );
 
         // Most textures gone: the pool shrinks to fit the rest.
         for tex in textures.drain(3..) {

@@ -196,9 +196,14 @@ impl WorldResources {
             renderer.max_texture_side(),
         );
         let item_atlas = renderer.load_texture(&items.image)?;
+        let item_sprites = std::sync::Arc::new(items.sprites);
+        let item_sheet = crate::gui::hud::item_icon::ItemSheet {
+            texture: item_atlas,
+            sprites: item_sprites.clone(),
+        };
         let sheets = super::held_items::Sheets {
             items: item_atlas,
-            item_sprites: items.sprites,
+            item_sprites,
             blocks: block_atlas,
             models: models.clone(),
         };
@@ -222,7 +227,7 @@ impl WorldResources {
             container: ContainerTextures::load(renderer, assets)?,
             spectator: SpectatorTextures::load(renderer, assets)?,
             tab: crate::gui::hud::player_tab::TabTextures::load(renderer, assets)?,
-            icons: ItemIcons::new(assets.root()),
+            icons: ItemIcons::new(assets.root(), item_sheet, renderer.max_texture_side()),
             held: HeldItems::new(assets.root(), sheets),
             blocks: Default::default(),
             sun: assets.texture(renderer, "minecraft:environment/celestial/sun.png")?,

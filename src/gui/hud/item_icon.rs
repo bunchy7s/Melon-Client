@@ -2,15 +2,18 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use glam::{Mat3, Vec2, Vec3};
 use image::{Rgba, RgbaImage};
 use pumpkin_data::item_stack::ItemStack;
 
 use crate::assets::json_model::{Display, TextureCache};
+use crate::gui::hud::icon_atlas::{IconAtlas, Slot};
 use crate::gui::sprite::GuiSprite;
 use crate::math::angle::Rotation;
-use crate::renderer::Renderer;
+use crate::renderer::quad::DrawList;
+use crate::renderer::{Renderer, TextureId};
 use crate::world::block_entity::models::SkullType;
 use crate::world::head_profile::HeadProfile;
 use crate::world::item_model::{self, Count, ItemKey, ItemModel, ItemQuad};
@@ -24,31 +27,83 @@ const DEFAULT_BLOCK_GUI: Display = Display {
     translation: Vec3::ZERO,
     scale: Vec3::splat(0.625),
 };
-/// Baked icons by item and tint, uploaded on first use and kept.
+/// The item atlas the flat icons are drawn from: its texture and its
+/// sprites (`[u0, v0, u1, v1]` and whether partly see-through) by
+/// `namespace:path`.
+#[derive(Clone)]
+pub struct ItemSheet {
+    pub texture: TextureId,
+    pub sprites: Arc<HashMap<String, ([f32; 4], bool)>>,
+}
+
+/// One item's icon, ready to draw.
+pub struct Icon {
+    look: Look,
+    home: Home,
+}
+
+enum Look {
+    /// A flat item's layers in the item atlas, bottom first, each with its
+    /// tint (a potion's liquid over its bottle).
+    Layers(TextureId, Vec<([f32; 4], [f32; 4])>),
+    /// A baked image.
+    Sprite(GuiSprite),
+}
+
+/// What an icon's pixels take up, to give back when it goes.
+enum Home {
+    /// Only sprites of the item atlas, which stays.
+    Sheet,
+    Atlas(Slot),
+    /// A texture of its own: too big for an atlas page.
+    Own(TextureId),
+}
+
+impl Icon {
+    /// Over `x, y, w, h`.
+    pub fn draw(&self, list: &mut DrawList, x: f32, y: f32, w: f32, h: f32) {
+        match &self.look {
+            Look::Sprite(sprite) => sprite.draw(list, x, y, w, h),
+            Look::Layers(texture, layers) => {
+                for &(uv, color) in layers {
+                    list.push_rect(*texture, x, y, w, h, uv, color);
+                }
+            }
+        }
+    }
+}
+
+/// Icons by item and tint, made on first use and kept.
 pub struct ItemIcons {
     assets_root: PathBuf,
-    icons: HashMap<ItemKey, Option<GuiSprite>>,
-    /// Player heads with a profile, by [`HeadProfile::skin_key`]: their
-    heads: HashMap<uuid::Uuid, (bool, Option<GuiSprite>)>,
+    sheet: ItemSheet,
+    atlas: IconAtlas,
+    icons: HashMap<ItemKey, Option<Icon>>,
+    /// Player heads with a profile, by [`HeadProfile::skin_key`]: whether
+    /// the skin was the owner's own, and the icon.
+    heads: HashMap<uuid::Uuid, (bool, Option<Icon>)>,
 }
 
 impl ItemIcons {
-    pub fn new(assets_root: &Path) -> Self {
+    pub fn new(assets_root: &Path, sheet: ItemSheet, max_texture_side: u32) -> Self {
         Self {
             assets_root: assets_root.to_path_buf(),
+            sheet,
+            atlas: IconAtlas::new(max_texture_side),
             icons: HashMap::new(),
             heads: HashMap::new(),
         }
     }
 
-    /// Makes sure `stack`'s icon exists, baking it on first sight. Whether
+    /// Makes sure `stack`'s icon exists, making it on first sight. Whether
+    /// it had to.
     pub fn prepare(&mut self, renderer: &mut Renderer, stack: &ItemStack) -> bool {
         let Some((key, name)) = self.missing(stack) else {
             return false;
         };
-        let sprite = bake_animated(&self.assets_root, name, Some(&key), None)
-            .and_then(|icon| upload(renderer, name, icon));
-        self.icons.insert(key, sprite);
+        let made = make(&self.assets_root, name, Some(&key), None, &self.sheet);
+        let icon = made.and_then(|made| self.upload(renderer, name, made));
+        self.icons.insert(key, icon);
         true
     }
 
@@ -61,7 +116,8 @@ impl ItemIcons {
         }
     }
 
-    /// CPU-bakes a parallel batch of missing icons from `stacks`, then
+    /// Makes a parallel batch of missing icons from `stacks` on the CPU,
+    /// then uploads them.
     pub fn prepare_batch(
         &mut self,
         renderer: &mut Renderer,
@@ -85,7 +141,8 @@ impl ItemIcons {
             return;
         }
         let root = &self.assets_root;
-        let baked: Vec<_> = std::thread::scope(|scope| {
+        let sheet = &self.sheet;
+        let made: Vec<_> = std::thread::scope(|scope| {
             let size = jobs.len().div_ceil(threads).max(1);
             let mut joins = Vec::new();
             for chunk in jobs.chunks(size) {
@@ -93,11 +150,7 @@ impl ItemIcons {
                     chunk
                         .iter()
                         .map(|(key, name)| {
-                            (
-                                key.clone(),
-                                *name,
-                                bake_animated(root, name, Some(key), None),
-                            )
+                            (key.clone(), *name, make(root, name, Some(key), None, sheet))
                         })
                         .collect::<Vec<_>>()
                 }));
@@ -107,13 +160,14 @@ impl ItemIcons {
                 .flat_map(|job| job.join().expect("item icon bake"))
                 .collect()
         });
-        for (key, name, icon) in baked {
-            let sprite = icon.and_then(|icon| upload(renderer, name, icon));
-            self.icons.insert(key, sprite);
+        for (key, name, made) in made {
+            let icon = made.and_then(|made| self.upload(renderer, name, made));
+            self.icons.insert(key, icon);
         }
     }
 
     /// The icon of a player head with `profile`, drawn with `skin` (its
+    /// owner's when `own_skin`, else a default one to replace later).
     pub fn prepare_head(
         &mut self,
         renderer: &mut Renderer,
@@ -129,58 +183,136 @@ impl ItemIcons {
             return false;
         }
         let name = stack.item.registry_key;
-        let sprite = bake_animated(&self.assets_root, name, None, Some(skin))
-            .and_then(|icon| upload(renderer, name, icon));
-        if let Some((_, Some(old))) = self.heads.insert(key, (own_skin, sprite)) {
-            renderer.free_texture(old.texture);
+        let made = make(&self.assets_root, name, None, Some(skin), &self.sheet);
+        let icon = made.and_then(|made| self.upload(renderer, name, made));
+        if let Some((_, Some(old))) = self.heads.insert(key, (own_skin, icon)) {
+            self.free(renderer, old);
         }
         true
     }
 
-    /// Frees every baked icon.
+    /// Frees every icon and the atlas pages.
     pub fn release(&mut self, renderer: &mut Renderer) {
         item_model::forget_count_cuts();
-        let heads = self.heads.drain().filter_map(|(_, (_, s))| s);
-        for sprite in self.icons.drain().filter_map(|(_, s)| s).chain(heads) {
-            renderer.free_texture(sprite.texture);
+        let heads: Vec<_> = self.heads.drain().filter_map(|(_, (_, i))| i).collect();
+        let icons: Vec<_> = self.icons.drain().filter_map(|(_, i)| i).collect();
+        for icon in icons.into_iter().chain(heads) {
+            self.free(renderer, icon);
         }
+        self.atlas.release(renderer);
     }
 
-    /// The icon, if [`Self::prepare`] managed to bake it; a player head's
-    pub fn get(&self, stack: &ItemStack) -> Option<GuiSprite> {
+    /// The icon, if [`Self::prepare`] managed to make it; a player head's
+    /// own when [`Self::prepare_head`] made one.
+    pub fn get(&self, stack: &ItemStack) -> Option<&Icon> {
         if let Some(profile) = HeadProfile::of_stack(stack)
-            && let Some(&(_, Some(sprite))) = self.heads.get(&profile.skin_key())
+            && let Some((_, Some(icon))) = self.heads.get(&profile.skin_key())
         {
-            return Some(sprite);
+            return Some(icon);
         }
         self.icons
             .get(&ItemKey::of(&self.assets_root, stack))
-            .copied()
-            .flatten()
+            .and_then(Option::as_ref)
+    }
+
+    fn free(&mut self, renderer: &mut Renderer, icon: Icon) {
+        match icon.home {
+            Home::Sheet => {}
+            Home::Atlas(slot) => self.atlas.free(slot),
+            Home::Own(texture) => renderer.free_texture(texture),
+        }
+    }
+
+    /// Puts a made icon on the GPU: layers need nothing, a baked image
+    /// takes an atlas slot (a texture of its own only when too big).
+    fn upload(&mut self, renderer: &mut Renderer, name: &str, made: Made) -> Option<Icon> {
+        let mut icon = match made {
+            Made::Layers(layers) => {
+                return Some(Icon {
+                    look: Look::Layers(self.sheet.texture, layers),
+                    home: Home::Sheet,
+                });
+            }
+            Made::Baked(icon) => icon,
+        };
+        let strip = icon.strip();
+        if let Some((texture, slot, uv)) = self.atlas.place(renderer, &strip) {
+            let sprite = GuiSprite::with_meta(texture, strip.dimensions(), &icon.meta()).within(uv);
+            return Some(Icon {
+                look: Look::Sprite(sprite),
+                home: Home::Atlas(slot),
+            });
+        }
+        if icon.frames[0].height() * icon.frames.len() as u32 > MAX_STRIP_HEIGHT {
+            icon.frames.truncate(1);
+            icon.schedule = vec![(0, 1)];
+        }
+        let strip = icon.strip();
+        let texture = renderer
+            .load_texture(&strip)
+            .map_err(|e| eprintln!("Item-Icon {name} nicht hochgeladen: {e:#}"))
+            .ok()?;
+        Some(Icon {
+            look: Look::Sprite(GuiSprite::with_meta(
+                texture,
+                strip.dimensions(),
+                &icon.meta(),
+            )),
+            home: Home::Own(texture),
+        })
     }
 }
 
-/// Uploads a baked icon as a sprite (a strip for an animated one).
-fn upload(renderer: &mut Renderer, name: &str, mut icon: BakedIcon) -> Option<GuiSprite> {
-    if icon.frames[0].height() * icon.frames.len() as u32 > MAX_STRIP_HEIGHT {
-        icon.frames.truncate(1);
-        icon.schedule = vec![(0, 1)];
+/// An icon made on the CPU, before upload.
+enum Made {
+    Layers(Vec<([f32; 4], [f32; 4])>),
+    Baked(BakedIcon),
+}
+
+/// The icon of item `name`: a flat item whose layers all are in the item
+/// atlas as its layers, anything else baked.
+fn make(
+    assets_root: &Path,
+    name: &str,
+    key: Option<&ItemKey>,
+    skin: Option<&RgbaImage>,
+    sheet: &ItemSheet,
+) -> Option<Made> {
+    let item = resolve(assets_root, name, key)?;
+    if skin.is_none()
+        && let Some(layers) = atlas_layers(&item, sheet)
+    {
+        return Some(Made::Layers(layers));
     }
-    let strip = icon.strip();
-    let texture = renderer
-        .load_texture(&strip)
-        .map_err(|e| eprintln!("Item-Icon {name} nicht hochgeladen: {e:#}"))
-        .ok()?;
-    Some(GuiSprite::with_meta(
-        texture,
-        strip.dimensions(),
-        &icon.meta(),
-    ))
+    bake_item(assets_root, &item, skin).map(Made::Baked)
+}
+
+/// A flat item's layers as item atlas sprites with their tints; `None`
+/// when it is not flat or some layer is not in the atlas.
+fn atlas_layers(item: &ItemModel, sheet: &ItemSheet) -> Option<Vec<([f32; 4], [f32; 4])>> {
+    if !item.is_flat() {
+        return None;
+    }
+    let layers = item.flat_layers();
+    if layers.is_empty() {
+        return None;
+    }
+    layers
+        .into_iter()
+        .map(|(texture, tint)| {
+            let &(uv, _) = sheet
+                .sprites
+                .get(&crate::world::item_atlas::canonical(&texture))?;
+            let [r, g, b] = tint.map(|c| f32::from(c) / 255.0);
+            Some((uv, [r, g, b, 1.0]))
+        })
+        .collect()
 }
 
 /// Bakes the icon for the item with registry key `key` (e.g. `stone`), its
 pub fn bake(assets_root: &Path, key: &str) -> Option<RgbaImage> {
-    bake_animated(assets_root, key, None, None).map(|mut icon| icon.frames.swap_remove(0))
+    let item = resolve(assets_root, key, None)?;
+    bake_item(assets_root, &item, None).map(|mut icon| icon.frames.swap_remove(0))
 }
 
 /// The tallest strip of frames an animated icon is uploaded as.
@@ -215,16 +347,17 @@ impl BakedIcon {
     }
 }
 
-/// [`bake`] with a potion colour for the `minecraft:potion` tints, baked
-fn bake_animated(
-    assets_root: &Path,
-    name: &str,
-    key: Option<&ItemKey>,
-    skin: Option<&RgbaImage>,
-) -> Option<BakedIcon> {
+/// The model of item `name` as `key` (its potion colour, count and
+/// variant) says, not in use.
+fn resolve(assets_root: &Path, name: &str, key: Option<&ItemKey>) -> Option<ItemModel> {
     let (potion, count) = key.map_or((None, Count::ONE), |k| (k.potion_color, k.count()));
     let variant = key.and_then(|k| k.variant.as_deref());
-    let item = ItemModel::resolve_in_use(assets_root, name, potion, (false, count), variant)?;
+    ItemModel::resolve_in_use(assets_root, name, potion, (false, count), variant)
+}
+
+/// `item` drawn on the CPU (with `skin` for a player head), every frame
+/// of its animated textures.
+fn bake_item(assets_root: &Path, item: &ItemModel, skin: Option<&RgbaImage>) -> Option<BakedIcon> {
     let mut textures = TextureCache::new(assets_root);
     if let Some(skin) = skin {
         textures.insert(SkullType::Player.texture(), skin.clone());
@@ -234,7 +367,7 @@ fn bake_animated(
     } else {
         item.quads(assets_root, &mut textures)
     };
-    let first = bake_frame(&item, &quads, &mut textures)?;
+    let first = bake_frame(item, &quads, &mut textures)?;
     let changes = texture_animation::frame_changes(textures.animations());
     let mut icon = BakedIcon {
         frames: vec![first],
@@ -249,7 +382,7 @@ fn bake_animated(
         let time = (end - start) as u32;
         if i > 0 {
             textures.set_tick(start);
-            let Some(image) = bake_frame(&item, &quads, &mut textures) else {
+            let Some(image) = bake_frame(item, &quads, &mut textures) else {
                 continue;
             };
             if *icon.frames.last().unwrap_or(&image) == image {
@@ -525,6 +658,47 @@ mod tests {
         ] {
             assert!(bake(&root, key).is_some(), "{key} has no icon");
         }
+    }
+
+    /// Flat items draw their item atlas layers, tinted: a potion is its
+    /// bottle plus the liquid in its colour, no image of its own. A block
+    /// is baked.
+    #[test]
+    fn flat_icons_are_atlas_layers_and_blocks_are_baked() {
+        let Some(root) = assets() else {
+            eprintln!("no extracted assets, skipping");
+            return;
+        };
+        let ids = crate::world::item_atlas::texture_ids(&root);
+        let packed = crate::world::block_models::pack_sprites(&root, ids, 4096);
+        let sheet = ItemSheet {
+            texture: TextureId(0),
+            sprites: Arc::new(packed.sprites),
+        };
+        let key = |potion: Option<[u8; 3]>| ItemKey {
+            item: 1,
+            variant: None,
+            potion_color: potion,
+            count: 1,
+            max_stack: 1,
+        };
+        let potion = make(&root, "potion", Some(&key(Some([255, 0, 0]))), None, &sheet);
+        let Some(Made::Layers(layers)) = potion else {
+            panic!("a potion is drawn from the atlas");
+        };
+        assert_eq!(layers.len(), 2, "overlay and bottle");
+        assert!(
+            layers.iter().any(|&(_, c)| c == [1.0, 0.0, 0.0, 1.0]),
+            "{layers:?}"
+        );
+        assert!(matches!(
+            make(&root, "diamond", None, None, &sheet),
+            Some(Made::Layers(l)) if l.len() == 1
+        ));
+        assert!(matches!(
+            make(&root, "stone", None, None, &sheet),
+            Some(Made::Baked(_))
+        ));
     }
 
     #[test]
