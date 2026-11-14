@@ -211,9 +211,9 @@ pub struct LevelMeshes {
     /// Built meshes over the upload budget, uploaded in order on the next
     waiting: VecDeque<FinishedMesh>,
     /// Draws with their distance, sorted before they go out: solid ones
-    solid: Vec<(u64, ChunkDraw)>,
-    cutout: Vec<(u64, ChunkDraw)>,
-    translucent: Vec<(u64, ChunkDraw)>,
+    solid: SortedDraws,
+    cutout: SortedDraws,
+    translucent: SortedDraws,
     /// Last frame's draw lists, handed back by [`Self::recycle`] to be
     spare_solid: Vec<ChunkDraw>,
     spare_cutout: Vec<ChunkDraw>,
@@ -228,9 +228,9 @@ impl Default for LevelMeshes {
             min_y: Height::OVERWORLD.min_y,
             columns: ChunkMap::default(),
             waiting: VecDeque::new(),
-            solid: Vec::new(),
-            cutout: Vec::new(),
-            translucent: Vec::new(),
+            solid: SortedDraws::default(),
+            cutout: SortedDraws::default(),
+            translucent: SortedDraws::default(),
             spare_solid: Vec::new(),
             spare_cutout: Vec::new(),
             spare_translucent: Vec::new(),
@@ -530,14 +530,14 @@ impl LevelMeshes {
                     let mut flush = |run: &mut Option<Range<u32>>| {
                         if let Some(range) = run.take() {
                             let mesh = TerrainMesh::Quads(layer.mesh);
-                            list.push((
-                                draw_key(distance, mesh),
+                            list.push(
+                                distance,
                                 ChunkDraw {
                                     mesh,
                                     origin: quads_origin,
                                     range,
                                 },
-                            ));
+                            );
                         }
                     };
                     for (group, range) in layer.groups.iter().enumerate() {
@@ -560,50 +560,42 @@ impl LevelMeshes {
                 }
                 if let Some((mesh, count)) = section.lava {
                     let mesh = TerrainMesh::Vertices(mesh);
-                    self.solid.push((
-                        draw_key(distance, mesh),
+                    self.solid.push(
+                        distance,
                         ChunkDraw {
                             mesh,
                             origin: vertices_origin,
                             range: 0..count,
                         },
-                    ));
+                    );
                 }
                 if let Some(translucent) = &section.translucent {
                     self.seen_translucent.push((cx, y as i32, cz));
                     let mesh = TerrainMesh::Vertices(translucent.mesh);
-                    self.translucent.push((
-                        draw_key(distance, mesh) ^ !0 << 32,
+                    self.translucent.push_far_first(
+                        distance,
                         ChunkDraw {
                             mesh,
                             origin: vertices_origin,
                             range: 0..translucent.faces.vertices.len() as u32,
                         },
-                    ));
+                    );
                 }
             }
         }
-        for (_, draw) in self
+        for draw in self
             .solid
+            .draws
             .iter()
-            .chain(&self.cutout)
-            .chain(&self.translucent)
+            .chain(&self.cutout.draws)
+            .chain(&self.translucent.draws)
         {
             visible.count.vertices += draw.vertex_count();
             visible.count.draws += 1;
         }
-        self.solid.sort_unstable_by_key(|&(key, _)| key);
-        visible
-            .solid
-            .extend(self.solid.drain(..).map(|(_, draw)| draw));
-        self.cutout.sort_unstable_by_key(|&(key, _)| key);
-        visible
-            .cutout
-            .extend(self.cutout.drain(..).map(|(_, draw)| draw));
-        self.translucent.sort_unstable_by_key(|&(key, _)| key);
-        visible
-            .translucent
-            .extend(self.translucent.drain(..).map(|(_, draw)| draw));
+        self.solid.drain_sorted_into(&mut visible.solid);
+        self.cutout.drain_sorted_into(&mut visible.cutout);
+        self.translucent.drain_sorted_into(&mut visible.translucent);
         visible
     }
 
@@ -620,13 +612,52 @@ impl LevelMeshes {
     }
 }
 
+/// One layer's draws in the order culling found them, and a sort key for
+/// each ([`draw_key`]). Sorting the 8-byte keys and then picking the draws
+/// moves a sixth of the bytes that sorting the draws themselves did.
+#[derive(Default)]
+struct SortedDraws {
+    draws: Vec<ChunkDraw>,
+    keys: Vec<u64>,
+}
+
+impl SortedDraws {
+    /// Adds `draw`, `distance` (squared) from the eye, near ones first.
+    fn push(&mut self, distance: f32, draw: ChunkDraw) {
+        self.keys.push(draw_key(distance, self.draws.len()));
+        self.draws.push(draw);
+    }
+
+    /// Adds `draw`, far ones first: translucent faces blend back to front.
+    fn push_far_first(&mut self, distance: f32, draw: ChunkDraw) {
+        self.keys
+            .push(draw_key(distance, self.draws.len()) ^ !0 << 32);
+        self.draws.push(draw);
+    }
+
+    fn clear(&mut self) {
+        self.draws.clear();
+        self.keys.clear();
+    }
+
+    /// Appends the draws to `out` in key order and empties `self`.
+    fn drain_sorted_into(&mut self, out: &mut Vec<ChunkDraw>) {
+        self.keys.sort_unstable();
+        out.reserve(self.keys.len());
+        out.extend(
+            self.keys
+                .iter()
+                .map(|&key| self.draws[(key & 0xFFFF_FFFF) as usize].clone()),
+        );
+        self.clear();
+    }
+}
+
 /// A draw's place in the near-to-far order, as one integer: the squared
-fn draw_key(distance: f32, mesh: TerrainMesh) -> u64 {
-    let mesh = match mesh {
-        TerrainMesh::Quads(id) => id.0 as u64 & 0x7FFF_FFFF,
-        TerrainMesh::Vertices(id) => 1 << 31 | id.0 as u64 & 0x7FFF_FFFF,
-    };
-    u64::from(distance.max(0.0).to_bits()) << 32 | mesh
+/// distance's bits on top (a non-negative float orders like its bits),
+/// then where the draw was found, which also tells the draw apart.
+fn draw_key(distance: f32, index: usize) -> u64 {
+    u64::from(distance.max(0.0).to_bits()) << 32 | index as u64 & 0xFFFF_FFFF
 }
 
 /// What the culling let through this frame, for F3's `C:` and `V:` lines.
@@ -770,7 +801,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn draw_keys_order_like_distance_then_mesh() {
+    fn draw_keys_order_like_distance_then_index() {
         let mut seed = 0x0bad_5eed_1234_5678u64;
         let mut random = move || {
             seed ^= seed << 13;
@@ -778,27 +809,46 @@ mod tests {
             seed ^= seed << 17;
             seed
         };
-        let draws: Vec<(f32, TerrainMesh)> = (0..400)
-            .map(|_| {
-                let distance = (random() % 50) as f32 * 37.25;
-                let id = (random() % 1000) as usize;
-                let mesh = if random() % 2 == 0 {
-                    TerrainMesh::Quads(QuadMeshId(id))
-                } else {
-                    TerrainMesh::Vertices(MeshId(id))
-                };
-                (distance, mesh)
-            })
+        let draws: Vec<(f32, usize)> = (0..400)
+            .map(|index| ((random() % 50) as f32 * 37.25, index))
             .collect();
         for a in &draws {
             for b in &draws {
                 let by_compare = a.0.total_cmp(&b.0).then(a.1.cmp(&b.1));
                 assert_eq!(draw_key(a.0, a.1).cmp(&draw_key(b.0, b.1)), by_compare);
                 let far_first = b.0.total_cmp(&a.0).then(a.1.cmp(&b.1));
-                let far = |d: &(f32, TerrainMesh)| draw_key(d.0, d.1) ^ !0 << 32;
+                let far = |d: &(f32, usize)| draw_key(d.0, d.1) ^ !0 << 32;
                 assert_eq!(far(a).cmp(&far(b)), far_first);
             }
         }
+    }
+
+    #[test]
+    fn sorted_draws_come_out_like_a_stable_sort_by_distance() {
+        let draw = |id: usize| ChunkDraw {
+            mesh: TerrainMesh::Quads(QuadMeshId(id)),
+            origin: IVec3::new(id as i32, 0, 0),
+            range: 0..id as u32,
+        };
+        let distances = [9.0, 1.0, 4.0, 1.0, 0.0, 9.0, 2.5];
+        let mut near = SortedDraws::default();
+        let mut far = SortedDraws::default();
+        for (id, &distance) in distances.iter().enumerate() {
+            near.push(distance, draw(id));
+            far.push_far_first(distance, draw(id));
+        }
+        let mut by_sort: Vec<(f32, usize)> = distances.iter().copied().zip(0..).collect();
+        by_sort.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut out = Vec::new();
+        near.drain_sorted_into(&mut out);
+        let expected: Vec<ChunkDraw> = by_sort.iter().map(|&(_, id)| draw(id)).collect();
+        assert_eq!(out, expected);
+        by_sort.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let mut out = Vec::new();
+        far.drain_sorted_into(&mut out);
+        let expected: Vec<ChunkDraw> = by_sort.iter().map(|&(_, id)| draw(id)).collect();
+        assert_eq!(out, expected);
+        assert!(near.draws.is_empty() && near.keys.is_empty());
     }
 
     /// A section at `pos` with two flat translucent quads, at heights

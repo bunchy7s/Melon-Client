@@ -304,6 +304,7 @@ impl WorldDraw {
 }
 
 /// A run of one chunk mesh - one or more neighbouring sections the culling
+#[derive(Clone, Debug, PartialEq)]
 pub struct ChunkDraw {
     pub mesh: TerrainMesh,
     /// Where the chunk-local mesh starts in the world, in blocks.
