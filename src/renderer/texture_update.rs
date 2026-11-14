@@ -22,10 +22,11 @@ pub unsafe fn prepare(
     mem_props: &vk::PhysicalDeviceMemoryProperties,
     updates: &[PendingUpdate],
 ) -> anyhow::Result<()> {
+    let total: u64 = updates.iter().map(|u| u.pixels.as_raw().len() as u64).sum();
+    staging.trim(device, total, 1 << 20);
     if updates.is_empty() {
         return Ok(());
     }
-    let total: u64 = updates.iter().map(|u| u.pixels.as_raw().len() as u64).sum();
     staging.ensure(device, mem_props, total, 64 * 1024)
 }
 

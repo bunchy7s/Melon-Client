@@ -8,6 +8,8 @@ use super::vk_util::{DEVICE_OR_HOST, create_buffer_in};
 
 /// Bytes per arena block. A mesh larger than that gets a block of its own
 const BLOCK_BYTES: u64 = 64 << 20;
+/// A staging buffer up to this size is kept however little of it is used.
+const STAGING_KEPT: u64 = 4 << 20;
 /// Quads one indexed draw can reach with `u16` indices.
 pub const QUADS_PER_DRAW: u32 = 1 << 14;
 /// `0, 1, 2, 0, 2, 3` per quad: both triangles counter-clockwise.
@@ -298,10 +300,12 @@ impl MeshArena {
         mem_props: &vk::PhysicalDeviceMemoryProperties,
         frame: usize,
     ) -> anyhow::Result<()> {
+        let needed = self.pending_bytes.len() as u64;
+        self.staging[frame].trim(device, needed, STAGING_KEPT);
         if self.pending.is_empty() {
             return Ok(());
         }
-        self.staging[frame].ensure(device, mem_props, self.pending_bytes.len() as u64, 1 << 20)
+        self.staging[frame].ensure(device, mem_props, needed, 1 << 20)
     }
 
     /// The frame with the copies [`Self::record`] recorded was submitted:

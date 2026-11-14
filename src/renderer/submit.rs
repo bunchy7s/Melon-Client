@@ -114,6 +114,9 @@ impl Renderer {
             Ok((idx, _suboptimal)) => idx,
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
                 let (w, h) = (self.swapchain.extent.width, self.swapchain.extent.height);
+                // The other frame in flight may still draw into the
+                // framebuffers and depth buffer this destroys.
+                self.device.device_wait_idle()?;
                 self.create_swapchain(w, h)?;
                 return Ok(());
             }
@@ -328,6 +331,9 @@ impl Renderer {
             Ok(_) => {}
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) | Err(vk::Result::SUBOPTIMAL_KHR) => {
                 let (w, h) = (self.swapchain.extent.width, self.swapchain.extent.height);
+                // The frame just submitted still uses the framebuffer, the
+                // depth buffer and the semaphore this destroys.
+                self.device.device_wait_idle()?;
                 self.create_swapchain(w, h)?;
             }
             Err(e) => return Err(e.into()),

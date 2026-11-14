@@ -83,7 +83,10 @@ pub enum Blending {
     /// A text display (`RenderPipelines.TEXT_POLYGON_OFFSET`): blended and
     /// depth written, so what lies behind and is drawn later stays behind.
     Text,
-    /// Blended, without writing depth: an item with see-through texels.
+    /// Blended: an item or model with see-through texels. Depth is written
+    /// in the entity and hand layers (vanilla `ITEM_TRANSLUCENT`,
+    /// `ENTITY_TRANSLUCENT`), where they are drawn far to near; not for
+    /// particles.
     Translucent,
 }
 

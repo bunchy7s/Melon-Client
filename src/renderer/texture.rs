@@ -75,8 +75,6 @@ impl Uploader<'_> {
                 anyhow::bail!("Mipmap-Stufe {shift} hat die falsche Größe");
             }
         }
-        let layer_count = layers.len() as u32;
-        let mip_levels = 1 + mips.len() as u32;
         let parts: Vec<(u32, u32, &RgbaImage)> = layers
             .iter()
             .enumerate()
@@ -92,6 +90,47 @@ impl Uploader<'_> {
             .map(|(_, _, image)| image.as_raw().len() as vk::DeviceSize)
             .sum();
 
+        // Everything made on the way is freed again when a later step
+        // fails (the descriptor pool full, the VRAM taken by another
+        // program): an upload that fails must not leave its image behind.
+        let mut made = Made::default();
+        let result = self.upload_parts(&parts, byte_size, (width, height), view_type, &mut made);
+        if made.cmd != vk::CommandBuffer::null() {
+            device.free_command_buffers(self.command_pool, &[made.cmd]);
+        }
+        if made.staging_buffer != vk::Buffer::null() {
+            device.destroy_buffer(made.staging_buffer, None);
+        }
+        if made.staging_memory != vk::DeviceMemory::null() {
+            device.free_memory(made.staging_memory, None);
+        }
+        if result.is_err() {
+            if made.view != vk::ImageView::null() {
+                device.destroy_image_view(made.view, None);
+            }
+            if made.image != vk::Image::null() {
+                device.destroy_image(made.image, None);
+            }
+            if made.memory != vk::DeviceMemory::null() {
+                device.free_memory(made.memory, None);
+            }
+        }
+        result
+    }
+
+    /// [`Self::upload`]'s work; what it creates goes into `made` as soon as
+    /// it exists, for the caller to free.
+    unsafe fn upload_parts(
+        &self,
+        parts: &[(u32, u32, &RgbaImage)],
+        byte_size: vk::DeviceSize,
+        (width, height): (u32, u32),
+        view_type: vk::ImageViewType,
+        made: &mut Made,
+    ) -> anyhow::Result<Texture> {
+        let device = self.device;
+        let layer_count = parts.iter().filter(|&&(_, level, _)| level == 0).count() as u32;
+        let mip_levels = 1 + parts.iter().map(|&(_, level, _)| level).max().unwrap_or(0);
         let (staging_buffer, staging_memory) = create_buffer(
             device,
             self.mem_props,
@@ -99,11 +138,12 @@ impl Uploader<'_> {
             vk::BufferUsageFlags::TRANSFER_SRC,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
         )?;
+        (made.staging_buffer, made.staging_memory) = (staging_buffer, staging_memory);
         let mapped = device.map_memory(staging_memory, 0, byte_size, vk::MemoryMapFlags::empty())?
             as *mut u8;
         let mut offsets = Vec::with_capacity(parts.len());
         let mut offset = 0usize;
-        for (_, _, image) in &parts {
+        for (_, _, image) in parts {
             let bytes = image.as_raw();
             std::ptr::copy_nonoverlapping(bytes.as_ptr(), mapped.add(offset), bytes.len());
             offsets.push(offset as vk::DeviceSize);
@@ -130,6 +170,7 @@ impl Uploader<'_> {
             image_info = image_info.flags(vk::ImageCreateFlags::CUBE_COMPATIBLE);
         }
         let image = device.create_image(&image_info, None)?;
+        made.image = image;
         let image_req = device.get_image_memory_requirements(image);
         let memory = device.allocate_memory(
             &vk::MemoryAllocateInfo::default()
@@ -141,6 +182,7 @@ impl Uploader<'_> {
                 )?),
             None,
         )?;
+        made.memory = memory;
         device.bind_image_memory(image, memory, 0)?;
 
         let cmd = device.allocate_command_buffers(
@@ -149,6 +191,7 @@ impl Uploader<'_> {
                 .level(vk::CommandBufferLevel::PRIMARY)
                 .command_buffer_count(1),
         )?[0];
+        made.cmd = cmd;
         device.begin_command_buffer(
             cmd,
             &vk::CommandBufferBeginInfo::default()
@@ -235,9 +278,6 @@ impl Uploader<'_> {
         let submit = vk::SubmitInfo::default().command_buffers(&cmds);
         device.queue_submit(self.queue, &[submit], vk::Fence::null())?;
         device.queue_wait_idle(self.queue)?;
-        device.free_command_buffers(self.command_pool, &cmds);
-        device.destroy_buffer(staging_buffer, None);
-        device.free_memory(staging_memory, None);
 
         let view = device.create_image_view(
             &vk::ImageViewCreateInfo::default()
@@ -247,6 +287,7 @@ impl Uploader<'_> {
                 .subresource_range(subresource),
             None,
         )?;
+        made.view = view;
 
         let set_layouts = [self.descriptor_set_layout];
         let descriptor_set = device.allocate_descriptor_sets(
@@ -276,4 +317,15 @@ impl Uploader<'_> {
             shared: false,
         })
     }
+}
+
+/// What an upload has created so far (null: not yet).
+#[derive(Default)]
+struct Made {
+    staging_buffer: vk::Buffer,
+    staging_memory: vk::DeviceMemory,
+    cmd: vk::CommandBuffer,
+    image: vk::Image,
+    memory: vk::DeviceMemory,
+    view: vk::ImageView,
 }

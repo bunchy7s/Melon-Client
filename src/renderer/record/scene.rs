@@ -162,12 +162,40 @@ impl Renderer {
                 RenderLayer::Entities | RenderLayer::Particles | RenderLayer::Hand => {
                     let Some(world) = &scene.world else { continue };
                     let view_proj = self.world_view_projection(world, layer);
-                    let mut entities: Vec<_> =
-                        scene.entities.iter().filter(|e| e.layer == layer).collect();
-                    entities.sort_by_key(|e| e.blend);
+                    // Opaque first, then the blended ones; the see-through
+                    // models of the world far to near, as vanilla's
+                    // `TranslucentFeatureRenderPhase` sorts its submits, so
+                    // a nearer one blends over what lies behind it.
+                    let eye = world.eye_fraction();
+                    let mut entities: Vec<(f32, &crate::renderer::EntityDraw)> = scene
+                        .entities
+                        .iter()
+                        .filter(|e| e.layer == layer)
+                        .map(|e| {
+                            let sorted = layer == RenderLayer::Entities
+                                && e.blend == Blending::Translucent;
+                            let nearness = if sorted {
+                                let at = world.relative_to(e.model, e.origin).w_axis.truncate();
+                                -at.distance_squared(eye)
+                            } else {
+                                0.0
+                            };
+                            (nearness, e)
+                        })
+                        .collect();
+                    entities.sort_by(|a, b| a.1.blend.cmp(&b.1.blend).then(a.0.total_cmp(&b.0)));
+                    // Vanilla's `ITEM_TRANSLUCENT` and `ENTITY_TRANSLUCENT`
+                    // write depth: a see-through model stays in front of
+                    // the water and glass drawn after it, and its glint
+                    // (depth `EQUAL`) finds it. Particles keep the pipeline
+                    // that leaves depth alone.
+                    let writes_depth = layer != RenderLayer::Particles;
                     let fog = self.model_fog(world, layer);
-                    for entity in entities {
+                    for (_, entity) in entities {
                         let (mode, pass) = match entity.blend {
+                            Blending::Translucent if writes_depth => {
+                                (Mode::Text, &self.pipelines.text)
+                            }
                             Blending::Translucent => {
                                 (Mode::Translucent, &self.pipelines.translucent)
                             }
