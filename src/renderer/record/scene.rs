@@ -136,7 +136,10 @@ impl Renderer {
                     if let Some(clouds) = &scene.clouds
                         && self.bind_world_pass(cmd, clouds.draw.atlas, Mode::Clouds)
                     {
-                        let at = world.relative(clouds.draw.model).w_axis.truncate();
+                        let at = world
+                            .relative_to(clouds.draw.model, clouds.draw.origin)
+                            .w_axis
+                            .truncate();
                         self.draw_world_mesh(
                             cmd,
                             self.pipelines.clouds.layout,
@@ -152,7 +155,10 @@ impl Renderer {
                                 cmd,
                                 self.pipelines.weather.layout,
                                 weather.mesh,
-                                (view_proj * world.relative(weather.model), Vec3::ZERO),
+                                (
+                                    view_proj * world.relative_to(weather.model, weather.origin),
+                                    Vec3::ZERO,
+                                ),
                                 &world.light([1.0, 1.0, 1.0, 1.0]).fogged(fog),
                                 None,
                             );

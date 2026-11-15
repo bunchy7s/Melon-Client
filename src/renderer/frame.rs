@@ -288,11 +288,6 @@ impl WorldDraw {
         (origin.as_dvec3() - self.eye.floor()).as_vec3()
     }
 
-    /// `model` moved by the camera's block, as [`Self::offset`] moves the
-    pub fn relative(&self, model: Mat4) -> Mat4 {
-        self.relative_to(model, glam::IVec3::ZERO)
-    }
-
     /// `model`, relative to the block `origin`, made relative to the
     pub fn relative_to(&self, model: Mat4, origin: glam::IVec3) -> Mat4 {
         let blocks = (origin - self.eye.floor().as_ivec3()).as_vec3();
