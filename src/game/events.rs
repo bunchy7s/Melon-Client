@@ -48,6 +48,7 @@ impl InWorld {
                 }
                 WorldEvent::Ping(id) => self.joined.session.send_pong(id),
                 WorldEvent::Movement(payload) => self.apply_movement_payload(payload),
+                WorldEvent::ServerChannels(channels) => self.server_channels.extend(channels),
                 WorldEvent::Teleport(teleport) => self.teleport(&teleport),
                 WorldEvent::Game(GameEvent::Respawn {
                     dimension_id,

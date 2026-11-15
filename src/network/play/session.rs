@@ -34,6 +34,8 @@ pub enum WorldEvent {
     Teleport(Teleport),
     /// `melon:movement` from the server: allowed states, others' starts.
     Movement(pumpkin_protocol::java::melon_movement::MovementPayload),
+    /// `minecraft:register` from the server: the plugin channels it takes.
+    ServerChannels(Vec<String>),
     /// `ClientboundPingPacket` in play: the game loop sends the matching
     Ping(i32),
     Game(game::GameEvent),
@@ -459,15 +461,24 @@ impl Session {
         sequence: i32,
     ) {
         self.send(game::id::SB_USE_ITEM_ON, |buf| {
-            varint::write_var_int(buf, hand.id())?;
-            buf.write_all(&packet::pack_block_pos(pos).to_be_bytes())?;
-            varint::write_var_int(buf, i32::from(face))?;
-            packet::write_f32_be(buf, cursor[0])?;
-            packet::write_f32_be(buf, cursor[1])?;
-            packet::write_f32_be(buf, cursor[2])?;
-            packet::write_bool(buf, inside)?;
-            packet::write_bool(buf, false)?;
-            Ok(varint::write_var_int(buf, sequence)?)
+            write_use_item_on(buf, hand, pos, face, cursor, inside, sequence)
+        });
+    }
+
+    /// `melon:swap`: break the block at `pos` and place `hand`'s block in
+    /// its spot as one change; the body is a use-item-on.
+    pub fn send_swap_block(
+        &self,
+        hand: Hand,
+        pos: [i32; 3],
+        face: u8,
+        cursor: [f32; 3],
+        inside: bool,
+        sequence: i32,
+    ) {
+        self.send(id::SB_PLAY_CUSTOM_PAYLOAD, |buf| {
+            packet::write_string(buf, SWAP_CHANNEL)?;
+            write_use_item_on(buf, hand, pos, face, cursor, inside, sequence)
         });
     }
 
@@ -1080,14 +1091,43 @@ fn write_accept_teleport(
 /// a broken one is dropped like an unknown channel.
 fn read_custom_payload(r: &mut Reader) -> Result<Play> {
     use pumpkin_protocol::java::melon_movement::{CHANNEL, MovementPayload};
-    if r.string()? != CHANNEL {
-        return Ok(Play::Nothing);
-    }
-    Ok(
-        MovementPayload::decode(r.remaining()).map_or(Play::Nothing, |payload| {
+    Ok(match r.string()?.as_str() {
+        CHANNEL => MovementPayload::decode(r.remaining()).map_or(Play::Nothing, |payload| {
             Play::Event(WorldEvent::Movement(payload))
         }),
-    )
+        "minecraft:register" => Play::Event(WorldEvent::ServerChannels(
+            String::from_utf8_lossy(r.remaining())
+                .split('\0')
+                .filter(|channel| !channel.is_empty())
+                .map(str::to_owned)
+                .collect(),
+        )),
+        _ => Play::Nothing,
+    })
+}
+
+/// The server's `melon:swap` (`pumpkin_protocol::java::melon_swap`).
+pub const SWAP_CHANNEL: &str = "melon:swap";
+
+/// The body of `ServerboundUseItemOnPacket`.
+fn write_use_item_on(
+    buf: &mut Vec<u8>,
+    hand: Hand,
+    pos: [i32; 3],
+    face: u8,
+    cursor: [f32; 3],
+    inside: bool,
+    sequence: i32,
+) -> Result<()> {
+    varint::write_var_int(buf, hand.id())?;
+    buf.write_all(&packet::pack_block_pos(pos).to_be_bytes())?;
+    varint::write_var_int(buf, i32::from(face))?;
+    packet::write_f32_be(buf, cursor[0])?;
+    packet::write_f32_be(buf, cursor[1])?;
+    packet::write_f32_be(buf, cursor[2])?;
+    packet::write_bool(buf, inside)?;
+    packet::write_bool(buf, false)?;
+    Ok(varint::write_var_int(buf, sequence)?)
 }
 
 /// Packets Melon knows and has no use for.

@@ -106,6 +106,15 @@ impl Keys {
         consume(&mut self.use_clicks)
     }
 
+    /// An attack click waits, without taking it.
+    pub fn attack_clicked(&self) -> bool {
+        self.attack_clicks > 0
+    }
+
+    pub fn use_clicked(&self) -> bool {
+        self.use_clicks > 0
+    }
+
     pub fn consume_pick(&mut self) -> bool {
         consume(&mut self.pick_clicks)
     }

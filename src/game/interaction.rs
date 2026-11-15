@@ -8,6 +8,7 @@ use crate::audio::block_sounds::BlockSound;
 use crate::game::controls::WorldContext;
 use crate::gui::overlay::container::ContainerOverlay;
 use crate::gui::overlay::{ChatExit, OverlayKind};
+use crate::network::play::SWAP_CHANNEL;
 use crate::network::play::game::PlayerAction;
 use crate::world::block_placement;
 use crate::world::entity::interact::{self as entity_interact, EntityUse, Holder};
@@ -102,6 +103,9 @@ impl InWorld {
             while self.keys.consume_use() {}
             while self.keys.consume_pick() {}
         } else {
+            if self.try_swap() {
+                return;
+            }
             while self.keys.consume_attack() {
                 instant |= self.start_attack();
             }
@@ -466,6 +470,65 @@ impl InWorld {
                 0,
             );
         }
+    }
+
+    /// Melon's block swap: attack and use land on the same block this tick
+    /// (clicked, or held and due). The block breaks and the held one takes
+    /// its spot in one step (`melon:swap`), so what rests on it stays. Only
+    /// for instant breaks (creative, instant mining) and a server that
+    /// registered the channel; elsewhere both run as usual.
+    fn try_swap(&mut self) -> bool {
+        let attack = self.keys.attack_clicked()
+            || self.keys.attack && self.destroy_delay == 0 && self.miss_time == 0;
+        let use_due = self.keys.use_clicked() || self.keys.use_item && self.right_click_delay == 0;
+        if !attack
+            || !use_due
+            || self.destroying.is_some()
+            || self.game_mode.current.is_spectator()
+            || self.hit_entity().is_some()
+            || !self.server_channels.iter().any(|c| c == SWAP_CHANNEL)
+        {
+            return false;
+        }
+        let Some(hit) = self.hit_block().filter(|hit| !self.is_air(hit.pos)) else {
+            return false;
+        };
+        let Some(hand) = Hand::ALL.into_iter().find(|&hand| {
+            let stack = self.hand_stack(hand);
+            !stack.is_empty() && Block::from_registry_key(stack.item.registry_key).is_some()
+        }) else {
+            return false;
+        };
+        let instant = if self.game_mode.current.has_infinite_materials() {
+            breaks_blocks_in_creative(self.inventory.selected_stack())
+        } else {
+            self.miner().destroy_progress(self.block_at(hit.pos)) >= 1.0
+        };
+        if !instant {
+            return false;
+        }
+        while self.keys.consume_attack() {}
+        while self.keys.consume_use() {}
+        let sequence = self.next_sequence();
+        self.destroy_block(hit.pos);
+        let placed = self.predict_place(hand, &hit);
+        self.joined.session.send_swap_block(
+            hand,
+            hit.pos,
+            hit.face,
+            hit.cursor(),
+            hit.inside,
+            sequence,
+        );
+        self.swing(Hand::Main);
+        self.joined.session.send_punch();
+        if placed {
+            self.swing(hand);
+            self.hands.item_used(hand);
+        }
+        self.destroy_delay = DESTROY_DELAY;
+        self.right_click_delay = RIGHT_CLICK_DELAY;
+        true
     }
 
     /// `MultiPlayerGameMode.sameDestroyTarget`: still the same block with

@@ -293,6 +293,8 @@ pub struct InWorld {
     echoes: sounds::Echoes,
     /// `Minecraft.rightClickDelay`.
     right_click_delay: i32,
+    /// The plugin channels the server registered (`melon:swap`).
+    server_channels: Vec<String>,
     /// `Minecraft.missTime`: after a punch at nothing, the attack key rests.
     miss_time: i32,
     /// `Minecraft.hitResult`: the block or entity looked at, picked every
@@ -384,9 +386,10 @@ impl InWorld {
             ..Default::default()
         };
         let chat = Chat::new(chat_types, info.uuid, Some(game_dir.to_path_buf()));
-        joined
-            .session
-            .send_register(&[pumpkin_protocol::java::melon_movement::CHANNEL]);
+        joined.session.send_register(&[
+            pumpkin_protocol::java::melon_movement::CHANNEL,
+            crate::network::play::SWAP_CHANNEL,
+        ]);
         Self {
             uuid: info.uuid,
             preview: Default::default(),
@@ -489,6 +492,7 @@ impl InWorld {
             ears: None,
             echoes: sounds::Echoes::default(),
             right_click_delay: 0,
+            server_channels: Vec::new(),
             miss_time: 0,
             hit_result: None,
             mining_effects: Default::default(),

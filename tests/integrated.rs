@@ -808,6 +808,7 @@ fn the_nether_comes_with_its_own_height() {
                         WorldEvent::Teleport(_) => "teleport",
                         WorldEvent::Ping(_) => "ping",
                         WorldEvent::Movement(_) => "movement",
+                        WorldEvent::ServerChannels(_) => "channels",
                         WorldEvent::Game(_) => "game",
                         WorldEvent::Reconfiguring => "reconfiguring",
                         WorldEvent::Rejoined(..) => "rejoined",
@@ -1145,6 +1146,8 @@ struct MenuWorld {
     /// Every block change the server sent: position and state id.
     changed: Vec<([i32; 3], u16)>,
     carried: pumpkin_data::item_stack::ItemStack,
+    /// The plugin channels the server registered.
+    channels: Vec<String>,
 }
 
 impl MenuWorld {
@@ -1165,6 +1168,7 @@ impl MenuWorld {
             added: Vec::new(),
             changed: Vec::new(),
             carried: melon::world::inventory::empty(),
+            channels: Vec::new(),
         };
         this.apply(joined);
         std::thread::sleep(std::time::Duration::from_secs(1));
@@ -1176,8 +1180,13 @@ impl MenuWorld {
         use melon::network::play::game::{EntityPacket, GameEvent};
         use melon::world::inventory::{ContainerKind, OpenContainer};
         for event in events {
-            let WorldEvent::Game(event) = event else {
-                continue;
+            let event = match event {
+                WorldEvent::Game(event) => event,
+                WorldEvent::ServerChannels(channels) => {
+                    self.channels.extend(channels);
+                    continue;
+                }
+                _ => continue,
             };
             match event {
                 GameEvent::Entity(EntityPacket::Add(add)) => self.added.push((add.id, add.kind)),
@@ -1475,4 +1484,70 @@ fn a_zip_mod_block_can_be_placed() {
     w.wait("the mod block placed", |w| {
         w.changed.iter().any(|&(_, id)| id == state)
     });
+}
+
+/// `melon:swap`: the stone a wall torch hangs on becomes dirt in one step,
+/// and the torch stays.
+#[test]
+#[ignore = "starts an integrated server"]
+fn a_swapped_block_keeps_what_hangs_on_it() {
+    use melon::network::play::SWAP_CHANNEL;
+    use melon::world::player::hands::Hand;
+    use pumpkin_data::{Block, item::Item};
+
+    let mut w = MenuWorld::open("swap", "Swapper");
+    w.world.session.send_register(&[SWAP_CHANNEL]);
+    w.wait("the server takes swaps", |w| {
+        w.channels.iter().any(|c| c == SWAP_CHANNEL)
+    });
+    w.world
+        .session
+        .send_command("setblock ~2 ~ ~ minecraft:stone");
+    let at = w.world.spawn.pos;
+    let stone = [
+        at.0.floor() as i32 + 2,
+        at.1.floor() as i32,
+        at.2.floor() as i32,
+    ];
+    let torch = [stone[0] + 1, stone[1], stone[2]];
+    w.wait("the stone stands", |w| {
+        w.changed
+            .iter()
+            .any(|&(pos, id)| pos == stone && block_name(id) == "stone")
+    });
+    // Up against the stone's east face.
+    w.give(0, &Item::TORCH, 4);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    w.world
+        .session
+        .send_use_item_on(Hand::Main, stone, 5, [1.0, 0.5, 0.5], false, 2);
+    w.wait("the torch hangs on the stone", |w| {
+        w.changed
+            .iter()
+            .any(|&(pos, id)| pos == torch && block_name(id) == "wall_torch")
+    });
+
+    w.give(0, &Item::DIRT, 4);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    w.pump();
+    w.changed.clear();
+    w.world
+        .session
+        .send_swap_block(Hand::Main, stone, 4, [0.0, 0.5, 0.5], false, 3);
+    let dirt = Block::DIRT.default_state.id.as_u16();
+    w.wait("the stone became dirt", |w| {
+        w.changed.contains(&(stone, dirt))
+    });
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    w.pump();
+    assert!(
+        !w.changed.iter().any(|&(pos, _)| pos == torch),
+        "the torch was touched: {:?}",
+        w.changed
+    );
+}
+
+fn block_name(state: u16) -> &'static str {
+    pumpkin_data::BlockStateId::new(state)
+        .map_or("", |id| pumpkin_data::Block::from_state_id(id).name)
 }

@@ -8,4 +8,4 @@ mod session;
 pub mod stats;
 
 pub(crate) use session::{Play, PlayListener};
-pub use session::{Session, TIMEOUT_REASON, Teleport, WorldEvent};
+pub use session::{SWAP_CHANNEL, Session, TIMEOUT_REASON, Teleport, WorldEvent};
