@@ -13,6 +13,7 @@ pub mod hands;
 pub mod mining;
 mod mode;
 mod movement;
+pub use movement::{MoveState, Travel, priority as move_priority};
 mod suffocate;
 pub use mode::MoveMode;
 mod render_state;
@@ -184,6 +185,9 @@ pub struct PlayerState {
     /// Seated on a vehicle (`isPassenger`), and the turn of its body, last
     riding: bool,
     ride_body: Option<(f32, f32)>,
+    /// The ways of moving, by priority, and the one the last tick used.
+    move_states: movement::MoveStates,
+    move_mode: MoveMode,
 }
 
 impl PlayerState {
@@ -260,6 +264,8 @@ impl PlayerState {
             speed_effects: 1.0,
             riding: false,
             ride_body: None,
+            move_states: movement::MoveStates::vanilla(),
+            move_mode: MoveMode::Walk,
         }
     }
 
@@ -1063,7 +1069,7 @@ mod tests {
         };
         player.tick(jump, &level, 20, SPRINT_WINDOW_DEFAULT);
         assert!(player.gliding() && player.take_glide_start());
-        assert_eq!(player.move_mode(false), MoveMode::Glide);
+        assert_eq!(player.move_mode(), MoveMode::Glide);
         assert_eq!(player.box_height(), SWIM_HEIGHT);
         player.set_rotation(0.0, 20.0);
         let start = player.feet.y;

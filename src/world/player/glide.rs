@@ -1,7 +1,8 @@
 //! Elytra gliding (`travelFallFlying`) and the riptide spin
 
 use super::mode::glide;
-use super::{MoveInput, PlayerState};
+use super::movement::{MoveState, Travel, priority};
+use super::{MoveMode, PlayerState};
 use crate::math::angle;
 use crate::world::level::Level;
 use crate::world::physics::Aabb;
@@ -41,6 +42,35 @@ pub(super) fn fall_flying_step(movement: DVec3, look: DVec3, lean: f32, gravity:
     )
 }
 
+/// Elytra flight; starts on the jump key's rising edge in the air.
+pub(super) struct Glide;
+
+impl MoveState for Glide {
+    fn mode(&self, _: &PlayerState) -> MoveMode {
+        MoveMode::Glide
+    }
+
+    fn priority(&self) -> i32 {
+        priority::GLIDE
+    }
+
+    fn update(&mut self, player: &mut PlayerState, env: &Travel) {
+        player.end_glide_if_grounded();
+        if env.input.jump && !env.was_jumping && !player.on_climbable {
+            player.try_start_fall_flying(env.fluid().is_some());
+        }
+    }
+
+    /// On a ladder the land state takes over and ends the glide.
+    fn active(&self, player: &PlayerState, env: &Travel) -> bool {
+        player.gliding && !player.on_climbable && env.fluid().is_none()
+    }
+
+    fn travel(&mut self, player: &mut PlayerState, env: &Travel) {
+        player.travel_fall_flying(env.level, env.input.sneak);
+    }
+}
+
 impl PlayerState {
     /// Whether a glider is worn in its own slot (`LivingEntity.canGlideUsing`),
     pub fn set_glider_worn(&mut self, worn: bool) {
@@ -68,7 +98,7 @@ impl PlayerState {
     }
 
     /// `Player.tryToStartFallFlying`, on the jump key's rising edge.
-    pub(super) fn try_start_fall_flying(&mut self, in_liquid: bool) -> bool {
+    fn try_start_fall_flying(&mut self, in_liquid: bool) -> bool {
         if self.gliding || !self.can_glide() || in_liquid {
             return false;
         }
@@ -78,7 +108,7 @@ impl PlayerState {
     }
 
     /// `LivingEntity.travelFallFlying` (the fluid and ground branches are
-    pub(super) fn travel_fall_flying(&mut self, level: &Level, input: MoveInput) {
+    fn travel_fall_flying(&mut self, level: &Level, sneaking: bool) {
         let look = super::forward_vector_for(self.yaw_degrees, self.pitch_degrees);
         let lean = self.pitch_degrees * angle::DEG_TO_RAD;
         self.velocity = fall_flying_step(
@@ -87,11 +117,11 @@ impl PlayerState {
             lean,
             self.effective_gravity(),
         );
-        self.move_colliding(level, input.sneak);
+        self.move_colliding(level, sneaking);
     }
 
     /// The air of a gliding player ends when they land or lose the glider.
-    pub(super) fn end_glide_if_grounded(&mut self) {
+    fn end_glide_if_grounded(&mut self) {
         if self.gliding && !self.can_glide() {
             self.gliding = false;
         }

@@ -1,13 +1,17 @@
-//! The movement tick: walking, sprinting, jumping, flying and swimming,
+//! The movement tick (`LocalPlayer.aiStep` into `LivingEntity.travel`):
+//! the shared frame and physics. Each way of moving is a [`MoveState`].
+
+mod fluid;
+mod fly;
+mod land;
+mod state;
+
+pub use state::{MoveState, MoveStates, Travel, priority};
 
 use super::CROUCH_HEIGHT;
-use super::block_effects::FluidHeights;
 use super::{
-    AIR_ACCELERATION, DOLPHINS_GRACE_DRAG, FLUID_JUMP, FLY_TOGGLE_WINDOW_TICKS,
-    FLYING_VERTICAL_DRAG, GROUND_ACCELERATION, HEIGHT, HORIZONTAL_DRAG, INPUT_DAMPING,
-    JUMP_DELAY_TICKS, LAVA_DRAG, MoveInput, PlayerState, SPRINT_AIR_ACCELERATION,
-    SPRINT_FOOD_LEVEL, SPRINT_JUMP_BOOST, VERTICAL_DRAG, WATER_ACCELERATION, WATER_DRAG,
-    WATER_SPRINT_DRAG,
+    FLUID_JUMP, HEIGHT, INPUT_DAMPING, JUMP_DELAY_TICKS, MoveInput, PlayerState, SPRINT_FOOD_LEVEL,
+    SPRINT_JUMP_BOOST, VERTICAL_DRAG,
 };
 use crate::world::fluid::FluidKind;
 use crate::world::level::Level;
@@ -16,6 +20,7 @@ use glam::DVec3;
 
 impl PlayerState {
     /// One game tick. Does nothing while the chunk under the player hasn't
+    /// arrived.
     pub fn tick(&mut self, input: MoveInput, level: &Level, food: i32, sprint_window: u32) {
         self.prev_feet = self.feet;
         self.walk_dist_old = self.walk_dist;
@@ -42,6 +47,7 @@ impl PlayerState {
     }
 
     /// `AbstractClientPlayer.updateBob`: the view bobs with the speed on
+    /// the ground.
     fn update_bob(&mut self) {
         let target = if self.on_ground && !self.swimming {
             let v = self.velocity;
@@ -53,11 +59,27 @@ impl PlayerState {
         self.bob += (target - self.bob) * 0.4;
     }
 
+    /// Adds a movement state; see [`MoveState`].
+    pub fn register_move_state(&mut self, state: Box<dyn MoveState>) {
+        self.move_states.add(state);
+    }
+
+    /// The mode the last tick moved in; a riptide spin over anything but
+    /// flight.
+    pub fn move_mode(&self) -> super::MoveMode {
+        if self.spin_ticks > 0 && !self.abilities.flying {
+            super::MoveMode::SpinAttack
+        } else {
+            self.move_mode
+        }
+    }
+
+    /// The pose and flags, the states' bookkeeping, then the first active
+    /// state moves the player.
     fn travel(&mut self, input: MoveInput, level: &Level, food: i32, sprint_window: u32) {
         let was_jumping = self.had_jump;
         self.had_jump = input.jump;
         let heights = self.update_fluid_interaction(level);
-        let fluid = heights.travel_fluid();
         let can_stand = self.can_stand_up(level);
         let fits_crouched = physics::no_collision(
             level,
@@ -74,18 +96,13 @@ impl PlayerState {
             && fits_crouched
             && (input.sneak || !can_stand);
         self.update_sprint(input, food > SPRINT_FOOD_LEVEL, sprint_window);
-        self.update_flight(input, was_jumping, level);
-        self.end_glide_if_grounded();
-        if input.jump && !was_jumping && !self.on_climbable {
-            self.try_start_fall_flying(fluid.is_some());
-        }
+
+        let env = Travel::new(self, level, input, was_jumping, heights);
+        let mut states = std::mem::take(&mut self.move_states);
+        states.update(self, &env);
 
         self.push_out_of_blocks(level);
-
-        let (forward, strafe) = self.movement_input(input);
-        let (sin, cos) = crate::math::sin_cos_degrees(self.yaw_degrees + 180.0);
-        self.intent = rotate_input(forward, strafe, 1.0, sin, cos);
-
+        self.intent = env.relative(env.forward, env.strafe, 1.0);
         self.no_jump_delay = self.no_jump_delay.saturating_sub(1);
         if self.velocity.x * self.velocity.x + self.velocity.z * self.velocity.z < 9.0e-6 {
             self.velocity.x = 0.0;
@@ -94,57 +111,34 @@ impl PlayerState {
         if self.velocity.y.abs() < 0.003 {
             self.velocity.y = 0.0;
         }
-
         self.jump_trigger_ticks = self.jump_trigger_ticks.saturating_sub(1);
-        if self.abilities.flying {
-            self.travel_flying(level, input, forward, strafe, sin, cos);
-            if self.on_ground && !self.spectator {
-                self.abilities.flying = false;
-                self.abilities_changed = true;
-            }
-            return;
-        }
 
-        if input.sneak && self.in_water {
+        if let Some(state) = states.select(self, &env) {
+            if !state.own_vertical_input() {
+                self.vertical_input(&env);
+            }
+            self.move_mode = state.mode(self);
+            state.travel(self, &env);
+        }
+        self.move_states = states;
+    }
+
+    /// `aiStep`'s keys for up and down: sink, jump or swim up, and the
+    /// swim stroke.
+    fn vertical_input(&mut self, env: &Travel) {
+        if env.input.sneak && self.in_water {
             self.velocity.y -= FLUID_JUMP;
         }
-        if input.jump {
-            self.jump(level, heights, sin, cos);
+        if env.input.jump {
+            self.jump(env);
         } else {
             self.no_jump_delay = 0;
         }
-
-        if self.swimming {
-            let look = super::forward_vector_for(self.yaw_degrees, self.pitch_degrees).y;
-            let multiplier = if look < -0.2 { 0.085 } else { 0.06 };
-            let head = self.feet + DVec3::new(0.0, 1.0 - 0.1, 0.0);
-            let above = physics::fluid_at(
-                level,
-                head.x.floor() as i32,
-                head.y.floor() as i32,
-                head.z.floor() as i32,
-            );
-            if look <= 0.0 || input.jump || above.is_some() {
-                self.velocity.y += (f64::from(look) - self.velocity.y) * multiplier;
-            }
-        }
-
-        match fluid {
-            Some(FluidKind::Water) => self.travel_in_water(level, input, forward, strafe, sin, cos),
-            Some(FluidKind::Lava) => {
-                let shallow = heights.lava <= self.fluid_jump_threshold();
-                self.travel_in_lava(level, shallow, input, forward, strafe, sin, cos);
-            }
-            None if self.gliding && self.on_climbable => {
-                self.travel_on_land(level, input, forward, strafe, sin, cos);
-                self.gliding = false;
-            }
-            None if self.gliding => self.travel_fall_flying(level, input),
-            None => self.travel_on_land(level, input, forward, strafe, sin, cos),
-        }
+        self.swim_stroke(env);
     }
 
     /// `Entity.baseTick`'s water and `updateSwimming`, then the pose
+    /// (`updatePlayerPose`'s swimming and crawling).
     fn update_water_state(
         &mut self,
         level: &Level,
@@ -180,63 +174,8 @@ impl PlayerState {
             crate::world::entity::living::Swim::step(self.swim_amount, self.swim_pose);
     }
 
-    /// `LocalPlayer.aiStep`'s flight block: spectators always fly, creative
-    pub(super) fn update_flight(&mut self, input: MoveInput, was_jumping: bool, level: &Level) {
-        if self.abilities.may_fly {
-            if self.spectator {
-                if !self.abilities.flying {
-                    self.abilities.flying = true;
-                    self.abilities_changed = true;
-                }
-            } else if !was_jumping && input.jump {
-                if self.jump_trigger_ticks == 0 {
-                    self.jump_trigger_ticks = FLY_TOGGLE_WINDOW_TICKS;
-                } else {
-                    self.abilities.flying = !self.abilities.flying;
-                    self.abilities_changed = true;
-                    self.jump_trigger_ticks = 0;
-                    if self.abilities.flying && self.on_ground {
-                        let (sin, cos) = crate::math::sin_cos_degrees(self.yaw_degrees + 180.0);
-                        self.jump_from_ground(level, sin, cos);
-                    }
-                }
-            }
-        } else if self.abilities.flying {
-            self.abilities.flying = false;
-        }
-        if self.abilities.flying {
-            let up = i8::from(input.jump) - i8::from(input.sneak);
-            self.velocity.y += f64::from(up) * f64::from(self.abilities.flying_speed) * 3.0;
-        }
-    }
-
-    /// `Player.travel` while flying: `travelInAir` with the flying speed as
-    pub(super) fn travel_flying(
-        &mut self,
-        level: &Level,
-        input: MoveInput,
-        forward: f32,
-        strafe: f32,
-        sin: f32,
-        cos: f32,
-    ) {
-        let original_y = self.velocity.y;
-        let was_on_ground = self.on_ground;
-        let friction = self.surface_friction(level);
-        let acceleration = self.friction_speed(friction, true);
-        self.move_relative(forward, strafe, acceleration, sin, cos);
-        self.move_colliding(level, input.sneak);
-        let drag = f64::from(if was_on_ground {
-            friction * HORIZONTAL_DRAG
-        } else {
-            HORIZONTAL_DRAG
-        });
-        self.velocity.x *= drag;
-        self.velocity.z *= drag;
-        self.velocity.y = original_y * FLYING_VERTICAL_DRAG;
-    }
-
     /// `LocalPlayer.modifyInput`: the key vector, normalised, damped, slowed
+    /// by sneaking and item use, then stretched to the square's edge.
     pub(super) fn movement_input(&self, input: MoveInput) -> (f32, f32) {
         let (mut x, mut z) = (-input.strafe, input.forward);
         let len = (x * x + z * z).sqrt();
@@ -261,23 +200,20 @@ impl PlayerState {
         (z / len * stretched, x / len * stretched)
     }
 
-    /// `Entity.moveRelative`: adds the input direction, rotated by yaw and
-    pub(super) fn move_relative(
-        &mut self,
-        forward: f32,
-        strafe: f32,
-        speed: f32,
-        sin: f32,
-        cos: f32,
-    ) {
-        self.velocity += rotate_input(forward, strafe, speed, sin, cos);
+    /// `Entity.moveRelative`: this tick's input at `speed`, turned by the yaw.
+    pub fn move_relative(&mut self, env: &Travel, speed: f32) {
+        self.velocity += env.relative(env.forward, env.strafe, speed);
     }
 
     /// `LivingEntity.jumpFromGround`.
-    pub(super) fn jump_from_ground(&mut self, level: &Level, sin: f32, cos: f32) {
+    pub(super) fn jump_from_ground(&mut self, env: &Travel) {
         let power = f64::from(
             self.attributes.jump_strength()
-                * self.block_factor(level, false, crate::world::block_motion::jump_multiplier)
+                * self.block_factor(
+                    env.level,
+                    false,
+                    crate::world::block_motion::jump_multiplier,
+                )
                 + 0.1 * self.jump_boost as f32,
         );
         if power <= 1.0e-5 {
@@ -285,86 +221,17 @@ impl PlayerState {
         }
         self.velocity.y = power.max(self.velocity.y);
         if self.sprinting {
+            let (sin, cos) = env.sin_cos();
             self.velocity.x -= f64::from(sin) * SPRINT_JUMP_BOOST;
             self.velocity.z += f64::from(cos) * SPRINT_JUMP_BOOST;
-        }
-    }
-
-    /// `LivingEntity.travelInAir`.
-    pub(super) fn travel_on_land(
-        &mut self,
-        level: &Level,
-        input: MoveInput,
-        forward: f32,
-        strafe: f32,
-        sin: f32,
-        cos: f32,
-    ) {
-        let was_on_ground = self.on_ground;
-        let friction = self.surface_friction(level);
-        let acceleration = self.friction_speed(friction, false);
-        self.move_relative(forward, strafe, acceleration, sin, cos);
-        self.handle_on_climbable(level, input.sneak);
-        self.move_colliding(level, input.sneak);
-        self.on_climbable = self.compute_on_climbable(level);
-        if self.on_climbable && (self.horizontal_collision || input.jump) {
-            self.velocity.y = super::climb::CLIMB_UP_SPEED;
-        }
-
-        let air_drag = self.attributes.air_drag_modifier();
-        let vertical = f64::from(super::attributes::modified_friction(
-            VERTICAL_DRAG as f32,
-            air_drag,
-        ));
-        self.velocity.y = (self.velocity.y - self.effective_gravity()) * vertical;
-        let horizontal = super::attributes::modified_friction(HORIZONTAL_DRAG, air_drag);
-        let drag = f64::from(if was_on_ground {
-            friction * horizontal
-        } else {
-            horizontal
-        });
-        self.velocity.x *= drag;
-        self.velocity.z *= drag;
-    }
-
-    /// `blockFriction` of `travelInAir`: the ground's slipperiness through
-    fn surface_friction(&self, level: &Level) -> f32 {
-        if self.on_ground {
-            super::attributes::modified_friction(
-                self.block_below(level).slipperiness,
-                self.attributes.friction_modifier(),
-            )
-        } else {
-            1.0
-        }
-    }
-
-    /// `getFrictionInfluencedSpeed`: on the ground the speed, slippery
-    fn friction_speed(&self, friction: f32, flying: bool) -> f32 {
-        if self.on_ground {
-            let speed = self.movement_speed();
-            if friction > 0.6 {
-                speed * (GROUND_ACCELERATION / (friction * friction * friction))
-            } else {
-                speed
-            }
-        } else if flying {
-            if self.sprinting {
-                self.abilities.flying_speed * 2.0
-            } else {
-                self.abilities.flying_speed
-            }
-        } else if self.sprinting {
-            SPRINT_AIR_ACCELERATION
-        } else {
-            AIR_ACCELERATION
         }
     }
 
     /// `LivingEntity.aiStep`'s jump: in water or lava deeper than
     /// `getFluidJumpThreshold` the key swims up (`jumpInLiquid`), even
     /// standing on the floor; in shallower fluid and on land it jumps.
-    fn jump(&mut self, level: &Level, heights: FluidHeights, sin: f32, cos: f32) {
+    fn jump(&mut self, env: &Travel) {
+        let heights = env.heights();
         let in_lava = heights.in_lava();
         let height = if in_lava { heights.lava } else { heights.water };
         let in_water = heights.in_water() && height > 0.0;
@@ -376,7 +243,7 @@ impl PlayerState {
         if swims_in_water || swims_in_lava {
             self.velocity.y += FLUID_JUMP;
         } else if (self.on_ground || (in_water && shallow)) && self.no_jump_delay == 0 {
-            self.jump_from_ground(level, sin, cos);
+            self.jump_from_ground(env);
             self.no_jump_delay = JUMP_DELAY_TICKS;
         }
     }
@@ -387,111 +254,8 @@ impl PlayerState {
         if self.eye_height() < 0.4 { 0.0 } else { 0.4 }
     }
 
-    /// `LivingEntity.travelInWater`, after `Player.travel`'s swim stroke.
-    pub(super) fn travel_in_water(
-        &mut self,
-        level: &Level,
-        input: MoveInput,
-        forward: f32,
-        strafe: f32,
-        sin: f32,
-        cos: f32,
-    ) {
-        let falling = self.velocity.y <= 0.0;
-        let old_y = self.feet.y;
-        let gravity = self.effective_gravity();
-        let efficiency =
-            self.attributes.water_movement_efficiency() * if self.on_ground { 1.0 } else { 0.5 };
-        let mut slow_down = if self.sprinting {
-            WATER_SPRINT_DRAG as f32
-        } else {
-            WATER_DRAG as f32
-        };
-        let mut acceleration = WATER_ACCELERATION;
-        if efficiency > 0.0 {
-            slow_down += (0.546_000_06 - slow_down) * efficiency;
-            acceleration += (self.movement_speed() - acceleration) * efficiency;
-        }
-        if self.dolphins_grace {
-            slow_down = DOLPHINS_GRACE_DRAG;
-        }
-        self.move_relative(forward, strafe, acceleration, sin, cos);
-        self.move_colliding(level, input.sneak);
-        self.on_climbable = self.compute_on_climbable(level);
-        if self.horizontal_collision && self.on_climbable {
-            self.velocity.y = super::climb::CLIMB_UP_SPEED;
-        }
-
-        let drag = f64::from(slow_down);
-        self.velocity.x *= drag;
-        self.velocity.z *= drag;
-        self.velocity.y *= f64::from(WATER_DRAG as f32);
-        self.velocity.y = self.fluid_falling_adjusted(gravity, falling, self.velocity.y);
-        self.jump_out_of_fluid(level, old_y);
-    }
-
-    /// `LivingEntity.travelInLava`: half speed, and in lava no deeper than
-    /// the jump threshold the vertical speed only loses a fifth.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn travel_in_lava(
-        &mut self,
-        level: &Level,
-        shallow: bool,
-        input: MoveInput,
-        forward: f32,
-        strafe: f32,
-        sin: f32,
-        cos: f32,
-    ) {
-        let falling = self.velocity.y <= 0.0;
-        let old_y = self.feet.y;
-        let gravity = self.effective_gravity();
-        self.move_relative(forward, strafe, WATER_ACCELERATION, sin, cos);
-        self.move_colliding(level, input.sneak);
-        self.on_climbable = self.compute_on_climbable(level);
-        if shallow {
-            self.velocity.x *= LAVA_DRAG;
-            self.velocity.z *= LAVA_DRAG;
-            self.velocity.y *= f64::from(WATER_DRAG as f32);
-            self.velocity.y = self.fluid_falling_adjusted(gravity, falling, self.velocity.y);
-        } else {
-            self.velocity *= LAVA_DRAG;
-        }
-        if gravity != 0.0 {
-            self.velocity.y -= gravity / 4.0;
-        }
-        self.jump_out_of_fluid(level, old_y);
-    }
-
-    /// `LivingEntity.getFluidFallingAdjustedMovement`'s vertical speed:
-    /// gravity at a sixteenth, and a slow sink instead of hovering.
-    fn fluid_falling_adjusted(&self, gravity: f64, falling: bool, dy: f64) -> f64 {
-        if gravity == 0.0 || self.sprinting {
-            dy
-        } else if falling && (dy - 0.005).abs() >= 0.003 && (dy - gravity / 16.0).abs() < 0.003 {
-            -0.003
-        } else {
-            dy - gravity / 16.0
-        }
-    }
-
-    /// `LivingEntity.jumpOutOfFluid`: against a wall with room above it and
-    /// no fluid there, hop up onto the bank.
-    fn jump_out_of_fluid(&mut self, level: &Level, old_y: f64) {
-        if !self.horizontal_collision {
-            return;
-        }
-        let lift = self.velocity.y + f64::from(0.6_f32) - self.feet.y + old_y;
-        let probe = self
-            .bounding_box()
-            .offset(DVec3::new(self.velocity.x, lift, self.velocity.z));
-        if physics::no_collision(level, &probe) && physics::touches_fluid(level, &probe).is_none() {
-            self.velocity.y = f64::from(0.3_f32);
-        }
-    }
-
     /// `Entity.move`: collides this tick's velocity, moves, and zeroes the
-    pub(super) fn move_colliding(&mut self, level: &Level, sneaking: bool) {
+    pub fn move_colliding(&mut self, level: &Level, sneaking: bool) {
         if self.spectator {
             self.feet += self.velocity;
             self.horizontal_collision = false;
