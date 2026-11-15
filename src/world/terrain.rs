@@ -325,9 +325,9 @@ thread_local! {
 static PLAINS_TINTS: std::sync::OnceLock<TintSettings> = std::sync::OnceLock::new();
 
 /// TODO(perf): the biggest CPU load left in the world. `perf_world`
-/// (2026-11-15, 290 chunks, Ryzen 9800X3D): `mesh_chunk` 1.19 ms a chunk,
-/// about 7200 quads, so ~165 ns a quad; 0.66 ms (~92 ns a quad) with flat
-/// light, so smooth light is ~45% (see `smooth_light::LightCache`).
+/// (2026-11-15, 290 chunks, Ryzen 9800X3D): `mesh_chunk` 0.89 ms a chunk,
+/// about 7200 quads; 0.70 ms with flat light. Filling the `LightCache`
+/// (both modes) is ~12 µs a section, ~145 µs a chunk.
 /// Decoding and the flag rows are 0.2 µs a section now, the visibility
 /// graph ~1%. Still to split up, with a profiler: in `fill_section`'s quad
 /// loop the cullface test (`neighborhood.block` + `skip_rendering::hides`

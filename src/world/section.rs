@@ -225,9 +225,14 @@ impl Section {
         let start = row * 16;
         match &self.store {
             Store::Uniform(id) => [*id; 16],
-            Store::Packed(packed) => packed
-                .row_indices(row)
-                .map(|index| packed.palette[usize::from(index)]),
+            Store::Packed(packed) => {
+                // A loop: `<[u8; 16]>::map` isn't inlined here.
+                let mut ids = [0; 16];
+                for (id, index) in ids.iter_mut().zip(packed.row_indices(row)) {
+                    *id = packed.palette[usize::from(index)];
+                }
+                ids
+            }
             Store::Flat(flat) => flat[start..start + 16].try_into().unwrap(),
         }
     }

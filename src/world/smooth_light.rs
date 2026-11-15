@@ -1,15 +1,16 @@
 //! Vanilla's smooth lighting and ambient occlusion for block faces.
 //!
 //! [`LightCache`] flat 20³ array: one cell per block of the
-//! section and a two-block shell. Light layers are unpacked with the byte
-//! kernels ([`crate::world::nibble_decode`]) and written in once a section,
-//! so the quad loop only indexes.
+//! section and a two-block shell, filled once a section slab by slab (the
+//! 27 sections it overlaps, each looked up once), so the quad loop only
+//! indexes. The centre's layers go through the byte kernels
+//! ([`crate::world::nibble_decode`]); the shell reads its few nibbles.
 
 use crate::renderer::CornerLight;
 use crate::world::block::ao_flags::{self, AoFlags};
 use crate::world::block::direction::Direction;
 use crate::world::block_models::ao_shape::AoShape;
-use crate::world::chunk::LightSection;
+use crate::world::chunk::{LIGHT_NIBBLES, LightSection};
 use crate::world::nibble_decode;
 use crate::world::section::{BLOCKS_PER_SECTION, Section};
 use crate::world::terrain::Neighborhood;
@@ -60,22 +61,51 @@ fn smooth_weighted_blend(coords: [u32; 4], weights: [f32; 4]) -> u32 {
     java_u8(block) | java_u8(sky) << 16
 }
 
-/// One cell of the cache: its light coordinates as vanilla's
+/// One cell of the cache, 4 bytes so the 20³ stays in L1.
 #[derive(Clone, Copy)]
+#[repr(C)]
 struct Cell {
-    light: u32,
     flags: AoFlags,
-    block: u8,
-    sky: u8,
+    /// Block and sky (`block | sky << 4`) as the face reads them: the
+    /// block's own emission in, both 15 for `emissiveRendering`.
+    lit: u8,
+    /// The stored levels, `block | sky << 4`, for flat light.
+    levels: u8,
 }
 
 impl Cell {
     const EMPTY: Self = Self {
-        light: 0,
         flags: AoFlags::AIR,
-        block: 0,
-        sky: 0,
+        lit: 0,
+        levels: 0,
     };
+
+    #[inline]
+    fn new(flags: AoFlags, block: u8, sky: u8) -> Self {
+        // Branch free, for the combine to vectorize.
+        let full = 0u8.wrapping_sub(u8::from(flags.emissive_rendering()));
+        let lit = (block.max(flags.emission()) | sky << 4) | full;
+        Self {
+            flags,
+            lit,
+            levels: block | sky << 4,
+        }
+    }
+
+    /// Vanilla's packed light coordinates.
+    #[inline]
+    fn light(self) -> u32 {
+        let lit = u32::from(self.lit);
+        pack(lit & 15, lit >> 4)
+    }
+
+    fn block(self) -> u8 {
+        self.levels & 15
+    }
+
+    fn sky(self) -> u8 {
+        self.levels >> 4
+    }
 
     /// `getShadeBrightness`.
     fn shade(self) -> f32 {
@@ -102,11 +132,20 @@ fn cell_index(x: i32, y: i32, z: i32) -> usize {
 }
 
 /// The light and flags of a section's blocks and their neighbours, filled
-/// densely once a section (Sodium's `ArrayLightDataCache` layout, the
-/// layers unpacked with miraculix).
+/// densely once a section (Sodium's `ArrayLightDataCache` layout).
 pub struct LightCache {
     cells: Vec<Cell>,
     section: usize,
+    scratch: Box<Scratch>,
+}
+
+/// One slab's overlap, gathered first and combined into cells after:
+/// whole passes keep the combine free of matches and let it vectorize,
+/// and read back stores long retired (no store-forwarding stalls).
+struct Scratch {
+    flags: [AoFlags; BLOCKS_PER_SECTION],
+    block: [u8; BLOCKS_PER_SECTION],
+    sky: [u8; BLOCKS_PER_SECTION],
 }
 
 impl Default for LightCache {
@@ -114,7 +153,77 @@ impl Default for LightCache {
         Self {
             cells: vec![Cell::EMPTY; CELLS],
             section: 0,
+            scratch: Box::new(Scratch {
+                flags: [AoFlags::AIR; BLOCKS_PER_SECTION],
+                block: [0; BLOCKS_PER_SECTION],
+                sky: [0; BLOCKS_PER_SECTION],
+            }),
         }
+    }
+}
+
+/// A slab's blocks: one state, the unpacked centre, or a section.
+enum States<'a> {
+    One(u16),
+    Flat(&'a [u16; BLOCKS_PER_SECTION]),
+    Packed(&'a Section),
+}
+
+/// A slab's levels of one layer.
+#[derive(Clone, Copy)]
+enum Levels<'a> {
+    One(u8),
+    Nibbles(&'a [u8; LIGHT_NIBBLES]),
+}
+
+impl Levels<'_> {
+    /// Layer `slot` (light sections start one below the world) of `layers`,
+    /// vanilla's sky above the column and in its empty top padding.
+    fn of(layers: &[LightSection], slot: i32, sky: bool, has_skylight: bool) -> Levels<'_> {
+        let top = sky && has_skylight;
+        match usize::try_from(slot).ok().and_then(|i| layers.get(i)) {
+            Some(LightSection::Data(data)) => Levels::Nibbles(data),
+            Some(LightSection::Empty) if top && slot as usize + 1 == layers.len() => {
+                Levels::One(15)
+            }
+            None if top && slot >= layers.len() as i32 => Levels::One(15),
+            _ => Levels::One(0),
+        }
+    }
+}
+
+/// A slab's overlap with the cache: `lo..hi` section-relative, `base` the
+/// slab's corner.
+#[derive(Clone, Copy)]
+struct Overlap {
+    lo: [i32; 3],
+    hi: [i32; 3],
+    base: [i32; 3],
+}
+
+impl Overlap {
+    fn of(slab: [i32; 3]) -> Self {
+        let base = slab.map(|d| d * 16);
+        Self {
+            lo: base.map(|b| b.max(-SHELL)),
+            hi: base.map(|b| (b + 16).min(16 + SHELL)),
+            base,
+        }
+    }
+
+    fn width(self) -> usize {
+        (self.hi[0] - self.lo[0]) as usize
+    }
+
+    /// Each row of x: its first section index and first cell, in order.
+    fn rows(self) -> impl Iterator<Item = (usize, usize)> {
+        let lx = (self.lo[0] - self.base[0]) as usize;
+        (self.lo[1]..self.hi[1]).flat_map(move |y| {
+            (self.lo[2]..self.hi[2]).map(move |z| {
+                let row = ((y - self.base[1]) * 16 + (z - self.base[2])) as usize;
+                (row * 16 + lx, cell_index(self.lo[0], y, z))
+            })
+        })
     }
 }
 
@@ -122,87 +231,103 @@ impl LightCache {
     /// Starts on section `s`: fills the 20³ from `neighborhood`.
     pub fn start(&mut self, neighborhood: &Neighborhood, s: usize) {
         self.section = s;
-        self.fill(neighborhood);
-    }
-
-    fn fill(&mut self, neighborhood: &Neighborhood) {
-        let mut block_lv = [0u8; CELLS];
-        let mut sky_lv = [0u8; CELLS];
-        scatter_light(neighborhood, self.section, false, &mut block_lv);
-        scatter_light(neighborhood, self.section, true, &mut sky_lv);
-
-        let s = self.section;
-        if let Some((flat_s, flat)) = neighborhood.decoded_center()
-            && flat_s == s
-        {
-            for y in 0..16i32 {
-                for z in 0..16i32 {
-                    let row = Section::index(0, y as usize, z as usize);
-                    for x in 0..16i32 {
-                        self.write(x, y, z, flat[row + x as usize], &block_lv, &sky_lv);
-                    }
-                }
-            }
-        } else if let Some(id) = neighborhood.chunks[4]
-            .and_then(|chunk| chunk.sections.get(s))
-            .and_then(|section| section.uniform())
-        {
-            for y in 0..16i32 {
-                for z in 0..16i32 {
-                    for x in 0..16i32 {
-                        self.write(x, y, z, id, &block_lv, &sky_lv);
-                    }
-                }
-            }
-        } else {
-            for y in 0..16i32 {
-                for z in 0..16i32 {
-                    for x in 0..16i32 {
-                        let state = neighborhood.block(s, x, y, z).unwrap_or(0);
-                        self.write(x, y, z, state, &block_lv, &sky_lv);
-                    }
-                }
-            }
-        }
-
-        for y in -SHELL..16 + SHELL {
-            for z in -SHELL..16 + SHELL {
-                for x in -SHELL..16 + SHELL {
-                    if ((x | y | z) as u32) < 16 {
-                        continue;
-                    }
-                    let state = neighborhood.block(s, x, y, z).unwrap_or(0);
-                    self.write(x, y, z, state, &block_lv, &sky_lv);
+        for ds in -1..=1 {
+            for cz in -1..=1 {
+                for cx in -1..=1 {
+                    self.fill_slab(neighborhood, [cx, ds, cz]);
                 }
             }
         }
     }
 
-    #[inline]
-    fn write(
-        &mut self,
-        x: i32,
-        y: i32,
-        z: i32,
-        state: u16,
-        block_lv: &[u8; CELLS],
-        sky_lv: &[u8; CELLS],
-    ) {
-        let i = cell_index(x, y, z);
-        let flags = ao_flags::of(state);
-        let block = block_lv[i];
-        let sky = sky_lv[i];
-        let light = if flags.emissive_rendering() {
-            FULL_BRIGHT
-        } else {
-            pack(u32::from(block.max(flags.emission())), u32::from(sky))
+    /// The overlap of the 16³ slab `slab` (in sections, centre `0`).
+    fn fill_slab(&mut self, neighborhood: &Neighborhood, slab: [i32; 3]) {
+        let overlap = Overlap::of(slab);
+        let centre = slab == [0; 3];
+        let chunk = neighborhood.chunks[((slab[0] + 1) + (slab[2] + 1) * 3) as usize];
+        let index = self.section as i32 + slab[1];
+
+        let states =
+            match chunk.and_then(|c| usize::try_from(index).ok().and_then(|i| c.sections.get(i))) {
+                None => States::One(0),
+                Some(section) => match (section.uniform(), neighborhood.decoded_center()) {
+                    (Some(id), _) => States::One(id),
+                    (None, Some((s, flat))) if centre && s == self.section => States::Flat(flat),
+                    (None, _) => States::Packed(section),
+                },
+            };
+        let [block, sky] = match chunk {
+            None => [Levels::One(0); 2],
+            Some(c) => {
+                let has_skylight = c.light.has_skylight();
+                let slot = index + 1;
+                [
+                    Levels::of(&c.light.block, slot, false, has_skylight),
+                    Levels::of(&c.light.sky, slot, true, has_skylight),
+                ]
+            }
         };
-        self.cells[i] = Cell {
-            light,
-            flags,
-            block,
-            sky,
+
+        let width = overlap.width();
+        if let (States::One(id), Levels::One(b), Levels::One(s)) = (&states, block, sky) {
+            let cell = Cell::new(ao_flags::of(*id), b, s);
+            for (_, at) in overlap.rows() {
+                self.cells[at..at + width].fill(cell);
+            }
+            return;
+        }
+
+        let scratch = &mut *self.scratch;
+        let n = overlap.rows().count() * width;
+        let table = ao_flags::table();
+        let flags_of = |id: u16| {
+            table
+                .get(usize::from(id))
+                .copied()
+                .unwrap_or_else(|| ao_flags::of(id))
         };
+        match states {
+            States::One(id) => scratch.flags[..n].fill(flags_of(id)),
+            States::Flat(flat) => {
+                for (out, (i, _)) in scratch.flags.chunks_exact_mut(width).zip(overlap.rows()) {
+                    for (o, &id) in out.iter_mut().zip(&flat[i..i + width]) {
+                        *o = flags_of(id);
+                    }
+                }
+            }
+            States::Packed(section) => {
+                for (out, (i, _)) in scratch.flags.chunks_exact_mut(width).zip(overlap.rows()) {
+                    for (o, i) in out.iter_mut().zip(i..) {
+                        *o = flags_of(section.get(i));
+                    }
+                }
+            }
+        }
+        for (levels, out) in [(block, &mut scratch.block), (sky, &mut scratch.sky)] {
+            match levels {
+                Levels::One(level) => out[..n].fill(level),
+                // The centre is whole and in index order: the byte kernels.
+                Levels::Nibbles(data) if centre => nibble_decode::unpack(data, out),
+                Levels::Nibbles(data) => {
+                    for (out, (i, _)) in out.chunks_exact_mut(width).zip(overlap.rows()) {
+                        for (o, i) in out.iter_mut().zip(i..) {
+                            *o = data[i >> 1] >> ((i & 1) * 4) & 15;
+                        }
+                    }
+                }
+            }
+        }
+
+        let rows = scratch.flags[..n]
+            .chunks_exact(width)
+            .zip(scratch.block.chunks_exact(width))
+            .zip(scratch.sky.chunks_exact(width));
+        for (((flags, block), sky), (_, at)) in rows.zip(overlap.rows()) {
+            let cells = &mut self.cells[at..at + width];
+            for (((cell, &f), &b), &s) in cells.iter_mut().zip(flags).zip(block).zip(sky) {
+                *cell = Cell::new(f, b, s);
+            }
+        }
     }
 
     /// The cell at section-relative `(x, y, z)`, each `-2..=17`.
@@ -216,80 +341,8 @@ impl LightCache {
     }
 }
 
-/// Unpacks each 16³ light slab that overlaps the cache into `dest`.
-fn scatter_light(neighborhood: &Neighborhood, s: usize, sky: bool, dest: &mut [u8; CELLS]) {
-    let mut unpacked = [0u8; BLOCKS_PER_SECTION];
-    for cz in -1..=1i32 {
-        for cx in -1..=1i32 {
-            let Some(chunk) = neighborhood.chunks[((cx + 1) + (cz + 1) * 3) as usize] else {
-                continue;
-            };
-            let layers = if sky {
-                chunk.light.sky.as_slice()
-            } else {
-                chunk.light.block.as_slice()
-            };
-            let has_skylight = chunk.light.has_skylight();
-            for ds in -1..=1i32 {
-                unpack_slot(layers, s as i32 + 1 + ds, sky, has_skylight, &mut unpacked);
-                scatter_slab(dest, &unpacked, cx, cz, ds);
-            }
-        }
-    }
-}
-
-fn unpack_slot(
-    layers: &[LightSection],
-    slot: i32,
-    sky: bool,
-    has_skylight: bool,
-    out: &mut [u8; BLOCKS_PER_SECTION],
-) {
-    match usize::try_from(slot).ok().and_then(|i| layers.get(i)) {
-        Some(LightSection::Data(data)) => nibble_decode::unpack(data, out),
-        Some(LightSection::Empty) if sky && has_skylight && slot as usize + 1 == layers.len() => {
-            out.fill(15);
-        }
-        None if sky && has_skylight && slot >= layers.len() as i32 => out.fill(15),
-        _ => out.fill(0),
-    }
-}
-
-/// The overlap of one 16³ slab (`(cx, ds, cz)` in chunks) with the 20³ cache.
-fn scatter_slab(
-    dest: &mut [u8; CELLS],
-    unpacked: &[u8; BLOCKS_PER_SECTION],
-    cx: i32,
-    cz: i32,
-    ds: i32,
-) {
-    let y_base = ds * 16;
-    let x_base = cx * 16;
-    let z_base = cz * 16;
-    let y_lo = y_base.max(-SHELL);
-    let y_hi = (y_base + 16).min(16 + SHELL);
-    let x_lo = x_base.max(-SHELL);
-    let x_hi = (x_base + 16).min(16 + SHELL);
-    let z_lo = z_base.max(-SHELL);
-    let z_hi = (z_base + 16).min(16 + SHELL);
-    if y_lo >= y_hi || x_lo >= x_hi || z_lo >= z_hi {
-        return;
-    }
-    let width = (x_hi - x_lo) as usize;
-    let lx0 = (x_lo - x_base) as usize;
-    for y in y_lo..y_hi {
-        let ly = (y - y_base) as usize;
-        for z in z_lo..z_hi {
-            let lz = (z - z_base) as usize;
-            let src = Section::index(lx0, ly, lz);
-            let dst = cell_index(x_lo, y, z);
-            dest[dst..dst + width].copy_from_slice(&unpacked[src..src + width]);
-        }
-    }
-}
-
 /// `AdjacencyInfo.corners`: the four sides a face's corners lie towards.
-fn adjacent(direction: Direction) -> [Direction; 4] {
+const fn adjacent(direction: Direction) -> [Direction; 4] {
     use Direction::*;
     match direction {
         Down => [West, East, North, South],
@@ -301,10 +354,47 @@ fn adjacent(direction: Direction) -> [Direction; 4] {
     }
 }
 
-fn add(a: [i32; 3], d: Direction) -> [i32; 3] {
-    let [dx, dy, dz] = d.step();
-    [a[0] + dx, a[1] + dy, a[2] + dz]
+/// A step along `d` as an offset between cells.
+const fn delta(d: Direction) -> isize {
+    let [x, y, z] = d.step();
+    (x + (z + y * SIDE as i32) * SIDE as i32) as isize
 }
+
+/// A face's neighbourhood as cell offsets: the side it faces, the four
+/// corner sides, and the diagonals `c0+c2, c0+c3, c1+c2, c1+c3`.
+struct Around {
+    forward: isize,
+    sides: [isize; 4],
+    diagonals: [isize; 4],
+}
+
+const AROUND: [Around; 6] = {
+    let mut out = [const {
+        Around {
+            forward: 0,
+            sides: [0; 4],
+            diagonals: [0; 4],
+        }
+    }; 6];
+    let mut i = 0;
+    while i < 6 {
+        let d = Direction::ALL[i];
+        let c = adjacent(d);
+        let sides = [delta(c[0]), delta(c[1]), delta(c[2]), delta(c[3])];
+        out[d.index()] = Around {
+            forward: delta(d),
+            sides,
+            diagonals: [
+                sides[0] + sides[2],
+                sides[0] + sides[3],
+                sides[1] + sides[2],
+                sides[1] + sides[3],
+            ],
+        };
+        i += 1;
+    }
+    out
+};
 
 /// Smooth coordinates as a corner: quarter levels, AO in sixtieths that
 fn corner(smooth: u32, ao: f32, emission: u8) -> CornerLight {
@@ -333,35 +423,42 @@ pub fn smooth_corners(
     emission: u8,
 ) -> [CornerLight; 4] {
     let groups = shape.groups;
-    let direction = shape.direction;
+    let around = &AROUND[shape.direction.index()];
     let cubic = shape.cubic(center.collision_full());
-    let base = if cubic { add(pos, direction) } else { pos };
-    let [c0, c1, c2, c3] = adjacent(direction);
-    let cell = |p: [i32; 3]| cache.at(p);
+    let [x, y, z] = pos;
+    let here = cell_index(x, y, z);
+    let front = here.wrapping_add_signed(around.forward);
+    let base = if cubic { front } else { here };
+    let cell = |i: usize, d: isize| cache.cells[i.wrapping_add_signed(d)];
 
-    let n = [c0, c1, c2, c3].map(|c| cell(add(base, c)));
-    let permeable =
-        [c0, c1, c2, c3].map(|c| cell(add(add(base, c), direction)).flags.light_permeable());
-    let (light, shade) = (n.map(|c| c.light), n.map(Cell::shade));
-    let diagonal = |a: usize, ca: Direction, b: usize, cb: Direction| {
+    let n = around.sides.map(|d| cell(base, d));
+    // Past each corner's side, one more along the face: vanilla's
+    // `corners[i]` then `move(direction)`, from `base`.
+    let beyond = base.wrapping_add_signed(around.forward);
+    let permeable = around
+        .sides
+        .map(|d| cell(beyond, d).flags.light_permeable());
+    let (light, shade) = (n.map(Cell::light), n.map(Cell::shade));
+    let diagonal = |k: usize, a: usize, b: usize| {
         if !permeable[a] && !permeable[b] {
             (shade[0], light[0])
         } else {
-            let c = cell(add(add(base, ca), cb));
-            (c.shade(), c.light)
+            let c = cell(base, around.diagonals[k]);
+            (c.shade(), c.light())
         }
     };
-    let (shade02, light02) = diagonal(2, c0, 0, c2);
-    let (shade03, light03) = diagonal(3, c0, 0, c3);
-    let (shade12, light12) = diagonal(2, c1, 1, c2);
-    let (shade13, light13) = diagonal(3, c1, 1, c3);
+    let (shade02, light02) = diagonal(0, 2, 0);
+    let (shade03, light03) = diagonal(1, 3, 0);
+    let (shade12, light12) = diagonal(2, 2, 1);
+    let (shade13, light13) = diagonal(3, 3, 1);
 
-    let mut light_center = cell(pos).light;
-    let next = cell(add(pos, direction));
-    if cubic || !next.flags.solid_render() {
-        light_center = next.light;
-    }
-    let shade_center = cell(base).shade();
+    let next = cache.cells[front];
+    let light_center = if cubic || !next.flags.solid_render() {
+        next.light()
+    } else {
+        cache.cells[here].light()
+    };
+    let shade_center = cache.cells[base].shade();
 
     let ao = [
         (shade[3] + shade[0] + shade03 + shade_center) * 0.25,
@@ -399,8 +496,8 @@ pub fn flat_corners(
         FULL_BRIGHT
     } else {
         pack(
-            u32::from(cell.block.max(center.emission())),
-            u32::from(cell.sky),
+            u32::from(cell.block().max(center.emission())),
+            u32::from(cell.sky()),
         )
     };
     let smooth = (block_of(light) << 4) | (sky_of(light) << 4) << 16;
@@ -519,7 +616,7 @@ mod tests {
                 for x in -SHELL..16 + SHELL {
                     let (light, flags) = compute_cell(&neighborhood, 1, [x, y, z]);
                     let cell = cache.at([x, y, z]);
-                    assert_eq!(cell.light, light, "light at {x},{y},{z}");
+                    assert_eq!(cell.light(), light, "light at {x},{y},{z}");
                     assert_eq!(cell.flags, flags, "flags at {x},{y},{z}");
                 }
             }
@@ -533,9 +630,154 @@ mod tests {
         let mut cache = LightCache::default();
         cache.start(&neighborhood, 0);
         let cell = cache.at([8, 16, 8]);
-        assert_eq!(cell.sky, 15);
-        assert_eq!(sky_of(cell.light), 15);
+        assert_eq!(cell.sky(), 15);
+        assert_eq!(sky_of(cell.light()), 15);
         let below = cache.at([8, 0, 8]);
-        assert_eq!(below.sky, 0);
+        assert_eq!(below.sky(), 0);
+    }
+
+    /// `prepareQuadAmbientOcclusion` read off the neighbourhood by
+    /// coordinates, for full faces: what the cache's offsets must match.
+    fn corners_by_coordinates(
+        n: &Neighborhood,
+        shape: &AoShape,
+        pos: [i32; 3],
+        center: AoFlags,
+    ) -> [CornerLight; 4] {
+        let at = |p: [i32; 3]| compute_cell(n, 1, p);
+        let shade = |f: AoFlags| if f.shade_dark() { 0.2 } else { 1.0 };
+        let step = |a: [i32; 3], d: Direction| {
+            let [x, y, z] = d.step();
+            [a[0] + x, a[1] + y, a[2] + z]
+        };
+        let d = shape.direction;
+        let cubic = shape.cubic(center.collision_full());
+        let base = if cubic { step(pos, d) } else { pos };
+        let c = adjacent(d);
+        let side = c.map(|c| at(step(base, c)));
+        let permeable = c.map(|c| at(step(step(base, c), d)).1.light_permeable());
+        let diagonal = |i: usize, j: usize| {
+            let (light, flags) = if !permeable[i] && !permeable[j] {
+                side[0]
+            } else {
+                at(step(step(base, c[i]), c[j]))
+            };
+            (shade(flags), light)
+        };
+        let [d02, d03, d12, d13] = [
+            diagonal(0, 2),
+            diagonal(0, 3),
+            diagonal(1, 2),
+            diagonal(1, 3),
+        ];
+        let next = at(step(pos, d));
+        let center_light = if cubic || !next.1.solid_render() {
+            next.0
+        } else {
+            at(pos).0
+        };
+        let center_shade = shade(at(base).1);
+        let (l, sh) = (side.map(|s| s.0), side.map(|s| shade(s.1)));
+        let ao = [
+            (sh[3] + sh[0] + d03.0 + center_shade) * 0.25,
+            (sh[2] + sh[0] + d02.0 + center_shade) * 0.25,
+            (sh[2] + sh[1] + d12.0 + center_shade) * 0.25,
+            (sh[3] + sh[1] + d13.0 + center_shade) * 0.25,
+        ];
+        let blended = [
+            smooth_blend(l[3], l[0], d03.1, center_light),
+            smooth_blend(l[2], l[0], d02.1, center_light),
+            smooth_blend(l[2], l[1], d12.1, center_light),
+            smooth_blend(l[3], l[1], d13.1, center_light),
+        ];
+        std::array::from_fn(|i| {
+            let k = usize::from(shape.groups[i]);
+            corner(blended[k], ao[k], 0)
+        })
+    }
+
+    /// A whole face towards `d`, on the block's side (`at` 1) or inside it.
+    fn face(d: Direction, at: f32) -> AoShape {
+        let a = d.axis();
+        let (u, w) = ((a + 1) % 3, (a + 2) % 3);
+        let mut corners = [(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0)].map(|(cu, cw)| {
+            let mut v = glam::Vec3::ZERO;
+            v[a] = if d.is_positive() { at } else { 1.0 - at };
+            v[u] = cu;
+            v[w] = cw;
+            v
+        });
+        if AoShape::of(corners).direction != d {
+            corners.reverse();
+        }
+        let shape = AoShape::of(corners);
+        assert_eq!(shape.direction, d);
+        shape
+    }
+
+    #[test]
+    fn smooth_corners_read_the_cells_vanilla_names() {
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        let mut noise = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        let mut chunks = Vec::new();
+        for cz in -1..=1 {
+            for cx in -1..=1 {
+                let mut sections: Vec<Section> = (0..3).map(|_| Section::empty()).collect();
+                for section in &mut sections {
+                    for i in 0..BLOCKS_PER_SECTION {
+                        if noise() % 3 == 0 {
+                            section.set(i, 1);
+                        }
+                    }
+                }
+                let mut light = ChunkLight::new(crate::world::dimension::Height {
+                    min_y: crate::world::dimension::Height::OVERWORLD.min_y,
+                    height: 3 * 16,
+                });
+                for y in -80i32..0 {
+                    for z in 0..16 {
+                        for x in 0..16 {
+                            let r = noise();
+                            light.set(x, y, z, (r & 15) as u8, (r >> 4 & 15) as u8);
+                        }
+                    }
+                }
+                chunks.push(Chunk::new(cx, cz, sections).with_light(light));
+            }
+        }
+        let mut around = [None; 9];
+        for (slot, chunk) in around.iter_mut().zip(&chunks) {
+            *slot = Some(chunk);
+        }
+        let mut flat = Box::new([0u16; BLOCKS_PER_SECTION]);
+        chunks[4].sections[1].copy_to(&mut flat);
+        let n = Neighborhood::with_chunks(around, Some((1, &*flat)));
+        let mut cache = LightCache::default();
+        cache.start(&n, 1);
+
+        let edge = [0, 1, 7, 14, 15];
+        for d in Direction::ALL {
+            for shape in [face(d, 1.0), face(d, 0.5)] {
+                for &x in &edge {
+                    for &y in &edge {
+                        for &z in &edge {
+                            let pos = [x, y, z];
+                            let center = cache.flags(pos);
+                            assert_eq!(
+                                smooth_corners(&cache, &shape, pos, center, 0),
+                                corners_by_coordinates(&n, &shape, pos, center),
+                                "{d:?} at {pos:?}, cubic {}",
+                                shape.cubic(center.collision_full())
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }
