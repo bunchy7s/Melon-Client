@@ -261,7 +261,9 @@ pub const CUSTOM_MOVE_TICKS: u32 = 40;
 impl ClientEntity {
     /// The mod movement state it began and the ticks since.
     pub fn custom_move(&self) -> Option<(&str, u32)> {
-        self.custom_move.as_ref().map(|(id, age)| (id.as_str(), *age))
+        self.custom_move
+            .as_ref()
+            .map(|(id, age)| (id.as_str(), *age))
     }
 
     /// `recreateFromPacket`; `None` for a type the registry doesn't know.

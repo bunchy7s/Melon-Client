@@ -16,8 +16,7 @@ pub const SB_CONFIG_ACCEPT_CODE_OF_CONDUCT: i32 = 9;
 pub const SB_CONFIG_KEEP_ALIVE: i32 = pumpkin_data::packet::serverbound::config::KEEP_ALIVE.0;
 pub const SB_CONFIG_PONG: i32 = pumpkin_data::packet::serverbound::config::PONG.0;
 pub const SB_PLAY_PONG: i32 = pumpkin_data::packet::serverbound::play::PONG.0;
-pub const SB_PLAY_CUSTOM_PAYLOAD: i32 =
-    pumpkin_data::packet::serverbound::play::CUSTOM_PAYLOAD.0;
+pub const SB_PLAY_CUSTOM_PAYLOAD: i32 = pumpkin_data::packet::serverbound::play::CUSTOM_PAYLOAD.0;
 pub const SB_CONFIG_RESOURCE_PACK: i32 = pumpkin_data::packet::serverbound::config::RESOURCE_PACK.0;
 pub const CB_CONFIG_FINISH: i32 = 3;
 pub const CB_CONFIG_REGISTRY_DATA: i32 = pumpkin_data::packet::clientbound::config::REGISTRY_DATA.0;

@@ -3795,7 +3795,7 @@ dependencies = [
 [[package]]
 name = "pumpkin-auth"
 version = "0.2.2+26.3-26.63"
-source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#018ea8f1424df48a7809ee7480ee12503859cad4"
+source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#f7f79872819d40c008de658f4a8b87be48eafe5a"
 dependencies = [
  "base64 0.23.1",
  "crypto-bigint",
@@ -3816,7 +3816,7 @@ dependencies = [
 [[package]]
 name = "pumpkin-codecs"
 version = "0.2.2+26.3-26.63"
-source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#018ea8f1424df48a7809ee7480ee12503859cad4"
+source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#f7f79872819d40c008de658f4a8b87be48eafe5a"
 dependencies = [
  "serde_json",
  "tracing",
@@ -3825,7 +3825,7 @@ dependencies = [
 [[package]]
 name = "pumpkin-command"
 version = "0.2.2+26.3-26.63"
-source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#018ea8f1424df48a7809ee7480ee12503859cad4"
+source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#f7f79872819d40c008de658f4a8b87be48eafe5a"
 dependencies = [
  "pumpkin-codecs",
  "pumpkin-data",
@@ -3841,7 +3841,7 @@ dependencies = [
 [[package]]
 name = "pumpkin-config"
 version = "0.2.2+26.3-26.63"
-source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#018ea8f1424df48a7809ee7480ee12503859cad4"
+source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#f7f79872819d40c008de658f4a8b87be48eafe5a"
 dependencies = [
  "pumpkin-util",
  "rand 0.10.3",
@@ -3854,7 +3854,7 @@ dependencies = [
 [[package]]
 name = "pumpkin-core"
 version = "0.2.2+26.3-26.63"
-source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#018ea8f1424df48a7809ee7480ee12503859cad4"
+source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#f7f79872819d40c008de658f4a8b87be48eafe5a"
 dependencies = [
  "aes 0.9.4",
  "arc-swap",
@@ -3916,7 +3916,7 @@ dependencies = [
 [[package]]
 name = "pumpkin-data"
 version = "0.2.2+26.3-26.63"
-source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#018ea8f1424df48a7809ee7480ee12503859cad4"
+source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#f7f79872819d40c008de658f4a8b87be48eafe5a"
 dependencies = [
  "crc32c",
  "flate2",
@@ -3934,7 +3934,7 @@ dependencies = [
 [[package]]
 name = "pumpkin-gametest"
 version = "0.2.2+26.3-26.63"
-source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#018ea8f1424df48a7809ee7480ee12503859cad4"
+source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#f7f79872819d40c008de658f4a8b87be48eafe5a"
 dependencies = [
  "async-trait",
  "pumpkin-data",
@@ -3950,7 +3950,7 @@ dependencies = [
 [[package]]
 name = "pumpkin-inventory"
 version = "0.2.2+26.3-26.63"
-source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#018ea8f1424df48a7809ee7480ee12503859cad4"
+source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#f7f79872819d40c008de658f4a8b87be48eafe5a"
 dependencies = [
  "pumpkin-data",
  "pumpkin-nbt",
@@ -3965,7 +3965,7 @@ dependencies = [
 [[package]]
 name = "pumpkin-macros"
 version = "0.2.2+26.3-26.63"
-source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#018ea8f1424df48a7809ee7480ee12503859cad4"
+source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#f7f79872819d40c008de658f4a8b87be48eafe5a"
 dependencies = [
  "heck",
  "proc-macro-error2",
@@ -3995,7 +3995,7 @@ dependencies = [
 [[package]]
 name = "pumpkin-nbt"
 version = "0.2.2+26.3-26.63"
-source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#018ea8f1424df48a7809ee7480ee12503859cad4"
+source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#f7f79872819d40c008de658f4a8b87be48eafe5a"
 dependencies = [
  "bytes",
  "flate2",
@@ -4008,7 +4008,7 @@ dependencies = [
 [[package]]
 name = "pumpkin-plugin-runtime"
 version = "0.2.2+26.3-26.63"
-source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#018ea8f1424df48a7809ee7480ee12503859cad4"
+source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#f7f79872819d40c008de658f4a8b87be48eafe5a"
 dependencies = [
  "futures",
  "thiserror 2.0.21",
@@ -4020,7 +4020,7 @@ dependencies = [
 [[package]]
 name = "pumpkin-protocol"
 version = "0.2.2+26.3-26.63"
-source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#018ea8f1424df48a7809ee7480ee12503859cad4"
+source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#f7f79872819d40c008de658f4a8b87be48eafe5a"
 dependencies = [
  "aes 0.9.4",
  "base64 0.23.1",
@@ -4043,7 +4043,7 @@ dependencies = [
 [[package]]
 name = "pumpkin-util"
 version = "0.2.2+26.3-26.63"
-source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#018ea8f1424df48a7809ee7480ee12503859cad4"
+source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#f7f79872819d40c008de658f4a8b87be48eafe5a"
 dependencies = [
  "bytes",
  "colored",
@@ -4061,7 +4061,7 @@ dependencies = [
 [[package]]
 name = "pumpkin-wasm-host"
 version = "0.2.2+26.3-26.63"
-source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#018ea8f1424df48a7809ee7480ee12503859cad4"
+source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#f7f79872819d40c008de658f4a8b87be48eafe5a"
 dependencies = [
  "pumpkin-core",
  "pumpkin-plugin-runtime",
@@ -4077,7 +4077,7 @@ dependencies = [
 [[package]]
 name = "pumpkin-wasm-host-common"
 version = "0.2.2+26.3-26.63"
-source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#018ea8f1424df48a7809ee7480ee12503859cad4"
+source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#f7f79872819d40c008de658f4a8b87be48eafe5a"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -4106,7 +4106,7 @@ dependencies = [
 [[package]]
 name = "pumpkin-wasm-host-v0_1"
 version = "0.2.2+26.3-26.63"
-source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#018ea8f1424df48a7809ee7480ee12503859cad4"
+source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#f7f79872819d40c008de658f4a8b87be48eafe5a"
 dependencies = [
  "bytes",
  "pumpkin-config",
@@ -4132,7 +4132,7 @@ dependencies = [
 [[package]]
 name = "pumpkin-world"
 version = "0.2.2+26.3-26.63"
-source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#018ea8f1424df48a7809ee7480ee12503859cad4"
+source = "git+https://github.com/zinedinp/Pumpkin?branch=mod-zip#f7f79872819d40c008de658f4a8b87be48eafe5a"
 dependencies = [
  "arc-swap",
  "bitflags 2.13.2",

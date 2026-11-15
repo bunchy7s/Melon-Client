@@ -252,7 +252,10 @@ mod tests {
         assert!((player.feet() - start).length() > 0.3, "{}", player.feet());
         assert_eq!(player.take_started_moves(), ["example:dodge"]);
         player.tick(MoveInput::default(), &level, 20, SPRINT_WINDOW_DEFAULT);
-        assert!(player.take_started_moves().is_empty(), "one start per dodge");
+        assert!(
+            player.take_started_moves().is_empty(),
+            "one start per dodge"
+        );
         settle(&mut player, &level);
         assert_eq!(player.move_mode(), MoveMode::Walk);
     }

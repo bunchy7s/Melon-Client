@@ -405,8 +405,28 @@ fn the_player_stands_and_walks_on_generated_terrain() {
         "landed at {rest:?}, far from the spawn at y {y}"
     );
 
+    // The server's move checks must not mistake walking for cheating.
+    let mut snapped_back = 0;
     for tick in 0..60 {
-        pump(&mut level, &mut player);
+        for event in session.poll() {
+            match event {
+                WorldEvent::ChunkLoaded(chunk) => level.insert(chunk),
+                WorldEvent::Teleport(t) => {
+                    snapped_back += 1;
+                    let feet = DVec3::new(t.pos.0, t.pos.1, t.pos.2);
+                    player.teleport(feet, DVec3::ZERO, feet);
+                }
+                _ => {}
+            }
+        }
+        let feet = player.feet();
+        session.send_position(
+            (feet.x, feet.y, feet.z),
+            0.0,
+            0.0,
+            player.on_ground(),
+            false,
+        );
         let input = MoveInput {
             forward: 1.0,
             jump: tick % 20 == 0,
@@ -428,6 +448,77 @@ fn the_player_stands_and_walks_on_generated_terrain() {
     assert!(
         (player.feet() - rest).length() > 1.0,
         "walking went nowhere from {rest:?}"
+    );
+    assert_eq!(snapped_back, 0, "the server rejected a walking move");
+}
+
+/// `melon:movement`: the server lists what it allows, its "moved too
+/// quickly" check snaps a jump back, and a started state's grace lets the
+/// same jump through.
+#[test]
+#[ignore = "starts an integrated server"]
+fn a_custom_movement_state_bends_the_move_checks() {
+    use pumpkin_data::mod_movement::{MovementSpec, register_movement};
+    use pumpkin_protocol::java::melon_movement::{CHANNEL, MovementPayload};
+
+    register_movement(MovementSpec {
+        id: "itest:blink".to_owned(),
+        extra_speed: 20.0,
+        ..MovementSpec::default()
+    })
+    .unwrap();
+    let mut world = TestWorld::open("movement", WorldSettings::default(), 2, "Blinker");
+    let (x, y, z) = world.spawn.pos;
+    let session = &mut world.session;
+    session.send_register(&[CHANNEL]);
+
+    // Polls for up to `secs`; the first teleport (acked), or `None`.
+    let wait = |session: &mut Session, secs: u64, allowed: &mut Option<Vec<String>>| {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+        while std::time::Instant::now() < until {
+            for event in session.poll() {
+                match event {
+                    WorldEvent::Movement(MovementPayload::Allowed(ids)) => *allowed = Some(ids),
+                    WorldEvent::Teleport(t) => {
+                        session.send_accept_teleport(t.id, t.pos, t.yaw, t.pitch);
+                        return Some(t);
+                    }
+                    _ => {}
+                }
+            }
+            assert!(session.ended().is_none(), "{:?}", session.ended());
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        None
+    };
+    let mut allowed = None;
+    for _ in 0..10 {
+        wait(session, 1, &mut allowed);
+        if allowed.is_some() {
+            break;
+        }
+    }
+    assert!(
+        allowed
+            .expect("no Allowed arrived")
+            .iter()
+            .any(|id| id == "itest:blink"),
+        "the server lists the registered state"
+    );
+
+    let up = (x, y + 15.0, z);
+    session.send_position(up, 0.0, 0.0, false, false);
+    let back = wait(session, 3, &mut None).expect("a 15 block jump snaps back");
+    assert!((back.pos.1 - y).abs() < 1.0, "{back:?}");
+
+    let start = MovementPayload::Start {
+        id: "itest:blink".to_owned(),
+    };
+    session.send_custom_payload(CHANNEL, &start.encode());
+    session.send_position(up, 0.0, 0.0, false, false);
+    assert!(
+        wait(session, 2, &mut None).is_none(),
+        "the started state's grace lets the jump through"
     );
 }
 
@@ -716,6 +807,7 @@ fn the_nether_comes_with_its_own_height() {
                         WorldEvent::BiomesChanged(_) => "biomes",
                         WorldEvent::Teleport(_) => "teleport",
                         WorldEvent::Ping(_) => "ping",
+                        WorldEvent::Movement(_) => "movement",
                         WorldEvent::Game(_) => "game",
                         WorldEvent::Reconfiguring => "reconfiguring",
                         WorldEvent::Rejoined(..) => "rejoined",

@@ -1083,8 +1083,11 @@ fn read_custom_payload(r: &mut Reader) -> Result<Play> {
     if r.string()? != CHANNEL {
         return Ok(Play::Nothing);
     }
-    Ok(MovementPayload::decode(r.remaining())
-        .map_or(Play::Nothing, |payload| Play::Event(WorldEvent::Movement(payload))))
+    Ok(
+        MovementPayload::decode(r.remaining()).map_or(Play::Nothing, |payload| {
+            Play::Event(WorldEvent::Movement(payload))
+        }),
+    )
 }
 
 /// Packets Melon knows and has no use for.
