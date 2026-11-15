@@ -27,6 +27,9 @@ pub struct Sheets {
     pub item_sprites: Arc<HashMap<String, ([f32; 4], bool)>>,
     pub blocks: TextureId,
     pub models: Arc<BlockModels>,
+    /// The atlases' widths in texels, for the glint's scale.
+    pub item_side: u32,
+    pub block_side: u32,
 }
 
 impl Sheets {
@@ -211,6 +214,18 @@ impl HeldItems {
 
     /// The meshes and textures for `stack` held in `pose`, in use or not,
     /// one per part (opaque ones first), each blended or not.
+    /// Texels per UV unit of `texture`, for [`crate::renderer::Glint`]: an
+    /// atlas's side, or 16 for an item's own texture (UVs over the sprite).
+    pub fn glint_texels(&self, texture: TextureId) -> u32 {
+        if texture == self.sheets.items {
+            self.sheets.item_side
+        } else if texture == self.sheets.blocks {
+            self.sheets.block_side
+        } else {
+            16
+        }
+    }
+
     pub fn get(
         &self,
         stack: &ItemStack,

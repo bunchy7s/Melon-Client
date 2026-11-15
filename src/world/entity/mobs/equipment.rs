@@ -34,12 +34,15 @@ pub fn push_humanoid_armor(
     }
     for (slot, stack) in ArmorSlot::ALL.into_iter().zip(armor) {
         let textures = armor_textures(stack, slot, baby && kind != EntityKind::ArmorStand);
+        // `EquipmentLayerRenderer.renderLayers`: the glint goes with the
+        // first layer (the leather overlay above it shows none); with a
+        // trim, vanilla glints the whole model after it, here the first
+        // layer and the trim each where their texels are.
         let foil = crate::world::glint::has_foil(stack);
-        let last = textures.len().saturating_sub(1);
         for (i, (texture, tint)) in textures.into_iter().enumerate() {
             out.push(
                 LayerSpec::humanoid_armor(armor_model(kind, slot, baby), texture, tint)
-                    .with_foil(foil && i == last && trim_overlay(stack, slot, baby).is_none()),
+                    .with_foil(foil && i == 0),
             );
         }
         if let Some(trim) = trim_overlay(stack, slot, baby) {
@@ -107,9 +110,8 @@ fn push_equipment_textures(
 ) {
     let textures = equipment_textures(stack, folder);
     let foil = crate::world::glint::has_foil(stack);
-    let last = textures.len().saturating_sub(1);
     for (i, (texture, tint)) in textures.into_iter().enumerate() {
-        out.push(LayerSpec::owned(model, texture, tint).with_foil(foil && i == last));
+        out.push(LayerSpec::owned(model, texture, tint).with_foil(foil && i == 0));
     }
 }
 

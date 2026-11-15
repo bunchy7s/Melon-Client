@@ -1277,7 +1277,10 @@ fn submit_item(
             blend: crate::renderer::Blending::of(translucent),
             light: Some(placed.light),
             overlay: 0.0,
-            glint: Glint::entity(crate::world::glint::has_foil(stack)),
+            glint: Glint::entity(
+                crate::world::glint::has_foil(stack),
+                assets.held.glint_texels(atlas),
+            ),
         });
     }
 }

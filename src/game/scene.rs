@@ -222,7 +222,10 @@ impl InWorld {
                                     blend: crate::renderer::Blending::of(translucent),
                                     light: None,
                                     overlay: 0.0,
-                                    glint: Glint::item(crate::world::glint::has_foil(stack)),
+                                    glint: Glint::item(
+                                        crate::world::glint::has_foil(stack),
+                                        assets.held.glint_texels(atlas),
+                                    ),
                                 });
                             }
                         }

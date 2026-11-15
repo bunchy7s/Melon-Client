@@ -377,7 +377,9 @@ pub unsafe fn create(
         extra_sets,
         depth_bias: match mode {
             Mode::Crumbling => Some((40.0, 3.0)),
-            Mode::Opaque | Mode::Translucent | Mode::Text => Some((16.0, 2.0)),
+            // The glint redraws those meshes with depth `EQUAL`: the same
+            // offset, or it never meets them.
+            Mode::Opaque | Mode::Translucent | Mode::Text | Mode::Glint => Some((16.0, 2.0)),
             _ => None,
         },
     }

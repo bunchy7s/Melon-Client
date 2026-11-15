@@ -188,7 +188,10 @@ pub(super) fn submit_worn_head(
             blend: crate::renderer::Blending::of(translucent),
             light: Some(light),
             overlay: 0.0,
-            glint: Glint::entity(crate::world::glint::has_foil(stack)),
+            glint: Glint::entity(
+                crate::world::glint::has_foil(stack),
+                assets.held.glint_texels(atlas),
+            ),
         });
     }
 }

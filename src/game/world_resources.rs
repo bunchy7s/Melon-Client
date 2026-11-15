@@ -206,6 +206,8 @@ impl WorldResources {
             item_sprites,
             blocks: block_atlas,
             models: models.clone(),
+            item_side: items.image.width(),
+            block_side: atlas.image.width(),
         };
         Ok(Self {
             fluids,

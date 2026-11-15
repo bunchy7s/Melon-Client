@@ -105,20 +105,24 @@ impl Blending {
 pub enum Glint {
     #[default]
     None,
-    /// GUI and first-person items: sprite-local UVs, item texture.
-    Item,
-    /// Items held in the world: sprite-local UVs, item texture.
-    Entity,
+    /// GUI and first-person items, over a texture `texels` wide per UV unit
+    /// (an atlas's side; 16 for a sprite with a texture of its own).
+    Item { texels: u32 },
+    /// Items held in the world, likewise.
+    Entity { texels: u32 },
     /// Worn armor: scale 0.16, armor texture.
     Armor,
 }
 
 impl Glint {
-    pub const fn scale(self) -> f32 {
+    /// Vanilla's `TextureTransform` scales are for its atlas UVs; the same
+    /// glint per 16-texel sprite over any atlas size, or a sprite's own UVs.
+    pub fn scale(self) -> f32 {
+        let per_sprite = |scale: f32, texels: u32| scale * texels.max(1) as f32 / 16.0;
         match self {
             Self::None => 0.0,
-            Self::Item => crate::world::glint::ITEM_SPRITE_SCALE,
-            Self::Entity => crate::world::glint::ENTITY_SPRITE_SCALE,
+            Self::Item { texels } => per_sprite(crate::world::glint::ITEM_SPRITE_SCALE, texels),
+            Self::Entity { texels } => per_sprite(crate::world::glint::ENTITY_SPRITE_SCALE, texels),
             Self::Armor => crate::world::glint::ARMOR_SCALE,
         }
     }
@@ -132,13 +136,21 @@ impl Glint {
     }
 
     /// [`Self::Item`] when `foil`, else none.
-    pub const fn item(foil: bool) -> Self {
-        if foil { Self::Item } else { Self::None }
+    pub const fn item(foil: bool, texels: u32) -> Self {
+        if foil {
+            Self::Item { texels }
+        } else {
+            Self::None
+        }
     }
 
     /// [`Self::Entity`] when `foil`, else none.
-    pub const fn entity(foil: bool) -> Self {
-        if foil { Self::Entity } else { Self::None }
+    pub const fn entity(foil: bool, texels: u32) -> Self {
+        if foil {
+            Self::Entity { texels }
+        } else {
+            Self::None
+        }
     }
 
     /// [`Self::Armor`] when `foil`, else none.

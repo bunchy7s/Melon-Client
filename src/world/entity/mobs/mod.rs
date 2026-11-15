@@ -1653,6 +1653,23 @@ mod tests {
     }
 
     #[test]
+    fn the_armor_glint_goes_with_the_first_layer() {
+        use pumpkin_data::data_component_impl::EnchantmentGlintOverrideImpl;
+        let empty = ItemStack::EMPTY.clone();
+        let mut leather = ItemStack::new(1, &Item::LEATHER_CHESTPLATE);
+        leather.set_data_component(EnchantmentGlintOverrideImpl { glint: true });
+        let mut layers = Vec::new();
+        push_humanoid_armor(
+            EntityKind::Player,
+            false,
+            [&empty, &leather, &empty, &empty],
+            &mut layers,
+        );
+        let foil: Vec<bool> = layers.iter().map(|layer| layer.foil).collect();
+        assert_eq!(foil, [true, false], "the dyed leather, not its overlay");
+    }
+
+    #[test]
     fn a_zero_count_armor_piece_is_not_worn() {
         let empty = ItemStack::EMPTY.clone();
         let mut leftover = ItemStack::new(1, &Item::DIAMOND_HELMET);
