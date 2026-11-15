@@ -223,6 +223,59 @@ mod tests {
         red.pixels_mut()
             .for_each(|p| *p = image::Rgba([255, 0, 0, 255]));
         let (w, h) = box_.pixels(2.0);
+        let behind = Mat4::from_translation(Vec3::new(0.0, 0.0, -50.0)) * root;
+        let layer = |texture, root, share_depth| PreviewLayer {
+            model: &player.model,
+            pose: &pose,
+            root,
+            texture,
+            tint: [255; 3],
+            skip: &[],
+            only: None,
+            share_depth,
+            glint: None,
+        };
+        let shared = rasterize_layers(
+            &[layer(&skin, root, false), layer(&red, behind, true)],
+            w,
+            h,
+        );
+        let reset = rasterize_layers(
+            &[layer(&skin, root, false), layer(&red, behind, false)],
+            w,
+            h,
+        );
+        let only_skin = rasterize_layers(&[layer(&skin, root, false)], w, h);
+        let (x, y) = shared
+            .enumerate_pixels()
+            .find(|(_, _, p)| p[3] > 0)
+            .map(|(x, y, _)| (x, y))
+            .expect("drawn");
+        assert_eq!(shared.get_pixel(x, y), only_skin.get_pixel(x, y));
+        let painted = reset.get_pixel(x, y);
+        assert!(
+            painted[0] > 180 && painted[1] < 40 && painted[2] < 40,
+            "{painted:?}"
+        );
+    }
+
+    /// An armor trim lies exactly on its armor: drawn after it at the
+    /// same depth, it shows (`GL_LEQUAL`).
+    #[test]
+    fn a_layer_at_the_same_depth_draws_over_the_one_before() {
+        let player = PlayerModel::new(PlayerModelType::Wide);
+        let state = AvatarRenderState::default();
+        let box_ = preview((50.5, 43.0));
+        let root = box_.view(2.0, 1.8) * PlayerModel::root_transform(&state);
+        let pose = player.pose(&state);
+        let mut armor = RgbaImage::new(64, 64);
+        armor
+            .pixels_mut()
+            .for_each(|p| *p = image::Rgba([200, 200, 200, 255]));
+        let mut trim = RgbaImage::new(64, 64);
+        trim.pixels_mut()
+            .for_each(|p| *p = image::Rgba([255, 0, 0, 255]));
+        let (w, h) = box_.pixels(2.0);
         let layer = |texture, share_depth| PreviewLayer {
             model: &player.model,
             pose: &pose,
@@ -234,19 +287,12 @@ mod tests {
             share_depth,
             glint: None,
         };
-        let shared = rasterize_layers(&[layer(&skin, false), layer(&red, true)], w, h);
-        let reset = rasterize_layers(&[layer(&skin, false), layer(&red, false)], w, h);
-        let only_skin = rasterize_layers(&[layer(&skin, false)], w, h);
-        let (x, y) = shared
-            .enumerate_pixels()
-            .find(|(_, _, p)| p[3] > 0)
-            .map(|(x, y, _)| (x, y))
-            .expect("drawn");
-        assert_eq!(shared.get_pixel(x, y), only_skin.get_pixel(x, y));
-        let painted = reset.get_pixel(x, y);
+        let image = rasterize_layers(&[layer(&armor, false), layer(&trim, true)], w, h);
+        let drawn: Vec<_> = image.pixels().filter(|p| p[3] > 0).collect();
+        assert!(!drawn.is_empty());
         assert!(
-            painted[0] > 180 && painted[1] < 40 && painted[2] < 40,
-            "{painted:?}"
+            drawn.iter().all(|p| p[0] > 100 && p[1] < 40),
+            "the trim covers the armor"
         );
     }
 }

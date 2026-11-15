@@ -548,7 +548,9 @@ pub(crate) fn draw_triangle(
             }
             let z = w0 * p[0].z + w1 * p[1].z + w2 * p[2].z;
             let index = (y * w + x) as usize;
-            if z <= depth[index] {
+            // `GL_LEQUAL`: a layer at the same depth (an armor trim on its
+            // armor, the leather overlay) draws over the one before.
+            if z < depth[index] {
                 continue;
             }
             let t = uv[0] * w0 + uv[1] * w1 + uv[2] * w2;
