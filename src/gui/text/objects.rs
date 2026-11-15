@@ -126,7 +126,7 @@ mod tests {
     use crate::component::{PlayerSprite, Profile};
 
     fn font() -> Font {
-        Font::from_bitmaps(HashMap::new(), Vec::new())
+        Font::from_bitmaps(Default::default(), Vec::new())
     }
 
     #[test]

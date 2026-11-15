@@ -102,10 +102,13 @@ impl HeldItems {
         stack: &ItemStack,
         using: impl Into<HeldUse>,
     ) {
-        let using = using.into();
-        let key = ItemKey::of(&self.assets_root, stack);
-        let key = (key, using);
-        if stack.is_empty() || self.items.contains_key(&key) {
+        // Most hands are empty: no key for them (it takes a lock and a
+        // hash of the item's name).
+        if stack.is_empty() {
+            return;
+        }
+        let key = (ItemKey::of(&self.assets_root, stack), using.into());
+        if self.items.contains_key(&key) {
             return;
         }
         let name = stack.item.registry_key;

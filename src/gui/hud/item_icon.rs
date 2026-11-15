@@ -109,8 +109,12 @@ impl ItemIcons {
     }
 
     fn missing(&self, stack: &ItemStack) -> Option<(ItemKey, &'static str)> {
+        // Air (most slots) needs no key: it takes a lock and a hash.
+        if stack.item.id == 0 {
+            return None;
+        }
         let key = ItemKey::of(&self.assets_root, stack);
-        if key.item == 0 || self.icons.contains_key(&key) {
+        if self.icons.contains_key(&key) {
             None
         } else {
             Some((key, stack.item.registry_key))

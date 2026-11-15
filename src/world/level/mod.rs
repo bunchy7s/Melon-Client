@@ -47,6 +47,11 @@ impl LoadedChunk {
         }
     }
 
+    /// Whether it has block entities or heads to draw.
+    fn furnished(&self) -> bool {
+        !self.block_entities.is_empty() || !self.heads.is_empty()
+    }
+
     /// Keeps the block entity positions up to date for one block that
     fn block_changed(&mut self, pos: [i32; 3], old: u16, new: u16) {
         if block_entity::kind_of(old).is_some() {
@@ -71,6 +76,10 @@ pub struct FinishedMesh {
 
 pub struct Level {
     chunks: ChunkMap<LoadedChunk>,
+    /// The chunks that have had block entities or heads since they were
+    /// loaded: what [`Self::block_entities`] and [`Self::heads`] walk,
+    /// every frame, instead of every loaded chunk.
+    furnished: Vec<(i32, i32)>,
     /// What needs meshing, and the workers meshing it.
     meshing: MeshQueue,
     /// Bumped whenever a mesh or a chunk changes, so the occlusion walk knows
@@ -89,6 +98,7 @@ impl Default for Level {
     fn default() -> Self {
         Self {
             chunks: ChunkMap::default(),
+            furnished: Vec::new(),
             meshing: MeshQueue::default(),
             revision: 0,
             height: Height::OVERWORLD,
@@ -133,7 +143,11 @@ impl Level {
         let key = (chunk.x, chunk.z);
         self.remove(key.0, key.1);
         let sections = chunk.sections.len();
-        self.chunks.insert(key, LoadedChunk::new(chunk));
+        let loaded = LoadedChunk::new(chunk);
+        if loaded.furnished() {
+            self.furnished.push(key);
+        }
+        self.chunks.insert(key, loaded);
         self.meshing.added(key, sections);
         self.meshing.queue_around(key, &AROUND);
         self.revision += 1;
@@ -141,8 +155,11 @@ impl Level {
 
     /// A chunk was unloaded. Whether it was there.
     pub fn remove(&mut self, x: i32, z: i32) -> bool {
-        if self.chunks.remove(&(x, z)).is_none() {
+        let Some(loaded) = self.chunks.remove(&(x, z)) else {
             return false;
+        };
+        if loaded.furnished() || self.furnished.contains(&(x, z)) {
+            self.furnished.retain(|&key| key != (x, z));
         }
         self.meshing.removed((x, z));
         self.meshing.queue_around((x, z), &AROUND[..4]);
@@ -163,6 +180,9 @@ impl Level {
             }
             Arc::make_mut(&mut Arc::make_mut(&mut loaded.chunk).sections[s]).set(index, state);
             loaded.block_changed([x, y, z], old, state);
+            if loaded.furnished() && !self.furnished.contains(&key) {
+                self.furnished.push(key);
+            }
             old
         };
         for pos in self.update_light([x, y, z], old, state) {
@@ -243,6 +263,7 @@ impl Level {
     /// Drops every chunk. Call when leaving the world.
     pub fn clear(&mut self) {
         self.chunks.clear();
+        self.furnished.clear();
         self.meshing.clear();
         self.revision += 1;
     }
@@ -377,6 +398,10 @@ impl Level {
         }
         if let Some(profile) = profile {
             loaded.heads.push((pos, profile));
+            let key = (section_coord(x), section_coord(z));
+            if !self.furnished.contains(&key) {
+                self.furnished.push(key);
+            }
         }
         self.revision += 1;
     }
@@ -391,17 +416,19 @@ impl Level {
             .map(|(_, profile)| profile)
     }
 
+    fn furnished_chunks(&self) -> impl Iterator<Item = &LoadedChunk> + '_ {
+        self.furnished.iter().filter_map(|key| self.chunks.get(key))
+    }
+
     /// Every loaded player head with a profile.
     pub fn heads(&self) -> impl Iterator<Item = ([i32; 3], &HeadProfile)> + '_ {
-        self.chunks
-            .values()
+        self.furnished_chunks()
             .flat_map(|loaded| loaded.heads.iter().map(|(pos, profile)| (*pos, profile)))
     }
 
     /// The block entity positions of every loaded chunk.
     pub fn block_entities(&self) -> impl Iterator<Item = [i32; 3]> + '_ {
-        self.chunks
-            .values()
+        self.furnished_chunks()
             .flat_map(|loaded| loaded.block_entities.iter().copied())
     }
 
@@ -543,6 +570,29 @@ mod tests {
         let chest = pumpkin_data::Block::CHEST.default_state.id.as_u16();
         level.set_block([1, 64, 2], chest, false);
         assert_eq!(level.block_entities().collect::<Vec<_>>(), vec![[1, 64, 2]]);
+    }
+
+    /// The chunks walked for block entities follow loads, unloads and
+    /// edits: each listed once, none of an unloaded chunk.
+    #[test]
+    fn block_entities_follow_their_chunks() {
+        let column = |x, z| Chunk::new(x, z, (0..24).map(|_| Section::empty()).collect());
+        let chest = pumpkin_data::Block::CHEST.default_state.id.as_u16();
+        let mut level = Level::default();
+        level.insert(column(0, 0));
+        level.insert(column(1, 0));
+        level.set_block([1, 64, 2], chest, false);
+        level.set_block([1, 64, 2], 0, false);
+        level.set_block([1, 64, 2], chest, false);
+        level.set_block([20, 64, 2], chest, false);
+        let mut all: Vec<_> = level.block_entities().collect();
+        all.sort_unstable();
+        assert_eq!(all, vec![[1, 64, 2], [20, 64, 2]]);
+        level.remove(1, 0);
+        assert_eq!(level.block_entities().collect::<Vec<_>>(), vec![[1, 64, 2]]);
+        level.insert(column(0, 0));
+        assert_eq!(level.block_entities().count(), 0);
+        assert!(level.furnished.is_empty());
     }
 
     #[test]

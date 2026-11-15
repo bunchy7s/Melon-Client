@@ -2,7 +2,6 @@
 
 use crate::gui::text::font::{Font, Glyph, GlyphKind};
 use image::{Rgba, RgbaImage};
-use std::collections::HashMap;
 
 /// U+0020..=U+007F. Each byte is a row; bit 0 is the left pixel.
 const BASIC: [[u8; 8]; 96] = [
@@ -240,7 +239,7 @@ pub fn atlas() -> RgbaImage {
 }
 
 pub fn font(page: RgbaImage) -> Font {
-    let mut glyphs = HashMap::new();
+    let mut glyphs = crate::gui::text::font::GlyphMap::default();
     glyphs.insert(' ', Glyph::new(GlyphKind::Space, 4.0));
     for code in 0u32..256 {
         if code == b' ' as u32 {

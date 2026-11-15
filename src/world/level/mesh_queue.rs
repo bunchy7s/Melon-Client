@@ -51,6 +51,17 @@ struct Dirty {
     filled: bool,
 }
 
+impl Dirty {
+    /// Both waits as one: by the player if either was, known filled only
+    /// if both were.
+    fn merged(self, other: Self) -> Self {
+        Self {
+            player: self.player || other.player,
+            filled: self.filled && other.filled,
+        }
+    }
+}
+
 /// A section's new mesh.
 pub(super) struct Built {
     pub pos: SectionPos,
@@ -65,6 +76,14 @@ pub(super) struct MeshQueue {
     versions: SectionMap<Versions>,
     /// Sections waiting to be (re)meshed.
     dirty: SectionMap<Dirty>,
+    /// Waiting sections of columns not [`ready`] yet, by column: put aside
+    /// so a frame doesn't look at them again, and back in `dirty` once a
+    /// chunk arrives or the camera moves to another chunk.
+    parked: ChunkMap<Vec<(i32, Dirty)>>,
+    /// Bumped whenever a chunk arrives: then a parked column may be ready.
+    arrivals: u64,
+    /// The camera's chunk and `arrivals` when `parked` was last looked at.
+    parked_at: Option<((i32, i32), u64)>,
     /// Started on the first [`MeshQueue::run`].
     mesher: Option<Mesher>,
     /// The block models `mesher`'s workers build with: a reload of the
@@ -86,6 +105,7 @@ pub(super) struct MeshQueue {
 impl MeshQueue {
     /// A chunk of `sections` sections arrived: each needs its first mesh.
     pub fn added(&mut self, key: (i32, i32), sections: usize) {
+        self.arrivals += 1;
         for s in 0..sections as i32 {
             self.versions.insert((key.0, s, key.1), Versions::default());
         }
@@ -98,6 +118,7 @@ impl MeshQueue {
             self.versions.remove(&(key.0, s, key.1));
             self.dirty.remove(&(key.0, s, key.1));
         }
+        self.parked.remove(&key);
     }
 
     /// The "Smooth Lighting" option: on a change every section is
@@ -132,6 +153,7 @@ impl MeshQueue {
     pub fn clear(&mut self) {
         self.versions.clear();
         self.dirty.clear();
+        self.parked.clear();
     }
 
     /// Queues every loaded section: the block models changed.
@@ -200,7 +222,9 @@ impl MeshQueue {
         let mut sync = Vec::new();
         let mut initial = Vec::new();
         let mut rebuild = Vec::new();
+        self.unpark(chunks, center);
         let mut ready_columns = ChunkMap::<bool>::default();
+        let mut park = Vec::new();
         for (&pos, dirty) in &mut self.dirty {
             let Some(versions) = self.versions.get(&pos) else {
                 continue;
@@ -216,6 +240,7 @@ impl MeshQueue {
                 .entry(column)
                 .or_insert_with(|| ready(chunks, column, center))
             {
+                park.push(pos);
                 continue;
             }
             if !dirty.filled {
@@ -235,6 +260,15 @@ impl MeshQueue {
                 initial.push((distance, pos));
             } else {
                 rebuild.push((distance, pos));
+            }
+        }
+        for pos in park {
+            if let Some(dirty) = self.dirty.remove(&pos) {
+                let sections = self.parked.entry((pos.0, pos.2)).or_default();
+                match sections.iter_mut().find(|(s, _)| *s == pos.1) {
+                    Some((_, parked)) => *parked = parked.merged(dirty),
+                    None => sections.push((pos.1, dirty)),
+                }
             }
         }
         for (pos, version) in empty {
@@ -302,6 +336,26 @@ impl MeshQueue {
         }
         self.ready_count = initial.len() + rebuild.len();
         finished
+    }
+
+    /// Puts the parked sections of columns now [`ready`] back in `dirty`,
+    /// when a chunk arrived or the camera's chunk changed since last time.
+    fn unpark(&mut self, chunks: &Chunks, center: (i32, i32)) {
+        let now = (center, self.arrivals);
+        if self.parked_at == Some(now) {
+            return;
+        }
+        self.parked_at = Some(now);
+        self.parked.retain(|&column, sections| {
+            if !ready(chunks, column, center) {
+                return true;
+            }
+            for &(s, parked) in sections.iter() {
+                let dirty = self.dirty.entry((column.0, s, column.1)).or_insert(parked);
+                *dirty = dirty.merged(parked);
+            }
+            false
+        });
     }
 
     /// Takes a mesh built from `version`, unless a newer one is there.
@@ -510,6 +564,53 @@ mod tests {
                 .iter()
                 .any(|b| b.pos == (0, 1, 0) && b.sync && !b.mesh.is_empty())
         );
+    }
+
+    /// A column far out without all its neighbours waits aside, not in
+    /// every frame's look at the queue, and is built once they came.
+    #[test]
+    fn a_column_waits_aside_for_its_neighbours() {
+        let Some((models, fluids)) = crate::world::terrain::test_models() else {
+            return;
+        };
+        let tints = crate::world::block_tint::TintSettings::plains();
+        let column = |x, z| {
+            let sections = (0..4).map(|_| Section::empty()).collect();
+            LoadedChunk::new(Chunk::new(x, z, sections))
+        };
+        let mut chunks = Chunks::default();
+        let mut queue = MeshQueue::default();
+        chunks.insert((5, 0), column(5, 0));
+        queue.added((5, 0), 4);
+        let run = |queue: &mut MeshQueue, chunks: &Chunks| {
+            queue.run(
+                chunks,
+                models,
+                fluids,
+                Vec3::new(8.0, 0.0, 8.0),
+                Height::OVERWORLD,
+                [1.0; 6],
+                &tints,
+            )
+        };
+        assert!(run(&mut queue, &chunks).is_empty());
+        assert!(queue.dirty.is_empty());
+        assert_eq!(queue.parked[&(5, 0)].len(), 4);
+        assert!(run(&mut queue, &chunks).is_empty());
+        for (dx, dz) in AROUND {
+            let key = (5 + dx, dz);
+            chunks.insert(key, column(key.0, key.1));
+            queue.added(key, 4);
+        }
+        let built = run(&mut queue, &chunks);
+        assert_eq!(
+            built
+                .iter()
+                .filter(|b| (b.pos.0, b.pos.2) == (5, 0))
+                .count(),
+            4
+        );
+        assert!(!queue.parked.contains_key(&(5, 0)));
     }
 
     #[test]

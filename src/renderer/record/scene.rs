@@ -763,6 +763,10 @@ impl Renderer {
             let TerrainMesh::Quads(id) = chunk.mesh else {
                 continue;
             };
+            // TODO(perf): a random read per draw from the arena's slot table
+            // (~8 MB with every section loaded), a cache miss each. Could the
+            // buffer and base go into `ChunkDraw` when culled, kept right across
+            // arena moves by a generation number?
             let Some(slot) = self.quad_meshes.slot(id.0) else {
                 continue;
             };
@@ -895,8 +899,10 @@ impl Renderer {
         offset: Vec3,
         light: &DrawLight,
     ) {
-        let push = pipeline::world::push_bytes(&mvp, light);
-        if self.pushed.replace(Some(push)) != Some(push) {
+        let push = pipeline::world::PushBlock(pipeline::world::push_bytes(&mvp, light));
+        if self.pushed.get() != Some(push) {
+            self.pushed.set(Some(push));
+            let push = push.0;
             self.device.cmd_push_constants(
                 cmd,
                 layout,
@@ -906,7 +912,8 @@ impl Renderer {
             );
         }
         let offset = offset.extend(light.overlay);
-        if self.pushed_offset.replace(Some(offset)) != Some(offset) {
+        if self.pushed_offset.get() != Some(offset) {
+            self.pushed_offset.set(Some(offset));
             let offset = offset.to_array();
             self.device.cmd_push_constants(
                 cmd,
@@ -918,7 +925,10 @@ impl Renderer {
         }
         let mut view = light.fog.bytes();
         view[3] = light.glint_scale;
-        if self.pushed_view.replace(Some(view)) != Some(view) {
+        let view = pipeline::world::PushBlock(view);
+        if self.pushed_view.get() != Some(view) {
+            self.pushed_view.set(Some(view));
+            let view = view.0;
             self.device.cmd_push_constants(
                 cmd,
                 layout,

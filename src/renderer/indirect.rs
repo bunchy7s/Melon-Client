@@ -168,6 +168,9 @@ impl DrawBuffers {
     }
 
     /// Writes draw number `index` of frame `frame`. `index` stays below the
+    /// TODO(perf): 20-byte commands written one by one into mapped memory
+    /// (~12% of `record_scene`). Collect them in a CPU `Vec` and copy once at
+    /// the end, in whole lines: measure against this.
     pub unsafe fn write(
         &self,
         frame: usize,

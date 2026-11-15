@@ -202,6 +202,10 @@ impl OcclusionMask {
 
     /// Whether the walk reached the section, i.e. it may be visible. In
     #[inline]
+    /// TODO(perf): asked once per section by `Culler::reached_of`. With the
+    /// bits laid out column by column (y fastest) a column's sections would
+    /// be one shift; the walk (`walk_grid`) and the trace index the same
+    /// slots, so all three change together. Small win (~3% of culling).
     pub fn contains(&self, (x, y, z): SectionPos) -> bool {
         if y < self.sky_from {
             return self.slot((x, y, z)).is_some_and(|slot| self.has(slot));

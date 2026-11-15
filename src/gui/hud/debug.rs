@@ -484,6 +484,9 @@ impl DebugOverlay {
     }
 
     /// `width`, `height`: the GUI screen the overlay is laid out on.
+    /// TODO(perf): ~5% of the render thread while F3 is open (the bench
+    /// shows it): every line laid out anew each frame. Lay out only the lines
+    /// whose text changed.
     pub fn draw(
         &self,
         draw_list: &mut DrawList,

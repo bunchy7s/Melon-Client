@@ -100,7 +100,7 @@ struct Dynamic {
     /// The characters asked for that aren't made yet.
     wanted: Vec<char>,
     /// Made: the glyph, its page (counting after the font's own).
-    baked: HashMap<char, Glyph>,
+    baked: GlyphMap,
     /// Where the next glyph of each page goes (a shelf per row).
     pages: Vec<(u32, u32)>,
 }
@@ -128,15 +128,42 @@ impl DynamicWork {
 
 /// A font besides the default one (`minecraft:alt`, `minecraft:uniform`, a
 struct Face {
-    glyphs: HashMap<char, Glyph>,
+    glyphs: GlyphMap,
     unihex: bool,
+}
+
+/// Glyphs by character, hashed with [`CharHasher`]: a lookup per drawn
+/// character, every frame, which SipHash made a visible cost.
+pub type GlyphMap = HashMap<char, Glyph, std::hash::BuildHasherDefault<CharHasher>>;
+
+/// A multiplicative hash of a `char` (its `u32`): one multiply. Not for
+/// keys from the network; the fonts' are from the resource packs.
+#[derive(Default)]
+pub struct CharHasher(u64);
+
+impl std::hash::Hasher for CharHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = (self.0.rotate_left(8) ^ u64::from(byte)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        }
+    }
+
+    #[inline]
+    fn write_u32(&mut self, n: u32) {
+        self.0 = (self.0 ^ u64::from(n)).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
 }
 
 /// The font a run without one of its own is drawn in.
 pub const DEFAULT_FONT: &str = "minecraft:default";
 
 pub struct Font {
-    glyphs: HashMap<char, Glyph>,
+    glyphs: GlyphMap,
     /// The other fonts by full id, for text whose `Style.font` names one.
     faces: HashMap<String, Face>,
     /// Unifont: the glyphs for everything the bitmaps lack, made on use.
@@ -155,7 +182,7 @@ impl Font {
     pub fn load(assets: &Assets, root_id: &str) -> anyhow::Result<Self> {
         let mut pages = Vec::new();
         let mut page_index_by_path = HashMap::new();
-        let mut glyphs = HashMap::new();
+        let mut glyphs = GlyphMap::default();
         let mut unihex = Vec::new();
         load_provider_file(
             assets,
@@ -181,7 +208,7 @@ impl Font {
         if root_id == DEFAULT_FONT {
             for id in other_font_ids(assets) {
                 let mut face = Face {
-                    glyphs: HashMap::new(),
+                    glyphs: GlyphMap::default(),
                     unihex: false,
                 };
                 let mut own_unihex = Vec::new();
@@ -216,7 +243,7 @@ impl Font {
     }
 
     /// A launcher font: one bitmap page, no Unifont, no Mojang files.
-    pub fn from_bitmaps(glyphs: HashMap<char, Glyph>, pages: Vec<RgbaImage>) -> Self {
+    pub fn from_bitmaps(glyphs: GlyphMap, pages: Vec<RgbaImage>) -> Self {
         Self {
             glyphs,
             faces: HashMap::new(),
@@ -239,6 +266,8 @@ impl Font {
 
     /// [`Self::glyph`] in the font `font` names (`Style.font`, with or
     pub fn glyph_in(&self, font: Option<&str>, c: char) -> Option<Glyph> {
+        // The default font isn't among `faces`: no lookup for its name.
+        let font = font.filter(|&id| id != DEFAULT_FONT && id != "default");
         let Some(face) = font.and_then(|id| self.face(id)) else {
             if let Some(id) = font
                 && crate::probe::enabled()
@@ -818,7 +847,7 @@ mod unifont_tests {
         let mut unihex = Unihex::default();
         unihex.load_text(hex).unwrap();
         Font {
-            glyphs: HashMap::new(),
+            glyphs: GlyphMap::default(),
             faces: HashMap::new(),
             unihex: vec![Lazy::ready(unihex)],
             dynamic: RefCell::default(),

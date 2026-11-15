@@ -132,10 +132,10 @@ pub struct Renderer {
     /// The vertex buffer bound while recording the scene, so draws from the
     bound_vertex_buffer: std::cell::Cell<vk::Buffer>,
     /// The world push constants last sent since the pass was bound, so a
-    pushed: std::cell::Cell<Option<[f32; 24]>>,
+    pushed: std::cell::Cell<Option<pipeline::world::PushBlock>>,
     pushed_offset: std::cell::Cell<Option<glam::Vec4>>,
     /// And how the fog finds distances (`FogInput` bytes), the same way.
-    pushed_view: std::cell::Cell<Option<[f32; 4]>>,
+    pushed_view: std::cell::Cell<Option<pipeline::world::PushBlock<4>>>,
     textures: Textures,
     /// `maxImageDimension2D`.
     max_texture_side: u32,

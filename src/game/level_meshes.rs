@@ -164,11 +164,137 @@ impl SectionMeshes {
     }
 }
 
+/// A section layer's quads as the culling pass reads them: the mesh and
+/// where each facing group ends (they follow one another from 0).
+#[derive(Clone, Copy)]
+struct QuadRuns {
+    mesh: u32,
+    ends: [u32; terrain::FACINGS],
+}
+
+/// No mesh: the layer has nothing to draw.
+const NO_MESH: u32 = u32::MAX;
+
+impl QuadRuns {
+    const NONE: Self = Self {
+        mesh: NO_MESH,
+        ends: [0; terrain::FACINGS],
+    };
+
+    fn of(layer: Option<&QuadLayer>) -> Self {
+        layer.map_or(Self::NONE, |layer| Self {
+            mesh: mesh_index(layer.mesh.0),
+            ends: layer.groups.clone().map(|group| group.end),
+        })
+    }
+}
+
+/// What drawing a section reads of its [`SectionMeshes`], packed in 80
+/// bytes beside its neighbours: the culling pass touches a line or two
+/// per section instead of the whole struct and its translucent faces.
+#[derive(Clone, Copy)]
+struct SectionDraws {
+    solid: QuadRuns,
+    cutout: QuadRuns,
+    /// Mesh and vertex count, [`NO_MESH`] for none.
+    lava: (u32, u32),
+    translucent: (u32, u32),
+}
+
+impl Default for SectionDraws {
+    fn default() -> Self {
+        Self {
+            solid: QuadRuns::NONE,
+            cutout: QuadRuns::NONE,
+            lava: (NO_MESH, 0),
+            translucent: (NO_MESH, 0),
+        }
+    }
+}
+
+impl SectionDraws {
+    fn of(meshes: &SectionMeshes) -> Self {
+        Self {
+            solid: QuadRuns::of(meshes.solid.as_ref()),
+            cutout: QuadRuns::of(meshes.cutout.as_ref()),
+            lava: meshes
+                .lava
+                .map_or((NO_MESH, 0), |(mesh, count)| (mesh_index(mesh.0), count)),
+            translucent: meshes.translucent.as_ref().map_or((NO_MESH, 0), |t| {
+                (mesh_index(t.mesh.0), t.faces.vertices.len() as u32)
+            }),
+        }
+    }
+}
+
+/// A mesh id as [`SectionDraws`] keeps it.
+fn mesh_index(id: usize) -> u32 {
+    debug_assert!(id < NO_MESH as usize);
+    id as u32
+}
+
+/// The columns in one dense list, found by position through `index`: the
+/// culling pass walks the list instead of a hash map's buckets.
+#[derive(Default)]
+struct Columns {
+    index: ChunkMap<u32>,
+    keys: Vec<(i32, i32)>,
+    list: Vec<Column>,
+}
+
+impl Columns {
+    fn get(&self, key: &(i32, i32)) -> Option<&Column> {
+        self.index.get(key).map(|&i| &self.list[i as usize])
+    }
+
+    fn get_mut(&mut self, key: &(i32, i32)) -> Option<&mut Column> {
+        self.index.get(key).map(|&i| &mut self.list[i as usize])
+    }
+
+    fn entry(&mut self, key: (i32, i32)) -> &mut Column {
+        let i = *self.index.entry(key).or_insert_with(|| {
+            self.keys.push(key);
+            self.list.push(Column::default());
+            (self.list.len() - 1) as u32
+        });
+        &mut self.list[i as usize]
+    }
+
+    fn remove(&mut self, key: &(i32, i32)) -> Option<Column> {
+        let i = self.index.remove(key)? as usize;
+        let column = self.list.swap_remove(i);
+        self.keys.swap_remove(i);
+        if let Some(&moved) = self.keys.get(i) {
+            self.index.insert(moved, i as u32);
+        }
+        Some(column)
+    }
+
+    fn drain(&mut self) -> impl Iterator<Item = Column> + '_ {
+        self.index.clear();
+        self.keys.clear();
+        self.list.drain(..)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = ((i32, i32), &Column)> {
+        self.keys.iter().copied().zip(&self.list)
+    }
+}
+
+impl std::ops::Index<&(i32, i32)> for Columns {
+    type Output = Column;
+    fn index(&self, key: &(i32, i32)) -> &Column {
+        self.get(key).expect("no such column")
+    }
+}
+
 /// A chunk column's sections.
 #[derive(Default)]
 struct Column {
     /// By section, bottom to top.
     sections: Vec<SectionMeshes>,
+    /// [`SectionDraws::of`] each of `sections`.
+    draws: Vec<SectionDraws>,
     /// Bit `y` set for each section with anything to draw.
     filled: u32,
     /// Bit `y` set for each section a mesh came for, empty or not
@@ -216,7 +342,7 @@ pub struct VisibleChunks {
 pub struct LevelMeshes {
     /// The world's bottom, where section 0 starts.
     min_y: i32,
-    columns: ChunkMap<Column>,
+    columns: Columns,
     /// Built meshes over the upload budget, uploaded in order on the next
     waiting: VecDeque<FinishedMesh>,
     /// Draws with their distance, sorted before they go out: solid ones
@@ -235,7 +361,7 @@ impl Default for LevelMeshes {
     fn default() -> Self {
         Self {
             min_y: Height::OVERWORLD.min_y,
-            columns: ChunkMap::default(),
+            columns: Columns::default(),
             waiting: VecDeque::new(),
             solid: SortedDraws::default(),
             cutout: SortedDraws::default(),
@@ -313,7 +439,7 @@ impl LevelMeshes {
         self.columns
             .iter()
             .filter(|(_, c)| c.filled != 0)
-            .map(|(&pos, c)| (pos, c.filled))
+            .map(|(pos, c)| (pos, c.filled))
     }
 
     /// Puts a built section in place of its old meshes.
@@ -332,10 +458,12 @@ impl LevelMeshes {
                 SectionMeshes::default()
             }
         };
-        let column = self.columns.entry((pos.0, pos.2)).or_default();
+        let column = self.columns.entry((pos.0, pos.2));
         if column.sections.len() <= y {
             column.sections.resize_with(y + 1, SectionMeshes::default);
+            column.draws.resize_with(y + 1, SectionDraws::default);
         }
+        column.draws[y] = SectionDraws::of(&meshes);
         column.compiled |= 1 << y;
         if meshes.is_empty() {
             column.filled &= !(1 << y);
@@ -365,7 +493,7 @@ impl LevelMeshes {
     pub fn clear(&mut self, renderer: &mut Renderer) {
         self.waiting.clear();
         self.seen_translucent.clear();
-        for (_, column) in self.columns.drain() {
+        for column in self.columns.drain() {
             for section in column.sections {
                 section.free(renderer);
             }
@@ -481,10 +609,26 @@ impl LevelMeshes {
             }
             Err(e) => eprintln!("Translucent-Mesh konnte nicht neu sortiert werden: {e:#}"),
         }
-        std::mem::size_of_val(translucent.faces.vertices.as_slice())
+        let (bytes, mesh) = (
+            std::mem::size_of_val(translucent.faces.vertices.as_slice()),
+            mesh_index(translucent.mesh.0),
+        );
+        if let Some(draws) = self
+            .columns
+            .get_mut(&(pos.0, pos.2))
+            .and_then(|column| column.draws.get_mut(pos.1 as usize))
+        {
+            draws.translucent.0 = mesh;
+        }
+        bytes
     }
 
     /// The parts of meshes `culler` lets through: per section, its solid
+    /// TODO(perf): the biggest per-frame cost left on the render thread
+    /// (~0.1 ms at view distance 32): ~5.800 `ChunkDraw`s pushed, sorted and
+    /// copied again every frame, though the cache misses are gone. Next step:
+    /// cull on the GPU (a compute pass over the `SectionDraws`, writing the
+    /// indirect commands itself), the CPU only uploading what changed.
     pub fn visible_sections(&mut self, culler: &Culler) -> VisibleChunks {
         let eye = culler.eye();
         let mut visible = VisibleChunks {
@@ -508,38 +652,30 @@ impl LevelMeshes {
         };
         let up = vertical(Direction::Up.index());
         let down = vertical(Direction::Down.index());
-        for (&(cx, cz), column) in &self.columns {
+        let cull = culler.section_cull();
+        for ((cx, cz), column) in self.columns.iter() {
             let filled = column.filled;
             if filled == 0 {
                 continue;
             }
             visible.count.total += filled.count_ones() as usize;
-            let (x, z) = (f64::from(cx * SECTION_SIZE), f64::from(cz * SECTION_SIZE));
-            let bottom = |y: u32| f64::from(min_y + y as i32 * SECTION_SIZE);
-            let min = DVec3::new(x, bottom(filled.trailing_zeros()), z);
-            let max = DVec3::new(
-                x + f64::from(SECTION_SIZE),
-                bottom(32 - filled.leading_zeros()),
-                z + f64::from(SECTION_SIZE),
-            );
-            if !culler.sees_box(min, max) {
+            let in_view = culler.reached_of((cx, cz), cull.column((cx, cz)) & filled);
+            if in_view == 0 {
                 continue;
             }
-            let framed = culler.frames_box(min, max);
+            let (x, z) = (f64::from(cx * SECTION_SIZE), f64::from(cz * SECTION_SIZE));
+            let bottom = |y: u32| f64::from(min_y + y as i32 * SECTION_SIZE);
             let origin = DVec3::new(x, 0.0, z);
             let sides: [bool; terrain::FACINGS] =
                 std::array::from_fn(|group| faces_camera(group, origin, 0, eye, min_y));
             let corner = (cx * SECTION_SIZE, cz * SECTION_SIZE);
             let quads_origin = IVec3::new(corner.0, min_y, corner.1);
             let vertices_origin = IVec3::new(corner.0, 0, corner.1);
-            let mut rest = filled;
+            let mut rest = in_view;
             while rest != 0 {
                 let y = rest.trailing_zeros();
                 rest &= rest - 1;
-                if !culler.sees_section_within((cx, y as i32, cz), framed) {
-                    continue;
-                }
-                let Some(section) = column.sections.get(y as usize) else {
+                let Some(section) = column.draws.get(y as usize) else {
                     continue;
                 };
                 visible.count.drawn += 1;
@@ -558,11 +694,12 @@ impl LevelMeshes {
                     (&section.solid, &mut self.solid),
                     (&section.cutout, &mut self.cutout),
                 ] {
-                    let Some(layer) = layer else { continue };
-                    let mut run: Option<Range<u32>> = None;
+                    if layer.mesh == NO_MESH {
+                        continue;
+                    }
+                    let mesh = TerrainMesh::Quads(QuadMeshId(layer.mesh as usize));
                     let mut flush = |run: &mut Option<Range<u32>>| {
                         if let Some(range) = run.take() {
-                            let mesh = TerrainMesh::Quads(layer.mesh);
                             list.push(
                                 distance,
                                 ChunkDraw {
@@ -573,7 +710,11 @@ impl LevelMeshes {
                             );
                         }
                     };
-                    for (group, range) in layer.groups.iter().enumerate() {
+                    let mut run: Option<Range<u32>> = None;
+                    let mut start = 0;
+                    for (group, &end) in layer.ends.iter().enumerate() {
+                        let range = start..end;
+                        start = end;
                         if range.is_empty() {
                             continue;
                         }
@@ -582,35 +723,32 @@ impl LevelMeshes {
                             continue;
                         }
                         match &mut run {
-                            Some(open) if open.end == range.start => open.end = range.end,
-                            _ => {
-                                flush(&mut run);
-                                run = Some(range.clone());
-                            }
+                            Some(open) => open.end = range.end,
+                            None => run = Some(range),
                         }
                     }
                     flush(&mut run);
                 }
-                if let Some((mesh, count)) = section.lava {
-                    let mesh = TerrainMesh::Vertices(mesh);
+                let (lava, count) = section.lava;
+                if lava != NO_MESH {
                     self.solid.push(
                         distance,
                         ChunkDraw {
-                            mesh,
+                            mesh: TerrainMesh::Vertices(MeshId(lava as usize)),
                             origin: vertices_origin,
                             range: 0..count,
                         },
                     );
                 }
-                if let Some(translucent) = &section.translucent {
+                let (translucent, count) = section.translucent;
+                if translucent != NO_MESH {
                     self.seen_translucent.push((cx, y as i32, cz));
-                    let mesh = TerrainMesh::Vertices(translucent.mesh);
                     self.translucent.push_far_first(
                         distance,
                         ChunkDraw {
-                            mesh,
+                            mesh: TerrainMesh::Vertices(MeshId(translucent as usize)),
                             origin: vertices_origin,
-                            range: 0..translucent.faces.vertices.len() as u32,
+                            range: 0..count,
                         },
                     );
                 }
@@ -652,6 +790,8 @@ impl LevelMeshes {
 struct SortedDraws {
     draws: Vec<ChunkDraw>,
     keys: Vec<u64>,
+    /// [`radix_sort`]'s second buffer.
+    scratch: Vec<u64>,
 }
 
 impl SortedDraws {
@@ -675,7 +815,7 @@ impl SortedDraws {
 
     /// Appends the draws to `out` in key order and empties `self`.
     fn drain_sorted_into(&mut self, out: &mut Vec<ChunkDraw>) {
-        self.keys.sort_unstable();
+        radix_sort(&mut self.keys, &mut self.scratch);
         out.reserve(self.keys.len());
         out.extend(
             self.keys
@@ -683,6 +823,45 @@ impl SortedDraws {
                 .map(|&key| self.draws[(key & 0xFFFF_FFFF) as usize].clone()),
         );
         self.clear();
+    }
+}
+
+/// Sorts [`draw_key`]s as `sort_unstable` does. Their low halves count up
+/// in the order the draws were pushed, so a stable sort by the high half
+/// alone is the same order: four passes of a byte each (`O(n)`, no
+/// compares to mispredict), the passes whose byte is the same in every
+/// key left out.
+fn radix_sort(keys: &mut Vec<u64>, scratch: &mut Vec<u64>) {
+    const SMALL: usize = 64;
+    if keys.len() <= SMALL || keys.len() > u32::MAX as usize {
+        keys.sort_unstable();
+        return;
+    }
+    debug_assert!(keys.windows(2).all(|w| (w[0] as u32) < (w[1] as u32)));
+    let mut counts = [[0u32; 256]; 4];
+    for &key in keys.iter() {
+        for (pass, count) in counts.iter_mut().enumerate() {
+            count[(key >> (32 + 8 * pass)) as usize & 0xFF] += 1;
+        }
+    }
+    scratch.clear();
+    scratch.resize(keys.len(), 0);
+    for (pass, count) in counts.iter().enumerate() {
+        if count.iter().any(|&n| n as usize == keys.len()) {
+            continue;
+        }
+        let mut at = [0u32; 256];
+        let mut sum = 0;
+        for (slot, &n) in at.iter_mut().zip(count) {
+            *slot = sum;
+            sum += n;
+        }
+        for &key in keys.iter() {
+            let digit = (key >> (32 + 8 * pass)) as usize & 0xFF;
+            scratch[at[digit] as usize] = key;
+            at[digit] += 1;
+        }
+        std::mem::swap(keys, scratch);
     }
 }
 
@@ -837,6 +1016,35 @@ impl BlockEntityMeshes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The radix sort gives what a comparison sort does, near and far
+    /// keys, short lists and long.
+    #[test]
+    fn radix_sort_matches_sort_unstable() {
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let mut scratch = Vec::new();
+        for len in [0, 1, 63, 64, 65, 500, 6000] {
+            for spread in [1u64, 16, 1 << 20, u64::MAX] {
+                let mut keys: Vec<u64> = (0..len)
+                    .map(|i| {
+                        let distance = (next() % spread) as f32;
+                        let key = draw_key(distance, i);
+                        if next() % 3 == 0 { key ^ !0 << 32 } else { key }
+                    })
+                    .collect();
+                let mut want = keys.clone();
+                want.sort_unstable();
+                radix_sort(&mut keys, &mut scratch);
+                assert_eq!(keys, want, "{len} keys spread {spread}");
+            }
+        }
+    }
 
     #[test]
     fn draw_keys_order_like_distance_then_index() {

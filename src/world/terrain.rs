@@ -154,6 +154,9 @@ impl TranslucentMesh {
     }
 
     /// Whether `eye` and [`Self::sorted_from`] sit on opposite sides of any
+    /// TODO(perf): recomputes every quad's centroid from the vertices each
+    /// time. Keep the centroids as structure of arrays from the last sort,
+    /// then test 8/16 at once (miraculix, as `section_cull`).
     pub fn camera_crossed_a_face(&self, eye: Vec3) -> bool {
         let delta = self.sorted_from - eye;
         if delta.abs().max_element() < 1e-5 {

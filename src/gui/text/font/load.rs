@@ -12,7 +12,7 @@ pub(super) fn load_provider_file(
     id: &str,
     pages: &mut Vec<RgbaImage>,
     page_index_by_path: &mut HashMap<String, usize>,
-    glyphs: &mut HashMap<char, Glyph>,
+    glyphs: &mut GlyphMap,
     unihex: &mut Vec<Lazy>,
 ) -> anyhow::Result<()> {
     load_font_stack(assets, id, pages, page_index_by_path, glyphs, unihex, 0)
@@ -23,7 +23,7 @@ fn load_font_stack(
     id: &str,
     pages: &mut Vec<RgbaImage>,
     page_index_by_path: &mut HashMap<String, usize>,
-    glyphs: &mut HashMap<char, Glyph>,
+    glyphs: &mut GlyphMap,
     unihex: &mut Vec<Lazy>,
     depth: u32,
 ) -> anyhow::Result<()> {
@@ -68,7 +68,7 @@ fn load_providers(
     providers: Vec<serde_json::Value>,
     pages: &mut Vec<RgbaImage>,
     page_index_by_path: &mut HashMap<String, usize>,
-    glyphs: &mut HashMap<char, Glyph>,
+    glyphs: &mut GlyphMap,
     unihex: &mut Vec<Lazy>,
     depth: u32,
 ) -> anyhow::Result<()> {
@@ -160,7 +160,7 @@ pub(super) fn load_bitmap(
     provider: &serde_json::Value,
     pages: &mut Vec<RgbaImage>,
     page_index_by_path: &mut HashMap<String, usize>,
-    glyphs: &mut HashMap<char, Glyph>,
+    glyphs: &mut GlyphMap,
 ) -> anyhow::Result<()> {
     let file = provider
         .get("file")
@@ -255,7 +255,7 @@ pub(super) fn actual_glyph_width(
     0
 }
 
-pub(super) fn load_space(provider: &serde_json::Value, glyphs: &mut HashMap<char, Glyph>) {
+pub(super) fn load_space(provider: &serde_json::Value, glyphs: &mut GlyphMap) {
     let Some(advances) = provider.get("advances").and_then(|v| v.as_object()) else {
         return;
     };

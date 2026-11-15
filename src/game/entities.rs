@@ -158,6 +158,10 @@ impl InWorld {
     }
 
     /// Before the frame is drawn: the textures, items and skins the
+    /// TODO(perf): runs every frame for every entity: layer lists, texture
+    /// and held-item lookups whose answer only changes with equipment, kind
+    /// or display. Cache per entity behind a generation counter, or run per
+    /// tick.
     pub fn prepare_entities(&self, renderer: &mut Renderer, assets: &mut WorldResources) {
         assets
             .held

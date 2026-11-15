@@ -2,6 +2,7 @@
 
 pub mod frustum;
 pub mod occlusion;
+pub mod section_cull;
 pub mod visgraph;
 
 use glam::{DVec3, IVec3, Vec3};
@@ -153,6 +154,37 @@ impl<'a> Culler<'a> {
                 self.sees_relative_box(min, max)
             }
         }
+    }
+
+    /// The frustum and fog test of whole chunk columns' sections at once.
+    pub fn section_cull(&self) -> section_cull::SectionCull {
+        section_cull::SectionCull::new(
+            self.settings.frustum.then(|| self.frustum.planes()),
+            self.fog_end,
+            self.eye_block,
+            self.eye_fraction,
+            self.min_y,
+        )
+    }
+
+    /// [`Self::reaches`] for the sections `mask` (bit per section) of chunk
+    /// `(x, z)`: the bits of those the occlusion walk reached.
+    #[inline]
+    pub fn reached_of(&self, (x, z): (i32, i32), mask: u32) -> u32 {
+        let Some(occlusion) = self.occlusion else {
+            return mask;
+        };
+        let mut rest = mask;
+        let mut reached = 0;
+        while rest != 0 {
+            let y = rest.trailing_zeros();
+            rest &= rest - 1;
+            let y = y as i32;
+            if !(0..self.height).contains(&y) || occlusion.contains((x, y, z)) {
+                reached |= 1 << y;
+            }
+        }
+        reached
     }
 
     /// Whether all of the box is in the view volume, fog aside: then every

@@ -74,10 +74,18 @@ impl Variant {
             CustomModelDataImpl, DyedColorImpl, ItemModelImpl, TrimImpl,
         };
         let own = stack.item.registry_key;
+        // Every item has an `item_model`, mostly its own: compared before
+        // the id is copied, as `trim_start_matches` would (every prefix).
         let model = stack
             .get_data_component::<ItemModelImpl>()
-            .map(|m| m.id.to_string())
-            .filter(|id| id.trim_start_matches("minecraft:") != own);
+            .filter(|m| {
+                let mut id = &*m.id;
+                while let Some(rest) = id.strip_prefix("minecraft:") {
+                    id = rest;
+                }
+                id != own
+            })
+            .map(|m| m.id.to_string());
         let data = stack.get_data_component::<CustomModelDataImpl>();
         let dye = stack.get_data_component::<DyedColorImpl>().map(|d| d.rgb);
         let trim_material = stack
@@ -119,6 +127,8 @@ impl Variant {
     }
 }
 
+/// TODO(perf): a lock and a SipHash of the item's name per call. Items
+/// without an `item_model` of their own could be looked up by item id.
 fn model_count(
     assets_root: &Path,
     stack: &ItemStack,
@@ -128,24 +138,28 @@ fn model_count(
     let definition_key = definition_id(stack.item.registry_key, variant);
     let mut known = COUNT_CUTS.lock().unwrap_or_else(|e| e.into_inner());
     let known = known.get_or_insert_with(HashMap::new);
-    // Looked up by `&str` first: the key is only allocated the first time
-    // an item's definition is read, not on every call.
-    if !known.contains_key(definition_key) {
-        let definition = crate::assets::json_resource(assets_root, "items", definition_key);
-        let mut cuts = Vec::new();
-        if let Some(definition) = definition {
-            count_cuts(&definition["model"], i32::from(max_stack), &mut cuts);
-        }
-        cuts.sort_unstable();
-        cuts.dedup();
-        known.insert(definition_key.to_owned(), cuts);
-    }
-    let cuts = &known[definition_key];
     let count = i32::from(stack.item_count);
-    cuts.iter()
-        .rev()
-        .find(|&&cut| cut <= count)
-        .map_or(1, |&cut| cut.clamp(1, 255) as u8)
+    let pick = |cuts: &[i32]| {
+        cuts.iter()
+            .rev()
+            .find(|&&cut| cut <= count)
+            .map_or(1, |&cut| cut.clamp(1, 255) as u8)
+    };
+    // Looked up by `&str`, once: the key is only allocated the first time
+    // an item's definition is read, not on every call.
+    if let Some(cuts) = known.get(definition_key) {
+        return pick(cuts);
+    }
+    let definition = crate::assets::json_resource(assets_root, "items", definition_key);
+    let mut cuts = Vec::new();
+    if let Some(definition) = definition {
+        count_cuts(&definition["model"], i32::from(max_stack), &mut cuts);
+    }
+    cuts.sort_unstable();
+    cuts.dedup();
+    let picked = pick(&cuts);
+    known.insert(definition_key.to_owned(), cuts);
+    picked
 }
 
 /// `(present, patched)`: the components the stack has (`ItemStack.has`,

@@ -106,6 +106,13 @@ impl DrawLight {
     }
 }
 
+/// Push constants as the renderer remembers the last ones sent, 16-byte
+/// aligned: unaligned (after an `Option`'s tag), each draw's compare read
+/// what the last draw's store had not finished writing, and stalled on it.
+#[repr(C, align(16))]
+#[derive(Clone, Copy, PartialEq)]
+pub struct PushBlock<const N: usize = 24>(pub [f32; N]);
+
 /// Bytes for one world/celestial draw: `view_proj`, `ambient`, then
 pub fn push_bytes(view_proj: &glam::Mat4, light: &DrawLight) -> [f32; 24] {
     let mut data = [0.0; 24];
