@@ -195,6 +195,82 @@ fn main() -> anyhow::Result<()> {
     stats("mesh_chunk", &mut times);
     stats("section_visibility", &mut vis_times);
     stats("ChunkScan (connection thread)", &mut scan_times);
+
+    // The section decode kernels alone, on the byte tier `MELON_SIMD` caps.
+    let sections: Vec<_> = chunks.values().flat_map(|c| &c.sections).collect();
+    let packed: Vec<_> = sections
+        .iter()
+        .filter(|s| s.packed_bits().is_some())
+        .collect();
+    let mut by_bits = [0usize; 9];
+    for s in &packed {
+        by_bits[usize::from(s.packed_bits().unwrap())] += 1;
+    }
+    let flat = sections.len() - packed.len() - uniform;
+    println!(
+        "byte tier {}: packed sections by bits 1={} 2={} 4={} 8={}, flat={flat}",
+        melon::math::simd::byte_tier().name(),
+        by_bits[1],
+        by_bits[2],
+        by_bits[4],
+        by_bits[8],
+    );
+    let reps = 50u32;
+    let per = |t: Instant| t.elapsed() / (reps * packed.len() as u32);
+    let mut blocks = Box::new([0u16; melon::world::section::BLOCKS_PER_SECTION]);
+    let t = Instant::now();
+    for _ in 0..reps {
+        for s in &packed {
+            s.copy_to(&mut blocks);
+            std::hint::black_box(&blocks);
+        }
+    }
+    let decode = per(t);
+    let t = Instant::now();
+    for _ in 0..reps {
+        for s in &packed {
+            std::hint::black_box(s.flag_rows::<3>(|id| {
+                let f = models.mesh_flags(id);
+                u8::from(f.solid()) | u8::from(f.draws()) << 1 | u8::from(f.buried_hidden()) << 2
+            }));
+        }
+    }
+    let rows = per(t);
+    println!("per packed section: copy_to={decode:?} flag_rows::<3>={rows:?}");
+
+    // Where meshing goes: the visibility graph alone, and meshing again
+    // with flat light, against the smooth `mesh_chunk` above.
+    let solids: Vec<[u16; 256]> = packed
+        .iter()
+        .map(|s| s.flag_rows::<1>(|id| u8::from(models.mesh_flags(id).solid()))[0])
+        .collect();
+    let t = Instant::now();
+    for _ in 0..reps {
+        for solid in &solids {
+            std::hint::black_box(melon::world::culling::visgraph::compute_rows(solid));
+        }
+    }
+    println!("per packed section: visgraph::compute_rows={:?}", per(t));
+    let flat_context = MeshContext {
+        smooth_lighting: false,
+        ..context
+    };
+    let mut flat_times = Vec::new();
+    for (&key, chunk) in &chunks {
+        let mut n = Neighborhood::alone(chunk);
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                if (dx, dz) != (0, 0) {
+                    n.chunks[((dx + 1) + (dz + 1) * 3) as usize] =
+                        chunks.get(&(key.0 + dx, key.1 + dz));
+                }
+            }
+        }
+        let t = Instant::now();
+        std::hint::black_box(terrain::mesh_chunk(&n, &flat_context));
+        flat_times.push(t.elapsed());
+    }
+    stats("mesh_chunk (flat light)", &mut flat_times);
     println!(
         "vertices: solid={solid_v} cutout={cutout_v} translucent={trans_v} max/chunk={max_v} gpu={:.1} MiB",
         gpu_bytes as f64 / (1024.0 * 1024.0)

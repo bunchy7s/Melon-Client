@@ -43,6 +43,12 @@ fn world_light(level: &Level, pos: DVec3) -> [u8; 2] {
     [block.min(15) * 16, sky.min(15) * 16]
 }
 
+/// TODO(perf): measure with many particles (vanilla allows 16384). Each
+/// particle hashes its batch key, looks up the world light alone and tests
+/// the frustum alone; `Particle` is a large struct with an enum, so the
+/// loop strides over far more bytes than it reads. Steps: batch the light
+/// and frustum tests, build the corners with `Vec3A`; structure of arrays
+/// only if that is not enough.
 /// The quads of `particles`, sorted into `out` by `(atlas, translucent)`.
 pub fn build(
     particles: &[Particle],

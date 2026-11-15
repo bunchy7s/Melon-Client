@@ -291,6 +291,11 @@ pub struct Eye {
     pub min_y: i32,
 }
 
+/// TODO(perf): measure at large view distances. 83 µs at 8 chunks
+/// (`perf_world` 2026-11-15); the sections reached grow with the square of
+/// the distance (more in open terrain), so 32 chunks may cost over 1 ms a
+/// walk. Check how often a frame walks, and whether the frustum test per
+/// section (`Frustum::sees_centered_box`) or the queue dominates.
 /// Walks the section grid from `camera` (its Y clamped into the world) out
 pub fn walk(
     camera: SectionPos,

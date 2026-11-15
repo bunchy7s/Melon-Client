@@ -2,6 +2,8 @@
 
 use std::cmp::Ordering;
 
+use crate::world::section_decode::{self, ROWS};
+
 /// Blocks in one section.
 pub const BLOCKS_PER_SECTION: usize = 16 * 16 * 16;
 
@@ -49,25 +51,10 @@ impl Packed {
         self.palette[self.index(i)]
     }
 
-    /// Palette indices of blocks `16 * row ..` along x. A row is 16 entries
+    /// Palette indices of blocks `16 * row ..` along x.
     #[inline]
     fn row_indices(&self, row: usize) -> [u8; 16] {
-        match self.bits {
-            1 => self.row_in_word::<1>(row),
-            2 => self.row_in_word::<2>(row),
-            4 => self.row_in_word::<4>(row),
-            _ => {
-                let [lo, hi] = [self.words[row * 2], self.words[row * 2 + 1]];
-                std::array::from_fn(|x| ((if x < 8 { lo } else { hi }) >> (x % 8 * 8) & 0xFF) as u8)
-            }
-        }
-    }
-
-    #[inline(always)]
-    fn row_in_word<const BITS: usize>(&self, row: usize) -> [u8; 16] {
-        let offset = row * 16 * BITS;
-        let word = self.words[offset >> 6] >> (offset & 63);
-        std::array::from_fn(|x| (word >> (x * BITS) & ((1 << BITS) - 1)) as u8)
+        section_decode::row_indices(self.bits, &self.words, row)
     }
 
     fn put(&mut self, i: usize, index: usize) {
@@ -245,23 +232,6 @@ impl Section {
         }
     }
 
-    /// The palette of a section with one, for [`Section::row_indices`].
-    pub fn palette(&self) -> Option<&[u16]> {
-        match &self.store {
-            Store::Packed(packed) => Some(&packed.palette),
-            _ => None,
-        }
-    }
-
-    /// Row `row`'s blocks as indices into [`Section::palette`] (all 0 for a
-    #[inline]
-    pub fn row_indices(&self, row: usize) -> [u8; 16] {
-        match &self.store {
-            Store::Packed(packed) => packed.row_indices(row),
-            _ => [0; 16],
-        }
-    }
-
     /// Every block, in index order.
     pub fn iter(&self) -> impl Iterator<Item = u16> + '_ {
         (0..BLOCKS_PER_SECTION).map(|i| self.get(i))
@@ -271,6 +241,15 @@ impl Section {
     pub fn uniform(&self) -> Option<u16> {
         match self.store {
             Store::Uniform(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// Bits a block of a packed section (1, 2, 4 or 8); `None` for one
+    /// state throughout or a flat section.
+    pub fn packed_bits(&self) -> Option<u8> {
+        match &self.store {
+            Store::Packed(packed) => Some(packed.bits),
             _ => None,
         }
     }
@@ -294,15 +273,44 @@ impl Section {
         match &self.store {
             Store::Uniform(id) => out.fill(*id),
             Store::Packed(packed) => {
-                for (row, chunk) in out.as_chunks_mut::<16>().0.iter_mut().enumerate() {
-                    let indices = packed.row_indices(row);
-                    for (slot, index) in chunk.iter_mut().zip(indices) {
-                        *slot = packed.palette[usize::from(index)];
-                    }
-                }
+                section_decode::decode(packed.bits, &packed.words, &packed.palette, out);
             }
             Store::Flat(flat) => out.copy_from_slice(&flat[..]),
         }
+    }
+
+    /// Rows of the blocks' flags, `K` of them (at most 8): bit `x` of
+    /// `rows[k][y * 16 + z]` is bit `k` of `flags` of the block at
+    /// `(x, y, z)`. `flags` is asked once a palette entry.
+    pub fn flag_rows<const K: usize>(&self, flags: impl Fn(u16) -> u8) -> [[u16; ROWS]; K] {
+        let mut rows = [[0u16; ROWS]; K];
+        match &self.store {
+            Store::Uniform(id) => {
+                let bits = flags(*id);
+                for (k, rows) in rows.iter_mut().enumerate() {
+                    rows.fill(if bits >> k & 1 != 0 { u16::MAX } else { 0 });
+                }
+            }
+            Store::Packed(packed) => {
+                let mut table = [0u8; 256];
+                for (entry, &id) in table.iter_mut().zip(&packed.palette) {
+                    *entry = flags(id);
+                }
+                let len = packed.palette.len();
+                section_decode::flag_rows(packed.bits, &packed.words, &table, len, &mut rows);
+            }
+            Store::Flat(flat) => {
+                for (row, blocks) in flat.as_chunks::<16>().0.iter().enumerate() {
+                    for (x, &id) in blocks.iter().enumerate() {
+                        let bits = flags(id);
+                        for (k, rows) in rows.iter_mut().enumerate() {
+                            rows[row] |= u16::from(bits >> k & 1) << x;
+                        }
+                    }
+                }
+            }
+        }
+        rows
     }
 
     /// The blocks as a flat array.

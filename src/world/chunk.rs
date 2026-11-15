@@ -249,6 +249,10 @@ impl ChunkScan {
         scan
     }
 
+    /// TODO(perf): small. A section whose palette may hold a block entity
+    /// is then read block by block (`Section::iter`, one `get` each, on the
+    /// connection thread). Mark the matching palette indices once and scan
+    /// the decoded section (`Section::copy_to`) or its packed indices.
     /// Adds what section `s` of chunk `(x, z)` holds, in a level starting
     pub fn add_section(&mut self, x: i32, z: i32, min_y: i32, s: usize, section: &Section) {
         let kinds = &*crate::world::block_entity::KIND_STATES;

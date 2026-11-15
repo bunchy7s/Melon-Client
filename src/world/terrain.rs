@@ -129,6 +129,10 @@ impl TranslucentMesh {
         self.vertices.len() / 4
     }
 
+    /// TODO(perf): reinvestigate. Copies every quad twice (into `keyed`,
+    /// back into `vertices`) and runs a comparison sort. Sort `u32` indices
+    /// by the keys' `f32` bits instead (radix sort, distances are never
+    /// negative), then gather once; the squared distances vectorise.
     /// `VertexSorting.byDistance`: the quads far to near from `eye`
     pub fn sort(&mut self, eye: Vec3) {
         let (quads, _) = self.vertices.as_chunks::<4>();
@@ -301,6 +305,16 @@ thread_local! {
 #[cfg(test)]
 static PLAINS_TINTS: std::sync::OnceLock<TintSettings> = std::sync::OnceLock::new();
 
+/// TODO(perf): the biggest CPU load left in the world. `perf_world`
+/// (2026-11-15, 290 chunks, Ryzen 9800X3D): `mesh_chunk` 1.19 ms a chunk,
+/// about 7200 quads, so ~165 ns a quad; 0.66 ms (~92 ns a quad) with flat
+/// light, so smooth light is ~45% (see `smooth_light::LightCache`).
+/// Decoding and the flag rows are 0.2 µs a section now, the visibility
+/// graph ~1%. Still to split up, with a profiler: in `fill_section`'s quad
+/// loop the cullface test (`neighborhood.block` + `skip_rendering::hides`
+/// when the solid cache says no), `tints.color` per quad, `quads_at`'s
+/// closure. Here, `LayerBuilder::finish` copies every quad once more and
+/// the translucent vertices are cloned out of the builder.
 /// Meshes section `s` of `neighborhood`'s centre chunk. The translucent
 pub fn mesh_section(neighborhood: &Neighborhood, s: usize, context: &MeshContext) -> SectionMesh {
     let empty = || SectionMesh {
@@ -363,25 +377,8 @@ pub fn section_visibility(chunk: &Chunk) -> Vec<VisibilitySet> {
             if is_empty(section) {
                 return VisibilitySet::ALL;
             }
-            let mut rows = [0u16; 256];
-            if let Some(palette) = section.palette() {
-                let mut solid = [false; 256];
-                for (entry, &id) in solid.iter_mut().zip(palette) {
-                    *entry = state_flags::is_solid(id);
-                }
-                for (r, row) in rows.iter_mut().enumerate() {
-                    for (x, index) in section.row_indices(r).into_iter().enumerate() {
-                        *row |= u16::from(solid[usize::from(index)]) << x;
-                    }
-                }
-                return visgraph::compute_rows(&rows);
-            }
-            for (r, row) in rows.iter_mut().enumerate() {
-                for (x, id) in section.row(r).into_iter().enumerate() {
-                    *row |= u16::from(state_flags::is_solid(id)) << x;
-                }
-            }
-            visgraph::compute_rows(&rows)
+            let [solid] = section.flag_rows(|id| u8::from(state_flags::is_solid(id)));
+            visgraph::compute_rows(&solid)
         })
         .collect()
 }
@@ -403,54 +400,17 @@ struct SectionRows {
 
 impl SectionRows {
     fn of(section: &Section, models: &BlockModels) -> Self {
-        let mut rows = Self {
-            solid: [0; 256],
-            draws: [0; 256],
-            buried_hidden: [0; 256],
-        };
-        if let Some(id) = section.uniform() {
+        let [solid, draws, buried_hidden] = section.flag_rows(|id| {
             let flags = models.mesh_flags(id);
-            let all = |on: bool| if on { u16::MAX } else { 0 };
-            rows.solid.fill(all(flags.solid()));
-            rows.draws.fill(all(flags.draws()));
-            rows.buried_hidden.fill(all(flags.buried_hidden()));
-            return rows;
+            u8::from(flags.solid())
+                | u8::from(flags.draws()) << 1
+                | u8::from(flags.buried_hidden()) << 2
+        });
+        Self {
+            solid,
+            draws,
+            buried_hidden,
         }
-        if let Some(palette) = section.palette() {
-            let mut table = [0u8; 256];
-            for (entry, &id) in table.iter_mut().zip(palette) {
-                let flags = models.mesh_flags(id);
-                *entry = u8::from(flags.solid())
-                    | u8::from(flags.draws()) << 1
-                    | u8::from(flags.buried_hidden()) << 2;
-            }
-            for row in 0..256 {
-                let (mut solid, mut draws, mut hidden) = (0u16, 0u16, 0u16);
-                for (x, index) in section.row_indices(row).into_iter().enumerate() {
-                    let bits = u16::from(table[usize::from(index)]);
-                    solid |= (bits & 1) << x;
-                    draws |= (bits >> 1 & 1) << x;
-                    hidden |= (bits >> 2 & 1) << x;
-                }
-                rows.solid[row] = solid;
-                rows.draws[row] = draws;
-                rows.buried_hidden[row] = hidden;
-            }
-            return rows;
-        }
-        for row in 0..256 {
-            let (mut solid, mut draws, mut hidden) = (0u16, 0u16, 0u16);
-            for (x, id) in section.row(row).into_iter().enumerate() {
-                let flags = models.mesh_flags(id);
-                solid |= u16::from(flags.solid()) << x;
-                draws |= u16::from(flags.draws()) << x;
-                hidden |= u16::from(flags.buried_hidden()) << x;
-            }
-            rows.solid[row] = solid;
-            rows.draws[row] = draws;
-            rows.buried_hidden[row] = hidden;
-        }
-        rows
     }
 }
 

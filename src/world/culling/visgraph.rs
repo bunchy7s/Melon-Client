@@ -62,6 +62,14 @@ pub fn compute(solid: impl Fn(usize) -> bool) -> VisibilitySet {
 /// A section as rows of x: index `y * 16 + z`, bit `x`.
 const ROWS: usize = SIZE * SIZE;
 
+/// TODO(perf): reinvestigate. 0.9 µs a section (`perf_world`, 2026-11-15),
+/// ~1% of meshing, so low priority. Cheap first step: the `stack` below is
+/// a heap allocation on every call; a fixed array (or one kept per thread)
+/// removes it. Bigger idea, measure before: flood-fill the whole section
+/// as one 4096-bit set (eight AVX-512 registers, 16 AVX2) by dilating
+/// (`±x` within the 16-bit rows, `±z` a row, `±y` 16 rows) and masking with
+/// `open` until nothing changes. Steps grow with the longest path, so a
+/// winding cave can take hundreds; keep the row walk as the fallback.
 /// [`compute`] from the section's solid blocks as rows (index `y * 16 + z`,
 pub fn compute_rows(solid: &[u16; ROWS]) -> VisibilitySet {
     let solid_count: u32 = solid.iter().map(|row| row.count_ones()).sum();

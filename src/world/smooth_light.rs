@@ -66,6 +66,15 @@ const SHELL: i32 = 2;
 /// Side of the cached cube: a section plus the shell on every side.
 const SIDE: usize = 16 + 2 * SHELL as usize;
 
+/// TODO(perf): smooth light is ~45% of meshing (`mesh_chunk` 1.19 ms vs
+/// 0.66 ms flat, `perf_world` 2026-11-15). Every cell is filled lazily behind
+/// an `Option` (12 bytes; [`Self::start`] clears 20³ of them, ~94 KiB, every
+/// section), each fill one `Neighborhood::block` and one nibble lookup.
+/// Plan: fill the 20³ light and flag cells densely once a section, the
+/// inside from the decoded section and the light layers unpacked with the
+/// byte kernels (`math::bytes`), the shell from the neighbours; then
+/// `smooth_corners`' four-corner averages fit one 128-bit register, add
+/// and multiply only, so still bit for bit vanilla's.
 /// The light and flags of a section's blocks and their neighbours, filled
 pub struct LightCache {
     cells: Vec<Option<Cell>>,

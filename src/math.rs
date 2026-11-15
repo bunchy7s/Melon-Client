@@ -1,6 +1,7 @@
 //! Vanilla `Mth` and `SectionPos` helpers: the circle functions and
 
 pub mod angle;
+pub mod bytes;
 pub mod euler;
 pub mod lanes;
 pub mod simd;

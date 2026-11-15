@@ -230,6 +230,10 @@ pub struct Face {
     pub flipped: bool,
 }
 
+/// TODO(perf): each face transforms its own four corners, 24 transforms a
+/// cube for 8 corners. Transform the 8 once (then as eight lanes, AVX
+/// f32x8, mul and add in `transform_point3`'s order, no FMA: same bits),
+/// and take the normal from the matrix's column once a part, not a face.
 /// Every face of `part` and its children through `transform` (model pixels
 pub fn faces(part: &Part, transform: Mat4, visit: &mut impl FnMut(Face)) {
     let transform = transform * part.pose.matrix();

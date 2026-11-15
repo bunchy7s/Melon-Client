@@ -39,6 +39,7 @@ pub mod player;
 pub mod recipes;
 pub mod scoreboard;
 pub mod section;
+pub mod section_decode;
 pub mod shadow;
 pub mod sky;
 pub mod smooth_light;
@@ -46,3 +47,5 @@ pub mod terrain;
 pub mod texture_animation;
 pub mod transparency;
 pub mod weather;
+#[cfg(target_arch = "x86_64")]
+pub mod x86;

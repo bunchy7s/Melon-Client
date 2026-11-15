@@ -1,18 +1,22 @@
-//! Which instruction set the math kernels run on, decided once.
+//! Which instruction sets the kernels run on, decided once.
 //!
 //! [`init`] probes the CPU at Melon's start (`miraculix`'s feature cache)
-//! and settles the widest [`Tier`]; every kernel asks [`tier`] after that,
-//! a load of a cached value. A kernel sits beside the scalar code it
-//! speeds up (`sin_cos.rs` beside `angle.rs`), written once against
-//! [`super::lanes::Lanes`]; its x86_64 `target_feature` bodies are in
-//! `x86/`, the lanes of each architecture in `x86/` and `aarch64/`.
+//! and settles the widest tier of each family: [`Tier`] for the kernels on
+//! doubles and floats ([`super::lanes::Lanes`]), [`ByteTier`] for those on
+//! bytes ([`super::bytes::Bytes`]). Every kernel asks [`tier`] or
+//! [`byte_tier`] after that, a load of a cached value. A kernel sits beside
+//! the scalar code it speeds up (`sin_cos.rs` beside `angle.rs`,
+//! `section_decode.rs` beside `section.rs`), written once against its
+//! family's trait; its x86_64 `target_feature` bodies are in the `x86/`
+//! folder beside it, each architecture's lanes in `x86/` and `aarch64/`
+//! here.
 //!
 //! x86_64 and AArch64 have kernels; other CPUs (RISC-V, PowerPC, wasm)
 //! run the scalar code for now.
 
 use std::sync::OnceLock;
 
-/// The instruction set the kernels run on.
+/// The instruction set the float kernels run on.
 #[derive(Clone, Copy)]
 pub enum Tier {
     /// No vector unit Melon has kernels for.
@@ -64,38 +68,128 @@ impl Tier {
     }
 }
 
+/// The instruction set the byte kernels (shuffles, table lookups) run on.
+#[derive(Clone, Copy)]
+pub enum ByteTier {
+    Scalar,
+    /// `pshufb`: nearly every x86_64 since 2006.
+    #[cfg(target_arch = "x86_64")]
+    Ssse3(super::x86::bytes::Ssse3Bytes),
+    #[cfg(target_arch = "x86_64")]
+    Avx2(super::x86::bytes::Avx2Bytes),
+    /// AVX-512 with VBMI's 128-entry byte permutes (Ice Lake, Zen 4 on).
+    #[cfg(target_arch = "x86_64")]
+    Avx512Vbmi(super::x86::bytes::VbmiBytes),
+    /// Every little-endian AArch64.
+    #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+    Neon(super::aarch64::bytes::NeonBytes),
+}
+
+impl ByteTier {
+    pub fn name(self) -> &'static str {
+        match self {
+            ByteTier::Scalar => "scalar",
+            #[cfg(target_arch = "x86_64")]
+            ByteTier::Ssse3(_) => "SSSE3",
+            #[cfg(target_arch = "x86_64")]
+            ByteTier::Avx2(_) => "AVX2",
+            #[cfg(target_arch = "x86_64")]
+            ByteTier::Avx512Vbmi(_) => "AVX-512VBMI",
+            #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+            ByteTier::Neon(_) => "Neon",
+        }
+    }
+
+    /// Every tier this CPU can run, widest first, [`ByteTier::Scalar`]
+    /// last.
+    pub fn available() -> Vec<ByteTier> {
+        let mut tiers = Vec::new();
+        #[cfg(target_arch = "x86_64")]
+        {
+            use super::x86::bytes::{Avx2Bytes, Ssse3Bytes, VbmiBytes};
+            let features = miraculix::x86::detect_features();
+            tiers.extend(VbmiBytes::new(features).map(ByteTier::Avx512Vbmi));
+            tiers.extend(Avx2Bytes::new(features).map(ByteTier::Avx2));
+            tiers.extend(Ssse3Bytes::new(features).map(ByteTier::Ssse3));
+        }
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        {
+            let features = miraculix::aarch64::detect_features();
+            tiers.extend(super::aarch64::bytes::NeonBytes::new(features).map(ByteTier::Neon));
+        }
+        tiers.push(ByteTier::Scalar);
+        tiers
+    }
+}
+
+/// Register width of every tier name, for `MELON_SIMD`.
+const WIDTHS: [(&str, u32); 8] = [
+    ("scalar", 0),
+    ("SSE2", 128),
+    ("SSSE3", 128),
+    ("Neon", 128),
+    ("AVX", 256),
+    ("AVX2", 256),
+    ("AVX-512F", 512),
+    ("AVX-512VBMI", 512),
+];
+
+fn width(name: &str) -> u32 {
+    WIDTHS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map_or(u32::MAX, |&(_, w)| w)
+}
+
+/// The widest register `MELON_SIMD` allows, if it names a tier.
+fn width_cap() -> Option<u32> {
+    let wanted = std::env::var("MELON_SIMD").ok()?;
+    WIDTHS
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(&wanted))
+        .map(|&(_, w)| w)
+}
+
 /// Buffers this many lanes long (zero padded) only ever take whole steps
 /// on every tier: no copied, padded last one.
 pub const PAD: usize = 4;
 
 static TIER: OnceLock<Tier> = OnceLock::new();
+static BYTE_TIER: OnceLock<ByteTier> = OnceLock::new();
 
 /// At Melon's start: fills `miraculix`'s feature cache and settles the
-/// tier every kernel runs on from then on.
-pub fn init() -> Tier {
+/// tiers every kernel runs on from then on.
+pub fn init() -> (Tier, ByteTier) {
     #[cfg(target_arch = "x86_64")]
     miraculix::x86::warm_up();
     #[cfg(target_arch = "aarch64")]
     miraculix::aarch64::warm_up();
-    tier()
+    (tier(), byte_tier())
 }
 
-/// The tier [`init`] settled (probed now if nothing called it, as in tests):
-/// the widest, or the one `MELON_SIMD` names (`AVX`, `SSE2`, `scalar`, ...),
-/// if this CPU has it.
+/// The float tier [`init`] settled (probed now if nothing called it, as in
+/// tests): the widest, or the widest no wider than the tier `MELON_SIMD`
+/// names (`AVX`, `SSE2`, `scalar`, ...; either family's names).
 #[inline]
 pub fn tier() -> Tier {
     *TIER.get_or_init(|| {
-        let available = Tier::available();
-        let wanted = std::env::var("MELON_SIMD").ok();
-        wanted
-            .and_then(|name| {
-                available
-                    .iter()
-                    .copied()
-                    .find(|tier| tier.name().eq_ignore_ascii_case(&name))
-            })
-            .unwrap_or(available[0])
+        let cap = width_cap().unwrap_or(u32::MAX);
+        Tier::available()
+            .into_iter()
+            .find(|tier| width(tier.name()) <= cap)
+            .unwrap_or(Tier::Scalar)
+    })
+}
+
+/// The byte tier [`init`] settled, chosen like [`tier`].
+#[inline]
+pub fn byte_tier() -> ByteTier {
+    *BYTE_TIER.get_or_init(|| {
+        let cap = width_cap().unwrap_or(u32::MAX);
+        ByteTier::available()
+            .into_iter()
+            .find(|tier| width(tier.name()) <= cap)
+            .unwrap_or(ByteTier::Scalar)
     })
 }
 
@@ -113,6 +207,26 @@ mod tests {
         #[cfg(target_arch = "aarch64")]
         assert!(names.contains(&"Neon"), "{names:?}");
         assert_eq!(names.last(), Some(&"scalar"));
-        assert_eq!(tier().name(), names[0]);
+        if std::env::var_os("MELON_SIMD").is_none() {
+            assert_eq!(tier().name(), names[0]);
+        }
+        let bytes: Vec<&str> = ByteTier::available()
+            .into_iter()
+            .map(ByteTier::name)
+            .collect();
+        #[cfg(all(target_arch = "aarch64", target_endian = "little"))]
+        assert!(bytes.contains(&"Neon"), "{bytes:?}");
+        assert_eq!(bytes.last(), Some(&"scalar"));
+    }
+
+    /// Every tier's name has a width, so `MELON_SIMD` can cap by it.
+    #[test]
+    fn every_tier_name_has_a_width() {
+        for name in Tier::available().into_iter().map(Tier::name) {
+            assert_ne!(width(name), u32::MAX, "{name}");
+        }
+        for name in ByteTier::available().into_iter().map(ByteTier::name) {
+            assert_ne!(width(name), u32::MAX, "{name}");
+        }
     }
 }

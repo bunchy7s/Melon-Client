@@ -41,6 +41,10 @@ impl Frustum {
         }
     }
 
+    /// TODO(perf): one box at a time. Callers with many boxes (sections,
+    /// entities, particles) could test 8 at once (AVX: boxes as structure of
+    /// arrays, the six planes broadcast). Same operations a lane, so the
+    /// same answers. Worth it only if a profile shows culling.
     /// `Frustum.isVisible(AABB)` for a box given by centre and half-size.
     #[inline]
     pub fn sees_centered_box(&self, center: Vec3, half: Vec3) -> bool {
