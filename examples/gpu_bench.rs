@@ -175,8 +175,13 @@ fn run(event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
     });
     let rain_on = std::env::var_os("MELON_BENCH_RAIN").is_some();
     let clouds_on = std::env::var_os("MELON_BENCH_CLOUDS").is_some();
-    let rain_texture =
-        renderer.load_texture_tiled(&assets.image("minecraft:environment/rain.png")?)?;
+    let rain_image = assets.image("minecraft:environment/rain.png")?;
+    let rain_texture = renderer.load_texture_tiled(&rain_image)?;
+    let rain_template = renderer.upload_mesh(&melon::world::weather::template(
+        &melon::world::weather::streaks(&rain_image),
+        rain_image.width(),
+        rain_image.height(),
+    ))?;
     let white = renderer.white_texture();
     let cloud_texture = melon::world::clouds::CloudTexture::load(assets.root());
     for (name, eye, yaw, pitch) in views {
@@ -207,7 +212,7 @@ fn run(event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
         };
         let mut atmosphere_meshes = Vec::new();
         let mut atmosphere: Vec<EntityDraw> = Vec::new();
-        let mut weather: Vec<EntityDraw> = Vec::new();
+        let mut weather: Vec<melon::renderer::WeatherDraw> = Vec::new();
         if rain_on {
             let height = |x, z| level.motion_blocking_height(x, z);
             let precipitation = |_, _, _| melon::world::weather::Precipitation::Rain;
@@ -235,25 +240,23 @@ fn run(event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
                     dx * dx + dz * dz >= min * min
                 })
                 .collect();
-            let (rain, _) = melon::world::weather::mesh(
+            let (rain, _) = melon::world::weather::pieces(
                 &columns,
                 eye,
                 radius,
                 1.0,
                 &LightmapParams::overworld([1.0; 3], 0.0),
+                |_, _| true,
             );
-            let mesh = renderer.upload_mesh(&rain)?;
-            atmosphere_meshes.push(mesh);
-            weather.push(EntityDraw {
-                mesh,
+            let pieces = renderer.upload_mesh(&rain.vertices)?;
+            atmosphere_meshes.push(pieces);
+            weather.push(melon::renderer::WeatherDraw {
+                template: rain_template,
+                pieces,
+                wraps: rain.wraps,
                 atlas: rain_texture,
                 model: glam::Mat4::from_translation((eye - eye.floor()).as_vec3()),
                 origin: eye.floor().as_ivec3(),
-                layer: RenderLayer::Atmosphere,
-                blend: melon::renderer::Blending::Translucent,
-                light: None,
-                overlay: 0.0,
-                glint: melon::renderer::Glint::None,
             });
         }
         if clouds_on {

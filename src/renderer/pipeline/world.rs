@@ -7,6 +7,7 @@ use crate::renderer::{TerrainQuad, WorldVertex as Vertex};
 use crate::world::lightmap::LightmapParams;
 
 const VERT_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/world.vert.spv"));
+const WEATHER_VERT_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/weather.vert.spv"));
 const LINES_VERT_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lines.vert.spv"));
 const TERRAIN_VERT_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/terrain.vert.spv"));
 const TERRAIN_INDIRECT_VERT_SPV: &[u8] =
@@ -373,10 +374,21 @@ pub unsafe fn create(
             std::mem::offset_of!(Vertex, face) as u32,
         ),
     ];
+    // `world::weather::pieces`: two vertices of data per instance.
+    let second = std::mem::size_of::<Vertex>() as u32;
+    let weather_pieces = [
+        (vk::Format::R32G32B32_SFLOAT, 0),
+        (vk::Format::R32G32_SFLOAT, vertex_attributes[1].1),
+        (vk::Format::R8G8B8A8_UNORM, vertex_attributes[2].1),
+        (vk::Format::R32G32B32_SFLOAT, second),
+        (vk::Format::R32G32_SFLOAT, second + vertex_attributes[1].1),
+    ];
     let (vert, vertex_stride, attributes): (_, _, &[_]) = match geometry {
         Geometry::Vertices => (
             if mode == Mode::SkyDisc {
                 SKY_DISC_VERT_SPV
+            } else if mode == Mode::Weather {
+                WEATHER_VERT_SPV
             } else if mode.is_lines() {
                 LINES_VERT_SPV
             } else {
@@ -425,7 +437,12 @@ pub unsafe fn create(
         push_stages: PUSH_STAGES,
         vertex_stride: vertex_stride as u32,
         attributes,
-        used_locations: None,
+        instance: (mode == Mode::Weather && matches!(geometry, Geometry::Vertices)).then_some((
+            2 * std::mem::size_of::<Vertex>() as u32,
+            &weather_pieces[..],
+        )),
+        // `weather.vert` leaves the template's colour unread.
+        used_locations: (mode == Mode::Weather).then_some(&[0, 1, 3][..]),
         cull,
         depth,
         blend,

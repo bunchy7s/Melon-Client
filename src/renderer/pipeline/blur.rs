@@ -23,6 +23,7 @@ pub unsafe fn create(
         push_stages: vk::ShaderStageFlags::FRAGMENT,
         vertex_stride: 0,
         attributes: &[],
+        instance: None,
         used_locations: None,
         cull: vk::CullModeFlags::NONE,
         depth: depth_disabled(),

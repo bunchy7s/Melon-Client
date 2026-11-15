@@ -77,6 +77,7 @@ pub unsafe fn create(
         push_stages: vk::ShaderStageFlags::VERTEX,
         vertex_stride: std::mem::size_of::<Vertex>() as u32,
         attributes: &[(vk::Format::R32G32B32_SFLOAT, 0)],
+        instance: None,
         used_locations: None,
         cull: vk::CullModeFlags::NONE,
         depth: depth_disabled(),

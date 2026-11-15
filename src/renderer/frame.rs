@@ -38,7 +38,7 @@ pub struct SceneFrame {
     /// Cloud boxes, camera-relative, white texture, vertex colour.
     pub clouds: Option<CloudDraw>,
     /// Rain then snow columns, camera-relative, wrapping environment textures.
-    pub weather: Vec<EntityDraw>,
+    pub weather: Vec<WeatherDraw>,
     /// The block outline and the debug gizmos' lines.
     pub lines: Vec<LineDraw>,
     /// `textures/misc/enchanted_glint_{item,armor}.png`, for the overlay.
@@ -48,6 +48,19 @@ pub struct SceneFrame {
     pub glowing: Vec<(usize, [u8; 3])>,
     /// Post effect chains the scene asks for (`creeper`, `invert`...), by
     pub post_effects: Vec<String>,
+}
+
+/// Rain or snow: the texture's drop streaks (`template`, static) drawn once
+/// per piece of a column in `pieces` (`world::weather::{template, pieces}`).
+#[derive(Clone, Copy)]
+pub struct WeatherDraw {
+    pub template: MeshId,
+    pub pieces: MeshId,
+    /// Whether the template's second half, the wrapped copies, is drawn.
+    pub wraps: bool,
+    pub atlas: TextureId,
+    pub model: Mat4,
+    pub origin: glam::IVec3,
 }
 
 /// The cloud mesh and the colour it is drawn in this frame. The mesh holds

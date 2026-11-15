@@ -83,6 +83,9 @@ pub struct WorldResources {
     pub rain: TextureId,
     /// `textures/environment/snow.png`, repeating.
     pub snow: TextureId,
+    /// Their drop streaks, for `weather.vert` (`world::weather::template`).
+    pub rain_template: MeshId,
+    pub snow_template: MeshId,
     /// What [`Self::load`] uploaded, freed or reused by a reload.
     textures: Vec<TextureId>,
     meshes: Vec<MeshId>,
@@ -159,6 +162,8 @@ impl WorldResources {
 
     fn build(renderer: &mut Renderer, assets: &Assets) -> anyhow::Result<Self> {
         let players = PlayerModels::load(renderer, assets)?;
+        let rain = assets.image("minecraft:environment/rain.png")?;
+        let snow = assets.image("minecraft:environment/snow.png")?;
         let mobs = MobModels::load(renderer, assets)?;
         let mut extras: Vec<ExtraTexture> = FluidSprites::TEXTURES
             .iter()
@@ -295,8 +300,10 @@ impl WorldResources {
             end_sky_mesh: renderer.upload_mesh(&crate::world::sky::end_sky_box())?,
             end_sky: assets.texture(renderer, "minecraft:environment/end_sky.png")?,
             clouds: CloudTexture::load(assets.root()),
-            rain: renderer.load_texture_tiled(&assets.image("minecraft:environment/rain.png")?)?,
-            snow: renderer.load_texture_tiled(&assets.image("minecraft:environment/snow.png")?)?,
+            rain: renderer.load_texture_tiled(&rain)?,
+            snow: renderer.load_texture_tiled(&snow)?,
+            rain_template: upload_template(renderer, &rain)?,
+            snow_template: upload_template(renderer, &snow)?,
             textures: Vec::new(),
             meshes: Vec::new(),
         })
@@ -388,4 +395,11 @@ impl WorldResources {
                 .prepare_head(renderer, &stack, &profile, skin, own);
         }
     }
+}
+
+/// A weather texture's drop streaks as the template `weather.vert` places.
+fn upload_template(renderer: &mut Renderer, image: &image::RgbaImage) -> anyhow::Result<MeshId> {
+    use crate::world::weather;
+    let (width, height) = image.dimensions();
+    renderer.upload_mesh(&weather::template(&weather::streaks(image), width, height))
 }

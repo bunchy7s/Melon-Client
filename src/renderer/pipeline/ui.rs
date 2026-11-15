@@ -163,6 +163,7 @@ pub unsafe fn create(
             (vk::Format::R32G32_SFLOAT, 8),
             (vk::Format::R32G32B32A32_SFLOAT, 16),
         ],
+        instance: None,
         used_locations: shaders.inputs,
         cull: vk::CullModeFlags::NONE,
         depth: depth_disabled(),

@@ -4,7 +4,7 @@ use super::InWorld;
 use super::camera::Camera;
 use super::environment::FrameEnvironment;
 use super::world_resources::WorldResources;
-use crate::renderer::{CloudDraw, EntityDraw, MeshId, Renderer, WorldVertex};
+use crate::renderer::{CloudDraw, EntityDraw, MeshId, Renderer, WeatherDraw, WorldVertex};
 use crate::settings::options::Config;
 use crate::world::clouds::{self, CloudFrame};
 use crate::world::weather::{self, WeatherQuery};
@@ -23,7 +23,7 @@ impl InWorld {
         lightmap_params: &crate::world::lightmap::LightmapParams,
         partial: f32,
         aspect: f32,
-    ) -> (Option<CloudDraw>, Vec<EntityDraw>) {
+    ) -> (Option<CloudDraw>, Vec<WeatherDraw>) {
         // The weather's quads are relative to the camera: placed from its
         // block, so the floats stay small however far out it is.
         let camera_block = camera.position.floor();
@@ -105,51 +105,33 @@ impl InWorld {
                 .iter()
                 .flat_map(|(_, prepared)| prepared)
                 .map(|p| p.column(game_time, partial))
-                .filter(|c| {
-                    let min = glam::DVec3::new(
-                        f64::from(c.x) - 0.5,
-                        f64::from(c.bottom_y),
-                        f64::from(c.z) - 0.5,
-                    );
-                    let max = glam::DVec3::new(
-                        f64::from(c.x) + 1.5,
-                        f64::from(c.top_y),
-                        f64::from(c.z) + 1.5,
-                    );
-                    frustum.sees_box(camera.relative(min), camera.relative(max))
-                })
                 .collect();
-            let (rain, snow) = weather::mesh(
+            let (rain, snow) = weather::pieces(
                 &columns,
                 camera.position,
                 radius,
                 intensity,
                 lightmap_params,
+                |min, max| frustum.sees_box(min, max),
             );
-            if let Some(mesh) = replace_mesh(renderer, &mut self.rain_mesh, &rain) {
-                weather.push(EntityDraw {
-                    mesh,
+            if let Some(pieces) = replace_mesh(renderer, &mut self.rain_mesh, &rain.vertices) {
+                weather.push(WeatherDraw {
+                    template: assets.rain_template,
+                    pieces,
+                    wraps: rain.wraps,
                     atlas: assets.rain,
                     model,
                     origin: camera_origin,
-                    layer: crate::renderer::RenderLayer::Atmosphere,
-                    blend: crate::renderer::Blending::Translucent,
-                    light: None,
-                    overlay: 0.0,
-                    glint: crate::renderer::Glint::None,
                 });
             }
-            if let Some(mesh) = replace_mesh(renderer, &mut self.snow_mesh, &snow) {
-                weather.push(EntityDraw {
-                    mesh,
+            if let Some(pieces) = replace_mesh(renderer, &mut self.snow_mesh, &snow.vertices) {
+                weather.push(WeatherDraw {
+                    template: assets.snow_template,
+                    pieces,
+                    wraps: snow.wraps,
                     atlas: assets.snow,
                     model,
                     origin: camera_origin,
-                    layer: crate::renderer::RenderLayer::Atmosphere,
-                    blend: crate::renderer::Blending::Translucent,
-                    light: None,
-                    overlay: 0.0,
-                    glint: crate::renderer::Glint::None,
                 });
             }
         } else {

@@ -214,6 +214,7 @@ unsafe fn create_pass(
         push_stages: vk::ShaderStageFlags::VERTEX,
         vertex_stride: std::mem::size_of::<WorldVertex>() as u32,
         attributes: &attributes,
+        instance: None,
         used_locations: Some(&shader.inputs),
         cull: vk::CullModeFlags::NONE,
         depth: depth_disabled(),

@@ -56,6 +56,9 @@ pub(in crate::renderer) struct PipelineDesc<'a> {
     pub vertex_stride: u32,
     /// Format and offset per attribute, at locations `0..`.
     pub attributes: &'a [(vk::Format, u32)],
+    /// A second binding read per instance: its stride and its attributes,
+    /// at the locations after [`Self::attributes`]'.
+    pub instance: Option<(u32, &'a [(vk::Format, u32)])>,
     /// The locations the vertex shader reads, when not all of them: the
     pub used_locations: Option<&'a [u32]>,
     pub cull: vk::CullModeFlags,
@@ -126,16 +129,24 @@ impl PipelineDesc<'_> {
                 .module(frag_module)
                 .name(entry_point),
         ];
-        let binding_desc = [vk::VertexInputBindingDescription::default()
-            .binding(0)
-            .stride(self.vertex_stride)
-            .input_rate(vk::VertexInputRate::VERTEX)];
-        let bindings = if self.attributes.is_empty() {
-            &[][..]
-        } else {
-            &binding_desc[..]
-        };
-        let attr_desc: Vec<_> = self
+        let mut bindings = Vec::new();
+        if !self.attributes.is_empty() {
+            bindings.push(
+                vk::VertexInputBindingDescription::default()
+                    .binding(0)
+                    .stride(self.vertex_stride)
+                    .input_rate(vk::VertexInputRate::VERTEX),
+            );
+        }
+        if let Some((stride, _)) = self.instance {
+            bindings.push(
+                vk::VertexInputBindingDescription::default()
+                    .binding(1)
+                    .stride(stride)
+                    .input_rate(vk::VertexInputRate::INSTANCE),
+            );
+        }
+        let mut attr_desc: Vec<_> = self
             .attributes
             .iter()
             .enumerate()
@@ -151,8 +162,20 @@ impl PipelineDesc<'_> {
                     .offset(offset)
             })
             .collect();
+        if let Some((_, attributes)) = self.instance {
+            let first = self.attributes.len() as u32;
+            attr_desc.extend(attributes.iter().zip(first..).map(
+                |(&(format, offset), location)| {
+                    vk::VertexInputAttributeDescription::default()
+                        .location(location)
+                        .binding(1)
+                        .format(format)
+                        .offset(offset)
+                },
+            ));
+        }
         let vertex_input = vk::PipelineVertexInputStateCreateInfo::default()
-            .vertex_binding_descriptions(bindings)
+            .vertex_binding_descriptions(&bindings)
             .vertex_attribute_descriptions(&attr_desc);
         let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
             .topology(vk::PrimitiveTopology::TRIANGLE_LIST);

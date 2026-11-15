@@ -42,7 +42,7 @@ use vk_util::{
 pub use frame::{
     Blending, Blur, CelestialDraw, ChunkDraw, CloudDraw, CornerLight, EntityDraw, Frame, Glint,
     LineDraw, LineStyle, QuadCorner, RenderLayer, SceneFrame, Sky, SkyKind, TerrainMesh,
-    TerrainQuad, WORLD_Z_NEAR, WorldDraw, WorldVertex, world_projection,
+    TerrainQuad, WORLD_Z_NEAR, WeatherDraw, WorldDraw, WorldVertex, world_projection,
 };
 
 use ash::vk;

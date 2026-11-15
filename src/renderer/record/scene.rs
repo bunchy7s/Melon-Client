@@ -4,7 +4,8 @@ use crate::renderer::Blending;
 use crate::renderer::pipeline::world::{DrawLight, FogInput, Mode};
 use crate::renderer::{
     ChunkDraw, LineStyle, MeshId, QuadMeshId, RenderLayer, Renderer, SceneFrame, Sky, SkyKind,
-    TerrainMesh, TextureId, WorldDraw, globals, mesh_arena, pipeline, world_projection,
+    TerrainMesh, TextureId, WeatherDraw, WorldDraw, WorldVertex, globals, mesh_arena, pipeline,
+    world_projection,
 };
 use ash::vk;
 use glam::{Mat4, Vec3};
@@ -161,16 +162,11 @@ impl Renderer {
                     }
                     for weather in &scene.weather {
                         if self.bind_world_pass(cmd, weather.atlas, Mode::Weather) {
-                            self.draw_world_mesh(
+                            self.draw_weather(
                                 cmd,
-                                self.pipelines.weather.layout,
-                                weather.mesh,
-                                (
-                                    view_proj * world.relative_to(weather.model, weather.origin),
-                                    Vec3::ZERO,
-                                ),
+                                weather,
+                                view_proj * world.relative_to(weather.model, weather.origin),
                                 &world.light([1.0, 1.0, 1.0, 1.0]).fogged(fog),
-                                None,
                             );
                         }
                     }
@@ -729,6 +725,38 @@ impl Renderer {
                 .cmd_draw_indexed(cmd, n * 6, 1, 0, (base + quad * 4) as i32, 0);
             quad += n;
         }
+    }
+
+    /// Rain or snow: the template's streaks once per piece, the pieces read
+    /// per instance from binding 1 (see `weather.vert`).
+    unsafe fn draw_weather(
+        &self,
+        cmd: vk::CommandBuffer,
+        weather: &WeatherDraw,
+        mvp: Mat4,
+        light: &DrawLight,
+    ) {
+        let (Some(template), Some(pieces)) = (
+            self.meshes.slot(weather.template.0),
+            self.meshes.slot(weather.pieces.0),
+        ) else {
+            return;
+        };
+        let copies = if weather.wraps { 1 } else { 2 };
+        let (quads, instances) = (template.count / 4 / copies, pieces.count / 2);
+        if quads == 0 || instances == 0 {
+            return;
+        }
+        let (buffer, base) = self.meshes.location(template);
+        let (piece_buffer, piece_base) = self.meshes.location(pieces);
+        self.bind_vertices(cmd, buffer);
+        let offset = u64::from(piece_base) * std::mem::size_of::<WorldVertex>() as u64;
+        self.device
+            .cmd_bind_vertex_buffers(cmd, 1, &[piece_buffer], &[offset]);
+        self.push_world(cmd, self.pipelines.weather.layout, mvp, Vec3::ZERO, light);
+        let quads = quads.min(mesh_arena::QUADS_PER_DRAW);
+        self.device
+            .cmd_draw_indexed(cmd, quads * 6, instances, 0, base as i32, 0);
     }
 
     /// The quad meshes among `chunks` as multi-draws (see [`super::indirect`]):
