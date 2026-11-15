@@ -2,6 +2,14 @@
 
 pub mod angle;
 pub mod euler;
+pub mod lanes;
+pub mod simd;
+pub mod sin_cos;
+
+#[cfg(target_arch = "aarch64")]
+pub mod aarch64;
+#[cfg(target_arch = "x86_64")]
+pub mod x86;
 
 pub use std::f32::consts::FRAC_1_SQRT_2;
 pub use std::f32::consts::SQRT_2;

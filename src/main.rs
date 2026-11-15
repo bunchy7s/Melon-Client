@@ -7,6 +7,8 @@ use melon::network;
 use melon::settings::options::Config;
 
 fn main() -> anyhow::Result<()> {
+    // The CPU's vector unit, probed once: every SIMD kernel runs on it.
+    melon::math::simd::init();
     let args: Vec<String> = std::env::args().collect();
     let command = cli::parse(&args).unwrap_or_else(|message| {
         eprintln!("{message}");

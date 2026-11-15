@@ -105,6 +105,19 @@ impl LayerDefinition {
     }
 }
 
+/// A pose's angles that aren't zero, densely, and their sines and
+/// cosines: one buffer each, kept per thread for its allocation.
+#[derive(Default)]
+struct Turns {
+    angles: Vec<f32>,
+    sin: Vec<f32>,
+    cos: Vec<f32>,
+}
+
+thread_local! {
+    static TURNS: std::cell::RefCell<Turns> = std::cell::RefCell::default();
+}
+
 /// A part of a [`Model`], by index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PartId(pub usize);
@@ -280,17 +293,53 @@ impl Model {
     /// [`Self::part_matrices`] into `out`, replacing what it held and
     pub fn part_matrices_into(&self, pose: &ModelPose, root: Mat4, out: &mut Vec<Option<Mat4>>) {
         out.clear();
-        for (node, state) in self.nodes.iter().zip(&pose.parts) {
-            let parent = match node.parent {
-                Some(parent) => out[parent],
-                None => Some(root),
+        TURNS.with_borrow_mut(|Turns { angles, sin, cos }| {
+            // Every angle a part turns by, all at once (most parts turn
+            // about one axis: the zeros are left out). Padded with zeros
+            // to whole steps, so the kernel never copies a short last one.
+            angles.clear();
+            for state in &pose.parts {
+                let r = state.pose.rotation;
+                if r != Vec3::ZERO {
+                    angles.extend(r.to_array().into_iter().filter(|&a| a != 0.0));
+                }
+            }
+            let dense = angles.len();
+            if dense > 0 {
+                let padded = dense.next_multiple_of(crate::math::simd::PAD);
+                angles.resize(padded, 0.0);
+                sin.resize(padded, 0.0);
+                cos.resize(padded, 0.0);
+                crate::math::sin_cos::sin_cos(angles, sin, cos);
+            }
+            let mut next = 0;
+            let mut take = |a: f32| {
+                // `euler_zyx`'s own shortcut for an axis it doesn't turn
+                // about: the same bits as the sine of `±0`.
+                if a == 0.0 {
+                    return (a, 1.0);
+                }
+                let at = next;
+                next += 1;
+                (sin[at], cos[at])
             };
-            out.push(
-                parent
-                    .filter(|_| state.visible)
-                    .map(|parent| state.pose.placed_in(parent)),
-            );
-        }
+            for (node, state) in self.nodes.iter().zip(&pose.parts) {
+                let parent = match node.parent {
+                    Some(parent) => out[parent],
+                    None => Some(root),
+                };
+                let r = state.pose.rotation;
+                let turn = (r != Vec3::ZERO).then(|| {
+                    let [(sx, cx), (sy, cy), (sz, cz)] = r.to_array().map(&mut take);
+                    crate::math::angle::euler_zyx_of(Vec3::new(sx, sy, sz), Vec3::new(cx, cy, cz))
+                });
+                out.push(
+                    parent
+                        .filter(|_| state.visible)
+                        .map(|parent| state.pose.placed_in_turned(parent, turn)),
+                );
+            }
+        });
         for (matrix, state) in out.iter_mut().zip(&pose.parts) {
             if state.skip_draw {
                 *matrix = None;
@@ -405,6 +454,56 @@ pub struct ModelFace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The sines worked out all at once give every mob the matrices one
+    /// part at a time gives, to the bit.
+    #[test]
+    fn batched_turns_place_every_mob_as_one_by_one() {
+        use crate::world::entity::humanoid::HumanoidRenderState;
+        use crate::world::entity::living::LivingRenderState;
+        use crate::world::entity::mobs::{MobModel, ModelId, PoseInput};
+        let root = Mat4::from_translation(Vec3::new(0.3, 1.5, -0.2));
+        for (k, id) in ModelId::ALL.into_iter().enumerate() {
+            let living = LivingRenderState {
+                body_rot: k as f32 * 7.3,
+                y_rot: -24.0 + k as f32,
+                x_rot: 12.5,
+                walk_position: 3.7 + k as f32,
+                walk_speed: 0.8,
+                age_in_ticks: 41.25 + k as f32,
+                ..Default::default()
+            };
+            let input = PoseInput {
+                living,
+                humanoid: HumanoidRenderState::from_living(&living),
+                flap: (0.4, 0.5),
+                ..Default::default()
+            };
+            let mob = MobModel::new(id);
+            let pose = mob.pose(&input);
+            let batched = mob.model.part_matrices(&pose, root);
+            let mut one_by_one: Vec<Option<Mat4>> = Vec::new();
+            for (node, state) in mob.model.nodes.iter().zip(&pose.parts) {
+                let parent = node.parent.map_or(Some(root), |p| one_by_one[p]);
+                one_by_one.push(
+                    parent
+                        .filter(|_| state.visible)
+                        .map(|parent| state.pose.placed_in(parent)),
+                );
+            }
+            for (m, state) in one_by_one.iter_mut().zip(&pose.parts) {
+                if state.skip_draw {
+                    *m = None;
+                }
+            }
+            let bits = |m: &Vec<Option<Mat4>>| {
+                m.iter()
+                    .map(|m| m.map(|m| m.to_cols_array().map(f32::to_bits)))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(bits(&batched), bits(&one_by_one), "{id:?}");
+        }
+    }
 
     fn layer() -> LayerDefinition {
         let mut root = PartDefinition::root();

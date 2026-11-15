@@ -161,45 +161,56 @@ pub fn wrap_degrees(degrees: f32) -> f32 {
 }
 
 /// `2 / π`, for the quarter turns in an angle.
-const FRAC_2_PI: f64 = std::f64::consts::FRAC_2_PI;
+pub(crate) const FRAC_2_PI: f64 = std::f64::consts::FRAC_2_PI;
 /// `π / 2` in two parts (fdlibm's `pio2_1`, `pio2_1t`): the first has
 /// 33 significant bits, so a quarter-turn count below `2^20` times it
 /// is exact.
 #[allow(clippy::excessive_precision)] // fdlibm's literals, as written there.
-const PIO2_HI: f64 = 1.570_796_326_734_125_614_17;
+pub(crate) const PIO2_HI: f64 = 1.570_796_326_734_125_614_17;
 #[allow(clippy::excessive_precision)]
-const PIO2_LO: f64 = 6.077_100_506_506_192_249_32e-11;
+pub(crate) const PIO2_LO: f64 = 6.077_100_506_506_192_249_32e-11;
 /// Past this the split above loses digits: [`sin_cos_exact`] asks libm.
-const REDUCE_LIMIT: f32 = 400_000.0;
+pub(crate) const REDUCE_LIMIT: f32 = 400_000.0;
 /// Adding and taking away `1.5 · 2^52` rounds a double to an integer.
-const ROUND_MAGIC: f64 = 6_755_399_441_055_744.0;
+pub(crate) const ROUND_MAGIC: f64 = 6_755_399_441_055_744.0;
+
+/// fdlibm's `__kernel_sin` coefficients, `S1` first.
+#[allow(clippy::excessive_precision)] // fdlibm's literals, as written there.
+pub(crate) const SIN_COEFFS: [f64; 6] = [
+    -1.666_666_666_666_663_243_48e-01,
+    8.333_333_333_322_489_461_24e-03,
+    -1.984_126_982_985_794_931_34e-04,
+    2.755_731_370_707_006_767_89e-06,
+    -2.505_076_025_340_686_341_95e-08,
+    1.589_690_995_211_550_102_21e-10,
+];
+/// fdlibm's `__kernel_cos` coefficients, `C1` first.
+#[allow(clippy::excessive_precision)]
+pub(crate) const COS_COEFFS: [f64; 6] = [
+    4.166_666_666_666_660_190_37e-02,
+    -1.388_888_888_887_410_957_49e-03,
+    2.480_158_728_947_672_941_78e-05,
+    -2.755_731_435_139_066_330_35e-07,
+    2.087_572_321_298_174_827_90e-09,
+    -1.135_964_755_778_819_482_65e-11,
+];
 
 /// fdlibm's `__kernel_sin` and `__kernel_cos` for `|r| <= π/4`, both
-/// well under a double's last bit off.
+/// well under a double's last bit off. The SIMD kernels
+/// (`super::sin_cos`) do these operations in this order.
 #[inline(always)]
-#[allow(clippy::excessive_precision)] // fdlibm's literals, as written there.
 fn kernel_sin_cos(r: f64) -> (f64, f64) {
-    const S1: f64 = -1.666_666_666_666_663_243_48e-01;
-    const S2: f64 = 8.333_333_333_322_489_461_24e-03;
-    const S3: f64 = -1.984_126_982_985_794_931_34e-04;
-    const S4: f64 = 2.755_731_370_707_006_767_89e-06;
-    const S5: f64 = -2.505_076_025_340_686_341_95e-08;
-    const S6: f64 = 1.589_690_995_211_550_102_21e-10;
-    const C1: f64 = 4.166_666_666_666_660_190_37e-02;
-    const C2: f64 = -1.388_888_888_887_410_957_49e-03;
-    const C3: f64 = 2.480_158_728_947_672_941_78e-05;
-    const C4: f64 = -2.755_731_435_139_066_330_35e-07;
-    const C5: f64 = 2.087_572_321_298_174_827_90e-09;
-    const C6: f64 = -1.135_964_755_778_819_482_65e-11;
+    let [s1, s2, s3, s4, s5, s6] = SIN_COEFFS;
+    let [c1, c2, c3, c4, c5, c6] = COS_COEFFS;
     let z = r * r;
     let sin = {
-        let tail = S2 + z * (S3 + z * (S4 + z * (S5 + z * S6)));
-        let sin = r + z * r * (S1 + z * tail);
+        let tail = s2 + z * (s3 + z * (s4 + z * (s5 + z * s6)));
+        let sin = r + z * r * (s1 + z * tail);
         // Keeps `-0.0`'s sign, as Java's sine does (a select, no jump).
         if r == 0.0 { r } else { sin }
     };
     let cos = {
-        let tail = z * (C1 + z * (C2 + z * (C3 + z * (C4 + z * (C5 + z * C6)))));
+        let tail = z * (c1 + z * (c2 + z * (c3 + z * (c4 + z * (c5 + z * c6)))));
         let half = 0.5 * z;
         let w = 1.0 - half;
         w + (((1.0 - w) - half) + z * tail)
@@ -212,8 +223,7 @@ fn kernel_sin_cos(r: f64) -> (f64, f64) {
 /// `Quaternionf.rotationYXZ`, `ModelPart`), unlike [`sin`]'s table.
 /// Exact in `f64` and rounded once, as Java does, without libm's call
 /// for the angles a frame turns by.
-// TODO(simd): four or eight angles at once. Nothing below jumps but the
-// rare libm fallback: the quadrant is a swap and two sign flips.
+// Many at once: [`sin_cos_exact_slice`].
 #[inline]
 pub fn sin_cos_exact(x: f32) -> (f32, f32) {
     if x.is_nan() || x.abs() > REDUCE_LIMIT {
@@ -250,6 +260,12 @@ pub fn cos_exact(x: f32) -> f32 {
     sin_cos_exact(x).1
 }
 
+/// [`sin_cos_exact`] of every angle in `angles`, bit for bit, as many
+/// at once as the CPU's vector unit takes ([`super::sin_cos`]).
+pub fn sin_cos_exact_slice(angles: &[f32], sin: &mut [f32], cos: &mut [f32]) {
+    super::sin_cos::sin_cos(angles, sin, cos);
+}
+
 /// JOML `Math.cosFromSin(sin, angle)`: the cosine from the sine already
 /// known, `√(1 - sin²)` with the sign of the angle's half turn.
 #[inline]
@@ -264,11 +280,9 @@ pub fn cos_from_sin(sin: f32, angle: f32) -> f32 {
     if b >= PI { -cos } else { cos }
 }
 
-/// Rotations about the axes and from Euler angles, with [`unit`]'s table:
-/// a model's parts. Vanilla turns them by JOML's exact sines; the table
-/// is a 65536th of a turn off at most, 0.0002 blocks on a two block mob,
-/// and keeps every pose a third faster (`math_bench`). What is seen from
-/// far, the camera and the billboards, turns exactly ([`super::euler`]).
+/// Rotations about the axes and from Euler angles, with [`sin_cos_exact`]:
+/// JOML's exact sines, as vanilla's `Axis` and `ModelPart` turn by. A
+/// model's parts get theirs all at once ([`sin_cos_exact_slice`]).
 pub trait Rotation: Sized {
     /// About X by `radians`.
     fn rot_x(radians: f32) -> Self;
@@ -293,38 +307,46 @@ pub trait Rotation: Sized {
     fn euler_zyx(radians: Vec3) -> Self;
 }
 
+/// [`Rotation::euler_zyx`] from its angles' sines and cosines, worked
+/// out beforehand (many at once by [`sin_cos_exact_slice`]).
+#[inline]
+pub fn euler_zyx_of(sin: Vec3, cos: Vec3) -> Mat3 {
+    let (sx, sy, sz) = (sin.x, sin.y, sin.z);
+    let (cx, cy, cz) = (cos.x, cos.y, cos.z);
+    Mat3::from_cols(
+        Vec3::new(cz * cy, sz * cy, -sy),
+        Vec3::new(cz * sy * sx - sz * cx, sz * sy * sx + cz * cx, cy * sx),
+        Vec3::new(cz * sy * cx + sz * sx, sz * sy * cx - cz * sx, cy * cx),
+    )
+}
+
 impl Rotation for Mat3 {
     #[inline]
     fn rot_x(radians: f32) -> Self {
-        let (s, c) = unit(radians);
+        let (s, c) = sin_cos_exact(radians);
         Mat3::from_cols(Vec3::X, Vec3::new(0.0, c, s), Vec3::new(0.0, -s, c))
     }
 
     #[inline]
     fn rot_y(radians: f32) -> Self {
-        let (s, c) = unit(radians);
+        let (s, c) = sin_cos_exact(radians);
         Mat3::from_cols(Vec3::new(c, 0.0, -s), Vec3::Y, Vec3::new(s, 0.0, c))
     }
 
     #[inline]
     fn rot_z(radians: f32) -> Self {
-        let (s, c) = unit(radians);
+        let (s, c) = sin_cos_exact(radians);
         Mat3::from_cols(Vec3::new(c, s, 0.0), Vec3::new(-s, c, 0.0), Vec3::Z)
     }
 
     #[inline]
     fn euler_zyx(radians: Vec3) -> Self {
-        let pair = |r: f32| {
-            if r == 0.0 { (0.0, 1.0) } else { unit(r) }
-        };
+        // A part that doesn't turn about an axis (most) skips its sine.
+        let pair = |r: f32| if r == 0.0 { (r, 1.0) } else { sin_cos_exact(r) };
         let (sx, cx) = pair(radians.x);
         let (sy, cy) = pair(radians.y);
         let (sz, cz) = pair(radians.z);
-        Mat3::from_cols(
-            Vec3::new(cz * cy, sz * cy, -sy),
-            Vec3::new(cz * sy * sx - sz * cx, sz * sy * sx + cz * cx, cy * sx),
-            Vec3::new(cz * sy * cx + sz * sx, sz * sy * cx - cz * sx, cy * cx),
-        )
+        euler_zyx_of(Vec3::new(sx, sy, sz), Vec3::new(cx, cy, cz))
     }
 }
 
@@ -350,7 +372,7 @@ impl Rotation for Mat4 {
 /// A rotation of `radians` about `axis` (a unit vector), as a quaternion.
 #[inline]
 pub fn axis_angle(axis: Vec3, radians: f32) -> Quat {
-    let (s, c) = unit(radians * 0.5);
+    let (s, c) = sin_cos_exact(radians * 0.5);
     let v = axis * s;
     Quat::from_xyzw(v.x, v.y, v.z, c)
 }

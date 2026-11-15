@@ -161,12 +161,20 @@ impl Pose {
     /// `parent * self.matrix()`, the step down a model's part tree.
     #[inline]
     pub fn placed_in(&self, parent: Mat4) -> Mat4 {
+        let turn = (self.rotation != Vec3::ZERO).then(|| Mat3::euler_zyx(self.rotation));
+        self.placed_in_turned(parent, turn)
+    }
+
+    /// [`Self::placed_in`] with the rotation worked out already: `None`
+    /// when the part doesn't turn.
+    #[inline]
+    pub fn placed_in_turned(&self, parent: Mat4, turn: Option<Mat3>) -> Mat4 {
         let column = |c: Vec3| parent.x_axis * c.x + parent.y_axis * c.y + parent.z_axis * c.z;
         let origin = column(self.offset / 16.0) + parent.w_axis;
-        if self.rotation == Vec3::ZERO && self.scale == Vec3::ONE {
+        if turn.is_none() && self.scale == Vec3::ONE {
             return Mat4::from_cols(parent.x_axis, parent.y_axis, parent.z_axis, origin);
         }
-        let r = Mat3::euler_zyx(self.rotation);
+        let r = turn.unwrap_or(Mat3::IDENTITY);
         Mat4::from_cols(
             column(r.x_axis * self.scale.x),
             column(r.y_axis * self.scale.y),

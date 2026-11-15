@@ -2625,6 +2625,7 @@ dependencies = [
  "glam",
  "image",
  "libloading 0.9.1",
+ "miraculix",
  "num-bigint 0.5.1",
  "open",
  "png",
@@ -2729,6 +2730,17 @@ dependencies = [
  "libc",
  "log",
  "wasi",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "miraculix"
+version = "0.4.1-alpha"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df0480a35177d852ec9f83aca23cbd1219bc1c307b2f0daf4523b9a481153d0d"
+dependencies = [
+ "libc",
+ "raw-cpuid",
  "windows-sys 0.61.2",
 ]
 
@@ -4257,6 +4269,15 @@ name = "rand_core"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
+
+[[package]]
+name = "raw-cpuid"
+version = "11.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "498cd0dc59d73224351ee52a95fee0f1a617a2eae0e7d9d720cc622c73a54186"
+dependencies = [
+ "bitflags 2.13.2",
+]
 
 [[package]]
 name = "raw-window-handle"

@@ -110,6 +110,20 @@ fn pipelines(angles: &'static [f32]) -> Vec<Pipeline> {
             }),
         },
         Pipeline {
+            name: "sin_cos_exact_slice (16)",
+            calls: 400_000,
+            ops: BATCH,
+            run: Box::new(|k| {
+                let mut x = [0.0f32; BATCH];
+                for (j, v) in x.iter_mut().enumerate() {
+                    *v = angles[(k * BATCH + j) & (angles.len() - 1)];
+                }
+                let (mut s, mut c) = ([0.0f32; BATCH], [0.0f32; BATCH]);
+                angle::sin_cos_exact_slice(&x, &mut s, &mut c);
+                s.iter().zip(&c).map(|(s, c)| s + c).sum()
+            }),
+        },
+        Pipeline {
             name: "libm sin + cos (f64)",
             calls: 400_000,
             ops: BATCH,
@@ -272,7 +286,34 @@ fn time(pipeline: &mut Pipeline, traffic: Option<&[u64]>, angles: usize) -> f64 
     start.elapsed().as_secs_f64() * 1e9 / pipeline.calls as f64
 }
 
+/// The sine kernel on each tier the CPU has, in ns per angle, over
+/// `angles` at a time (a model's pose hands it a handful).
+fn kernel_tiers() {
+    use melon::math::simd::Tier;
+    use melon::math::sin_cos::sin_cos_on;
+    for angles in [4usize, 8, 16, 64, 1024] {
+        let x: Vec<f32> = (0..angles).map(|k| (k as f32 * 0.37).sin() * 3.0).collect();
+        let (mut s, mut c) = (vec![0.0f32; angles], vec![0.0f32; angles]);
+        let rounds = 4_000_000 / angles;
+        for tier in Tier::available() {
+            let t = Instant::now();
+            for _ in 0..rounds {
+                sin_cos_on(tier, black_box(&x), &mut s, &mut c);
+                black_box((&s, &c));
+            }
+            let per_angle = t.elapsed().as_nanos() as f64 / (rounds * angles) as f64;
+            println!(
+                "{:<9} {angles:>5} angles: {per_angle:5.2} ns/angle",
+                tier.name()
+            );
+        }
+    }
+}
+
 fn main() {
+    if std::env::var_os("MELON_BENCH_TIERS").is_some() {
+        return kernel_tiers();
+    }
     let args: Vec<String> = std::env::args().collect();
     let value = |flag: &str| {
         args.iter()
