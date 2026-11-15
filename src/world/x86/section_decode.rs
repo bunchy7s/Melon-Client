@@ -56,10 +56,7 @@ miraculix::avx2_fn! {
     }
 }
 
-// `miraculix` has no named wrapper for F + BW + VBMI together; its
-// trampoline takes the feature list as is.
-miraculix::__miraculix_tf_fn! {
-    "avx512f,avx512bw,avx512vbmi,avx2,ssse3" ;
+miraculix::avx512_v4_vbmi_fn! {
     pub fn decode_vbmi(
         b: VbmiBytes,
         bits: u8,
@@ -71,8 +68,7 @@ miraculix::__miraculix_tf_fn! {
     }
 }
 
-miraculix::__miraculix_tf_fn! {
-    "avx512f,avx512bw,avx512vbmi,avx2,ssse3" ;
+miraculix::avx512_v4_vbmi_fn! {
     pub fn flag_rows_vbmi(
         b: VbmiBytes,
         bits: u8,

@@ -3,7 +3,7 @@ name = "melon"
 version = "0.9.2+mc26.3"
 authors = ["Zinedin Polic"]
 edition = "2024"
-rust-version = "1.99.1"
+rust-version = "1.100.0"
 description = "Minecraft Client in Rust with Vulkan"
 readme = "README.md"
 repository = "https://github.com/zinedinp/Melon"
@@ -38,7 +38,7 @@ pumpkin-protocol = { git = "https://github.com/zinedinp/Pumpkin", branch = "mod-
 pumpkin-util = { git = "https://github.com/zinedinp/Pumpkin", branch = "mod-zip" }
 pumpkin-wasm-host = { git = "https://github.com/zinedinp/Pumpkin", branch = "mod-zip" }
 pumpkin-world = { git = "https://github.com/zinedinp/Pumpkin", branch = "mod-zip" }
-rand = "0.10.3"
+rand = "0.10.4"
 raw-window-handle = "0.6.2"
 rodio = { version = "0.23.0", default-features = false, features = ["playback", "vorbis"] }
 rsa = { version = "0.10", default-features = false, features = ["std", "encoding"] }
@@ -57,7 +57,7 @@ regex = { version = "1.13", default-features = false, features = ["std", "perf",
 # system's shaderc library, from the same install `glslc` comes from.
 shaderc = "0.10.1"
 zip = { version = "9.6.0", default-features = false, features = ["deflate-flate2"] }
-miraculix = "0.4.1-alpha"
+miraculix = "0.5.0-beta"
 
 [profile.dev]
 opt-level = 1

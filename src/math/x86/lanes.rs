@@ -1,14 +1,6 @@
 //! [`Lanes`] on x86_64: SSE2 (four floats as two pairs of doubles, every
 //! x86_64 has it), AVX (four doubles) and AVX-512F (eight). The arithmetic
-//! is `miraculix`'s; widening and narrowing, which it has no op for, are
-//! the `core::arch` conversions, reached only through a tier built from
-//! the tokens that prove them.
-
-use core::arch::x86_64::{
-    __m128, __m128d, __m256, __m256d, __m512d, _mm_cvtpd_ps, _mm_cvtps_pd, _mm_movehl_ps,
-    _mm_movelh_ps, _mm256_cvtpd_ps, _mm256_cvtps_pd, _mm512_cvtpd_ps, _mm512_cvtps_pd,
-};
-use core::mem::transmute;
+//! is `miraculix`'s, widening and narrowing too (`cvtps2pd`, `cvtpd2ps`).
 
 use miraculix::x86::FeatureSet;
 use miraculix::x86::ops::avx::avx::Avx;
@@ -117,24 +109,17 @@ impl Lanes for Sse2Lanes {
     }
     #[inline(always)]
     fn widen(self, v: Self::F32) -> Self::F64 {
-        // SAFETY: SSE2 is proven by `self.sse2`; the casts are between
-        // types of one size with every bit pattern valid.
-        unsafe {
-            let v: __m128 = transmute(v);
-            [
-                transmute::<__m128d, [f64; 2]>(_mm_cvtps_pd(v)),
-                transmute::<__m128d, [f64; 2]>(_mm_cvtps_pd(_mm_movehl_ps(v, v))),
-            ]
-        }
+        let s = self.sse2;
+        [
+            s.cvt_f32x4_to_f64x2(v),
+            s.cvt_f32x4_to_f64x2([v[2], v[3], v[2], v[3]]),
+        ]
     }
     #[inline(always)]
     fn narrow(self, v: Self::F64) -> Self::F32 {
-        // SAFETY: as in `widen`.
-        unsafe {
-            let low = _mm_cvtpd_ps(transmute::<[f64; 2], __m128d>(v[0]));
-            let high = _mm_cvtpd_ps(transmute::<[f64; 2], __m128d>(v[1]));
-            transmute(_mm_movelh_ps(low, high))
-        }
+        let s = self.sse2;
+        let (low, high) = (s.cvt_f64x2_to_f32x4(v[0]), s.cvt_f64x2_to_f32x4(v[1]));
+        [low[0], low[1], high[0], high[1]]
     }
 
     #[inline(always)]
@@ -240,13 +225,11 @@ impl Lanes for AvxLanes {
     }
     #[inline(always)]
     fn widen(self, v: Self::F32) -> Self::F64 {
-        // SAFETY: AVX is proven by `self.avx`; same-size casts.
-        unsafe { transmute::<__m256d, [f64; 4]>(_mm256_cvtps_pd(transmute::<[f32; 4], __m128>(v))) }
+        self.avx.cvt_f32x4_to_f64x4(v)
     }
     #[inline(always)]
     fn narrow(self, v: Self::F64) -> Self::F32 {
-        // SAFETY: as in `widen`.
-        unsafe { transmute::<__m128, [f32; 4]>(_mm256_cvtpd_ps(transmute::<[f64; 4], __m256d>(v))) }
+        self.avx.cvt_f64x4_to_f32x4(v)
     }
 
     #[inline(always)]
@@ -363,13 +346,11 @@ impl Lanes for Avx512Lanes {
     }
     #[inline(always)]
     fn widen(self, v: Self::F32) -> Self::F64 {
-        // SAFETY: AVX-512F is proven by `self.avx512`; same-size casts.
-        unsafe { transmute::<__m512d, [f64; 8]>(_mm512_cvtps_pd(transmute::<[f32; 8], __m256>(v))) }
+        self.avx512.cvt_f32x8_to_f64x8(v)
     }
     #[inline(always)]
     fn narrow(self, v: Self::F64) -> Self::F32 {
-        // SAFETY: as in `widen`.
-        unsafe { transmute::<__m256, [f32; 8]>(_mm512_cvtpd_ps(transmute::<[f64; 8], __m512d>(v))) }
+        self.avx512.cvt_f64x8_to_f32x8(v)
     }
 
     #[inline(always)]

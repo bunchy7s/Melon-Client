@@ -1,12 +1,6 @@
 //! [`Lanes`] on AArch64 Neon, which every AArch64 CPU has: four floats as
-//! two pairs of doubles. The arithmetic is `miraculix`'s; widening and
-//! narrowing are the `core::arch` conversions (`fcvtl`, `fcvtn`).
-
-use core::arch::aarch64::{
-    float32x4_t, float64x2_t, vcvt_f32_f64, vcvt_f64_f32, vcvt_high_f32_f64, vcvt_high_f64_f32,
-    vget_low_f32,
-};
-use core::mem::transmute;
+//! two pairs of doubles. The arithmetic is `miraculix`'s, widening and
+//! narrowing too (`fcvtl`, `fcvtn`).
 
 use miraculix::aarch64::FeatureSet;
 use miraculix::aarch64::ops::neon::neon::Neon;
@@ -109,25 +103,14 @@ impl Lanes for NeonLanes {
     }
     #[inline(always)]
     fn widen(self, v: Self::F32) -> Self::F64 {
-        // SAFETY: Neon is proven by `self.neon`; same-size casts.
-        unsafe {
-            let v: float32x4_t = transmute(v);
-            [
-                transmute::<float64x2_t, [f64; 2]>(vcvt_f64_f32(vget_low_f32(v))),
-                transmute::<float64x2_t, [f64; 2]>(vcvt_high_f64_f32(v)),
-            ]
-        }
+        let n = self.neon;
+        [n.cvt_f32x4_to_f64x2(v), n.cvt_high_f32x4_to_f64x2(v)]
     }
     #[inline(always)]
     fn narrow(self, v: Self::F64) -> Self::F32 {
-        // SAFETY: as in `widen`.
-        unsafe {
-            let low = vcvt_f32_f64(transmute::<[f64; 2], float64x2_t>(v[0]));
-            transmute(vcvt_high_f32_f64(
-                low,
-                transmute::<[f64; 2], float64x2_t>(v[1]),
-            ))
-        }
+        let n = self.neon;
+        let (low, high) = (n.cvt_f64x2_to_f32x2(v[0]), n.cvt_f64x2_to_f32x2(v[1]));
+        [low[0], low[1], high[0], high[1]]
     }
 
     #[inline(always)]
