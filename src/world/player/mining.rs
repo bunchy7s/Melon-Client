@@ -55,6 +55,10 @@ pub struct Miner<'a> {
     /// For Aqua Affinity.
     pub helmet: &'a ItemStack,
     pub effects: MiningEffects,
+    /// [`PlayerAttributes::mining_efficiency`](super::PlayerAttributes::mining_efficiency).
+    pub efficiency: Option<f32>,
+    /// [`PlayerAttributes::block_break_speed`](super::PlayerAttributes::block_break_speed).
+    pub break_speed: f32,
     pub eye_in_water: bool,
     pub on_ground: bool,
 }
@@ -76,9 +80,15 @@ impl Miner<'_> {
     /// `Player.getDestroySpeed`.
     fn destroy_speed(&self, block: &'static Block) -> f32 {
         let mut speed = self.held.get_speed(block);
-        let efficiency = enchantment_level(self.held, "minecraft:efficiency");
-        if speed > 1.0 && efficiency > 0 {
-            speed += (efficiency * efficiency + 1) as f32;
+        if speed > 1.0 {
+            speed += self.efficiency.unwrap_or_else(|| {
+                let level = enchantment_level(self.held, "minecraft:efficiency");
+                if level > 0 {
+                    (level * level + 1) as f32
+                } else {
+                    0.0
+                }
+            });
         }
         if let Some(amplifier) = self.effects.dig_speed() {
             speed *= 1.0 + (amplifier + 1) as f32 * 0.2;
@@ -86,6 +96,7 @@ impl Miner<'_> {
         if let Some(amplifier) = self.effects.mining_fatigue {
             speed *= 0.3f32.powi(amplifier + 1);
         }
+        speed *= self.break_speed;
         if self.eye_in_water && enchantment_level(self.helmet, "minecraft:aqua_affinity") == 0 {
             speed *= 0.2;
         }
@@ -143,6 +154,8 @@ mod tests {
             held,
             helmet: ItemStack::EMPTY,
             effects,
+            efficiency: None,
+            break_speed: 1.0,
             eye_in_water: false,
             on_ground: true,
         }

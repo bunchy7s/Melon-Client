@@ -105,6 +105,18 @@ impl PlayerAttributes {
         Some(value.clamp(min, max) as f32)
     }
 
+    /// `MINING_EFFICIENCY` once the server sent it (Efficiency and tool
+    /// modifiers); before that the miner reads the enchantment itself.
+    pub fn mining_efficiency(&self) -> Option<f32> {
+        let id = A::MINING_EFFICIENCY.id;
+        self.has(id).then(|| self.value(id, 0.0) as f32)
+    }
+
+    /// `BLOCK_BREAK_SPEED`: a factor on the whole destroy speed.
+    pub fn block_break_speed(&self) -> f32 {
+        self.value(A::BLOCK_BREAK_SPEED.id, A::BLOCK_BREAK_SPEED.default_value) as f32
+    }
+
     pub fn step_height(&self) -> f64 {
         self.value(A::STEP_HEIGHT.id, 0.6)
     }
