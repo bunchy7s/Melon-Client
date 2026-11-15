@@ -56,7 +56,7 @@ regex = { version = "1.13", default-features = false, features = ["std", "perf",
 # Resource packs' core shaders, compiled at runtime as vanilla does: the
 # system's shaderc library, from the same install `glslc` comes from.
 shaderc = "0.10.1"
-zip = { version = "9.5.1", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9.6.0", default-features = false, features = ["deflate-flate2"] }
 miraculix = "0.4.1-alpha"
 
 [profile.dev]

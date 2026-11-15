@@ -7,6 +7,7 @@ pub mod block;
 pub mod block_entity;
 pub mod block_models;
 pub mod block_motion;
+pub mod block_placement;
 pub mod block_tint;
 pub mod border;
 pub mod chunk;

@@ -401,6 +401,8 @@ pub(crate) fn configure_loop(
                 let mut writer = lock(writer);
                 writer.write_packet(id::SB_CONFIG_FINISH, |_| Ok(()))?;
                 writer.play = true;
+                // This thread reads the play packets up to the join.
+                registries.install_for_codecs();
                 return Ok((chat_types, registries, world));
             }
             _ => {}

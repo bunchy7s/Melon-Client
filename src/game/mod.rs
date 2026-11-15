@@ -361,6 +361,8 @@ impl InWorld {
         debug.set_visible(debug_visible);
         let mut player = PlayerState::new(DVec3::new(8.0, 80.0, 8.0));
         let chat_types = std::mem::take(&mut joined.session.info.chat_types);
+        // The main thread writes item stacks (creative slots) too.
+        joined.session.info.registries.install_for_codecs();
         let registries = std::mem::take(&mut joined.session.info.registries);
         let info = &joined.session.info;
         let dimension = info.dimension_name.clone();

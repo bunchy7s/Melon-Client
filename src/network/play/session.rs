@@ -107,7 +107,9 @@ impl Session {
                 let writer = Arc::clone(&writer);
                 let stats = Arc::clone(&stats);
                 let uuid = info.uuid;
+                let codec_registries = info.registries.codec_registries();
                 move || {
+                    pumpkin_protocol::codec::registry_ids::install(Some(codec_registries));
                     let reason =
                         match read_loop(&mut reader, &mut listener, &writer, &tx, &stats, uuid) {
                             Ok(reason) => reason,

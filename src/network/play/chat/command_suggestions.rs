@@ -7,6 +7,7 @@ use anyhow::Result;
 
 use super::commands::{Argument, Parser};
 use crate::network::protocol::packet::Reader;
+use pumpkin_protocol::codec::registry_ids;
 use pumpkin_protocol::ser::NetworkReadSliceExt;
 use pumpkin_util::version::JavaMinecraftVersion;
 
@@ -49,6 +50,21 @@ impl Registries {
         }
         self.synced.insert(registry, ids);
         Ok(())
+    }
+
+    /// The synced registries for Pumpkin's codecs, so item components
+    /// name the server's own entries (datapacks included) by their ids.
+    pub fn codec_registries(&self) -> std::sync::Arc<registry_ids::SyncedRegistries> {
+        let mut synced = registry_ids::SyncedRegistries::new();
+        for (registry, ids) in &self.synced {
+            synced.insert(registry.clone(), ids.clone());
+        }
+        std::sync::Arc::new(synced)
+    }
+
+    /// Resolves item component ids through these registries on this thread.
+    pub fn install_for_codecs(&self) {
+        registry_ids::install(Some(self.codec_registries()));
     }
 
     /// A registry's ids, `None` when Melon doesn't know it.

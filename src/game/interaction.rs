@@ -9,6 +9,7 @@ use crate::game::controls::WorldContext;
 use crate::gui::overlay::container::ContainerOverlay;
 use crate::gui::overlay::{ChatExit, OverlayKind};
 use crate::network::play::game::PlayerAction;
+use crate::world::block_placement;
 use crate::world::entity::interact::{self as entity_interact, EntityUse, Holder};
 use crate::world::entity::kind::EntityKind;
 use crate::world::inventory::{ClickType, OFFHAND_SLOT, empty};
@@ -683,20 +684,30 @@ impl InWorld {
         let Some(block) = Block::from_registry_key(held.item.registry_key) else {
             return false;
         };
-        let clicked = self.block_at(hit.pos);
-        let target = if is_air_or_replaceable(clicked) {
-            hit.pos
-        } else {
-            hit.neighbour()
-        };
-        if !is_air_or_replaceable(self.block_at(target)) {
+        let Some(face) = block_placement::Dir::from_face(hit.face) else {
             return false;
-        }
-        let state = block.default_state.id.as_u16();
+        };
+        let blocks = |p: [i32; 3]| self.block_at(p);
+        let input = block_placement::PlaceInput {
+            blocks: &blocks,
+            hit_pos: hit.pos,
+            face,
+            location: hit.location,
+            yaw: super::minecraft_yaw(self.player.yaw()),
+            pitch: self.player.pitch(),
+            sneaking: self.keys.sneak,
+        };
+        let Some(placement) = block_placement::place(block, &input) else {
+            return false;
+        };
+        let (target, state) = (placement.pos, placement.state);
         if self.placement_obstructed(target, state) {
             return false;
         }
         self.predict_block(target, state);
+        for &(pos, state) in &placement.also {
+            self.predict_block(pos, state);
+        }
         self.queue_block_sound(state, BlockSound::Place, sounds::block_center(target));
         if !self.game_mode.current.has_infinite_materials() {
             let slot = match hand {
@@ -810,10 +821,6 @@ impl InWorld {
 
 fn is_air_state(state: u16) -> bool {
     state == 0 || BlockStateId::new(state).is_some_and(|id| id.to_state().is_air())
-}
-
-fn is_air_or_replaceable(state: u16) -> bool {
-    is_air_state(state) || BlockStateId::new(state).is_some_and(|id| id.to_state().replaceable())
 }
 
 fn block_name(state: u16) -> &'static str {
