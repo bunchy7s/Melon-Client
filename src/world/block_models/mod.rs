@@ -14,6 +14,7 @@ use crate::world::block::direction::Direction;
 use crate::world::block_tint::TintKind;
 use crate::world::geometry::UV_INSET;
 use crate::world::texture_animation::TextureAnimator;
+use crate::world::transparency::{AlphaMap, AlphaRule, Transparency};
 
 pub mod ao_shape;
 mod atlas;
@@ -62,6 +63,19 @@ pub enum ChunkLayer {
     Translucent = 2,
 }
 
+impl ChunkLayer {
+    /// `ChunkSectionLayer.byTransparency`.
+    pub fn of(transparency: Transparency) -> Self {
+        if transparency.translucent {
+            Self::Translucent
+        } else if transparency.holes {
+            Self::Cutout
+        } else {
+            Self::Solid
+        }
+    }
+}
+
 /// The baked quads of every block state, and the atlas they sample.
 pub struct BlockModels {
     by_state: Vec<StateModel<BakedQuad>>,
@@ -77,8 +91,8 @@ pub struct BlockModels {
     smooth: Vec<bool>,
     /// Per state, the texture its model names `particle`, as an index
     particle: Vec<u16>,
-    /// Every atlas texture's rectangle and whether it is see-through
-    rects: Vec<([f32; 4], bool)>,
+    /// Every atlas texture's rectangle and its texels' transparency
+    rects: Vec<([f32; 4], AlphaMap)>,
 }
 
 /// No particle texture: the first quad's stands in.
@@ -185,9 +199,9 @@ pub struct BakedAtlas {
 /// `items` atlas: `AtlasManager.AtlasConfig(..., false)`).
 pub struct SpriteSheet {
     pub image: RgbaImage,
-    /// `[u0, v0, u1, v1]` and whether some pixel is partly see-through, by
-    /// texture ID as given.
-    pub sprites: HashMap<String, ([f32; 4], bool)>,
+    /// `[u0, v0, u1, v1]` and the texels' transparency, by texture ID as
+    /// given.
+    pub sprites: HashMap<String, ([f32; 4], AlphaMap)>,
     pub animator: TextureAnimator,
 }
 
@@ -216,8 +230,7 @@ pub fn pack_sprites(assets_root: &Path, ids: Vec<String>, max_side: u32) -> Spri
     let packed = pack_atlas(assets_root, images, max_side);
     let sprites = ids
         .into_iter()
-        .zip(packed.rects.iter().zip(&packed.partly_transparent))
-        .map(|(id, (&rect, &see_through))| (id, (rect, see_through)))
+        .zip(packed.rects.into_iter().zip(packed.alpha))
         .collect();
     SpriteSheet {
         image: packed.image,
@@ -309,8 +322,9 @@ impl BlockModels {
     fn particle_texture(&self, state: u16) -> Option<([f32; 4], bool)> {
         let index = *self.particle.get(usize::from(state))?;
         (index != NO_TEXTURE)
-            .then(|| self.rects.get(usize::from(index)).copied())
+            .then(|| self.rects.get(usize::from(index)))
             .flatten()
+            .map(|(rect, alpha)| (*rect, alpha.whole().translucent))
     }
 
     fn first_quad_sprite(&self, state: u16) -> Option<[f32; 4]> {
@@ -385,9 +399,9 @@ impl BlockModels {
         self.sprite_info(id).map(|(rect, _)| rect)
     }
 
-    /// [`Self::sprite`] and whether some pixel is partly see-through.
-    pub fn sprite_info(&self, id: &str) -> Option<([f32; 4], bool)> {
-        self.rects.get(*self.sprites.get(id)?).copied()
+    /// [`Self::sprite`] and its texels' transparency.
+    pub fn sprite_info(&self, id: &str) -> Option<([f32; 4], AlphaMap)> {
+        self.rects.get(*self.sprites.get(id)?).cloned()
     }
 
     /// Bakes every state from the models under `assets_root` and packs one
@@ -467,8 +481,8 @@ impl BlockModels {
         let rects = packed
             .rects
             .iter()
-            .zip(&packed.partly_transparent)
-            .map(|(&rect, &see_through)| (rect, see_through))
+            .copied()
+            .zip(packed.alpha.iter().cloned())
             .collect();
         let atlas = BakedAtlas {
             image: packed.image,
@@ -539,8 +553,9 @@ struct PendingQuad {
     /// The direction its shade was taken for.
     shade_face: Direction,
     cullface: Option<Direction>,
-    /// The model binds the texture with `force_translucent`.
-    forced_translucent: bool,
+    /// What its chunk layer is read from: the texels its `uv` covers
+    /// (before `uvlock`), or `force_translucent`.
+    alpha: AlphaRule,
     emission: u8,
     ambient_occlusion: bool,
     tint: TintKind,
@@ -564,13 +579,7 @@ impl PendingQuad {
             }),
             cullface: self.cullface,
             facing: facing_of(&self.corners),
-            layer: if self.forced_translucent || packed.partly_transparent[self.texture] {
-                ChunkLayer::Translucent
-            } else if packed.has_holes[self.texture] {
-                ChunkLayer::Cutout
-            } else {
-                ChunkLayer::Solid
-            },
+            layer: ChunkLayer::of(self.alpha.judge(&packed.alpha[self.texture])),
             index: 0,
             emission: self.emission,
             ambient_occlusion: self.ambient_occlusion,
@@ -799,7 +808,11 @@ impl<'a> Baker<'a> {
                 }
                 continue;
             }
-            let forced_translucent = model.forced_translucent.contains(&texture_id);
+            let alpha = if model.forced_translucent.contains(&texture_id) {
+                AlphaRule::Translucent
+            } else {
+                AlphaRule::region(&quad.uvs)
+            };
             let texture = self.texture(texture_id);
             let corners = quad.corners.map(|c| rotation * (c - center) + center);
             let normal = (rotation * quad.normal).normalize_or_zero();
@@ -825,7 +838,7 @@ impl<'a> Baker<'a> {
                     .as_deref()
                     .and_then(Direction::from_name)
                     .map(|d| rotate_direction(rotation, d)),
-                forced_translucent,
+                alpha,
                 emission: quad.light_emission,
                 ambient_occlusion: model.ambient_occlusion,
                 tint: tint_kind,
@@ -1084,6 +1097,63 @@ mod tests {
         let grass = models.quads(state_of(&Block::GRASS_BLOCK));
         assert!(grass.iter().any(|q| q.tint == TintKind::Grass));
         assert!(grass.iter().any(|q| q.tint == TintKind::None));
+    }
+
+    /// `FaceBakery`: a face's layer is read from the texels its `uv`
+    /// shows, so one texture sheet can hold an opaque, a cut out and a
+    /// see-through part.
+    #[test]
+    fn each_face_takes_the_layer_of_the_texels_it_shows() {
+        use image::Rgba;
+        // Columns 0-3 opaque, 4-7 holes, 8-11 half see-through,
+        // 12-15 opaque.
+        let mut sheet = RgbaImage::from_pixel(16, 16, Rgba([90, 90, 90, 255]));
+        for y in 0..16 {
+            for x in 4..8 {
+                sheet.put_pixel(x, y, Rgba([0, 0, 0, 0]));
+            }
+            for x in 8..12 {
+                sheet.put_pixel(x, y, Rgba([200, 200, 255, 128]));
+            }
+        }
+        let packed = pack_atlas(
+            Path::new("/nonexistent"),
+            vec![("test:block/sheet".to_owned(), Some(sheet))],
+            256,
+        );
+        let quad = |u0: f32, u1: f32, alpha: Option<AlphaRule>| {
+            PendingQuad {
+                corners: [Vec3::ZERO, Vec3::Y, Vec3::ONE, Vec3::X],
+                uvs: [
+                    Vec2::new(u0, 0.0),
+                    Vec2::new(u0, 1.0),
+                    Vec2::new(u1, 1.0),
+                    Vec2::new(u1, 0.0),
+                ],
+                texture: 0,
+                color: [1.0; 3],
+                shade_face: Direction::North,
+                cullface: None,
+                alpha: alpha.unwrap_or(AlphaRule::Region {
+                    min: Vec2::new(u0, 0.0),
+                    max: Vec2::new(u1, 1.0),
+                }),
+                emission: 0,
+                ambient_occlusion: true,
+                tint: TintKind::None,
+            }
+            .finish(&packed)
+            .layer
+        };
+        assert_eq!(quad(0.0, 0.25, None), ChunkLayer::Solid);
+        assert_eq!(quad(0.75, 1.0, None), ChunkLayer::Solid);
+        assert_eq!(quad(0.25, 0.5, None), ChunkLayer::Cutout);
+        assert_eq!(quad(0.5, 0.75, None), ChunkLayer::Translucent);
+        assert_eq!(quad(0.0, 1.0, None), ChunkLayer::Translucent);
+        assert_eq!(
+            quad(0.0, 0.25, Some(AlphaRule::Translucent)),
+            ChunkLayer::Translucent
+        );
     }
 
     #[test]

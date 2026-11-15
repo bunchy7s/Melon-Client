@@ -156,6 +156,8 @@ pub struct TextureCache<'a> {
     /// The IDs given an image by [`Self::insert`] (a skin, a composed
     /// banner): not the file an atlas holds under that name.
     inserted: std::collections::HashSet<String>,
+    /// [`Self::alpha`] so far.
+    alphas: HashMap<String, Option<crate::world::transparency::AlphaMap>>,
 }
 
 impl<'a> TextureCache<'a> {
@@ -166,12 +168,14 @@ impl<'a> TextureCache<'a> {
             animations: HashMap::new(),
             tick: 0,
             inserted: std::collections::HashSet::new(),
+            alphas: HashMap::new(),
         }
     }
 
     /// Uses `image` for `id` instead of loading it.
     pub fn insert(&mut self, id: &str, image: RgbaImage) {
         self.animations.remove(id);
+        self.alphas.remove(id);
         self.images.insert(id.to_owned(), Some(image));
         self.inserted.insert(id.to_owned());
     }
@@ -210,6 +214,22 @@ impl<'a> TextureCache<'a> {
         } else {
             Some(img)
         }
+    }
+
+    /// The texels' transparency of texture `id`: an animated one's over
+    /// all its frames, not just the one showing.
+    pub fn alpha(&mut self, id: &str) -> Option<crate::world::transparency::AlphaMap> {
+        use crate::world::transparency::AlphaMap;
+        if !self.alphas.contains_key(id) {
+            // Loads it, an animation's frames too.
+            let still = self.get(id).map(AlphaMap::of);
+            let alpha = match self.animations.get(id) {
+                Some(frames) => Some(AlphaMap::of_frames(frames)),
+                None => still,
+            };
+            self.alphas.insert(id.to_owned(), alpha);
+        }
+        self.alphas.get(id)?.clone()
     }
 
     /// Shows every animated texture as it is `tick` ticks in.

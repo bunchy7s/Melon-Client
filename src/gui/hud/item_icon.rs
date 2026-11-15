@@ -33,7 +33,7 @@ const DEFAULT_BLOCK_GUI: Display = Display {
 #[derive(Clone)]
 pub struct ItemSheet {
     pub texture: TextureId,
-    pub sprites: Arc<HashMap<String, ([f32; 4], bool)>>,
+    pub sprites: Arc<HashMap<String, ([f32; 4], crate::world::transparency::AlphaMap)>>,
 }
 
 /// One item's icon, ready to draw.
@@ -446,9 +446,13 @@ fn rasterize(
 
     let mut out = RgbaImage::new(size, size);
     let mut depth = vec![f32::NEG_INFINITY; (size * size) as usize];
+    // Translucent faces last (`MaterialInfo.itemRenderType`).
     let mut faces: Vec<(&ItemQuad, bool)> = quads
         .iter()
-        .filter_map(|quad| Some((quad, partly_transparent(textures.get(&quad.texture)?))))
+        .filter_map(|quad| {
+            let alpha = textures.alpha(&quad.texture)?;
+            Some((quad, quad.alpha.judge(&alpha).translucent))
+        })
         .collect();
     faces.sort_by_key(|&(_, see_through)| see_through);
     for (quad, _) in faces {
@@ -489,11 +493,6 @@ fn gui_light(normal: Vec3, front: bool) -> f32 {
         l1 = turn * l1;
     }
     (0.4 + 0.6 * (normal.dot(l0).max(0.0) + normal.dot(l1).max(0.0))).min(1.0)
-}
-
-/// Whether some texel is neither clear nor opaque (`Transparency.TRANSLUCENT`).
-fn partly_transparent(texture: &RgbaImage) -> bool {
-    texture.pixels().any(|p| (26..255).contains(&p[3]))
 }
 
 /// Fills one triangle with the nearest texel, keeping the nearest surface

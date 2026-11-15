@@ -44,4 +44,5 @@ pub mod sky;
 pub mod smooth_light;
 pub mod terrain;
 pub mod texture_animation;
+pub mod transparency;
 pub mod weather;

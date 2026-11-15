@@ -18,13 +18,14 @@ use crate::world::head_profile::HeadProfile;
 use crate::world::item_model::{
     self, Count, HandPose, HeldAnimation, HeldItem, HeldUse, ItemKey, ItemModel, Sheet,
 };
+use crate::world::transparency::AlphaMap;
 
 /// The atlases held items sample, made with the resources.
 pub struct Sheets {
     pub items: TextureId,
-    /// The item atlas's sprites and whether each is partly see-through, by
+    /// The item atlas's sprites and their texels' transparency, by
     /// `namespace:path`.
-    pub item_sprites: Arc<HashMap<String, ([f32; 4], bool)>>,
+    pub item_sprites: Arc<HashMap<String, ([f32; 4], AlphaMap)>>,
     pub blocks: TextureId,
     pub models: Arc<BlockModels>,
     /// The atlases' widths in texels, for the glint's scale.
@@ -35,10 +36,10 @@ pub struct Sheets {
 impl Sheets {
     /// Where texture `id` is: the item atlas first (vanilla's item models
     /// use it), then the block atlas.
-    fn find(&self, id: &str) -> Option<(Sheet, [f32; 4], bool)> {
+    fn find(&self, id: &str) -> Option<(Sheet, [f32; 4], AlphaMap)> {
         let canonical = crate::world::item_atlas::canonical(id);
-        if let Some(&(rect, see_through)) = self.item_sprites.get(&canonical) {
-            return Some((Sheet::Items, rect, see_through));
+        if let Some((rect, alpha)) = self.item_sprites.get(&canonical) {
+            return Some((Sheet::Items, *rect, alpha.clone()));
         }
         let (namespace, path) = crate::assets::split_id(id);
         let block = self.models.sprite_info(id).or_else(|| {
@@ -49,7 +50,7 @@ impl Sheets {
             };
             self.models.sprite_info(&other?)
         });
-        block.map(|(rect, see_through)| (Sheet::Blocks, rect, see_through))
+        block.map(|(rect, alpha)| (Sheet::Blocks, rect, alpha))
     }
 }
 

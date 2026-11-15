@@ -7,6 +7,7 @@ use image::RgbaImage;
 
 use super::mipmap;
 use crate::world::texture_animation::{self, Frames, SpriteAnimation, TextureAnimator};
+use crate::world::transparency::AlphaMap;
 
 /// The packed atlas: its image, each texture's rectangle, which textures
 pub(super) struct PackedAtlas {
@@ -16,9 +17,9 @@ pub(super) struct PackedAtlas {
     pub(super) rects: Vec<[f32; 4]>,
     /// Each texture's size in the atlas, pixels.
     pub(super) sizes: Vec<(u32, u32)>,
-    pub(super) partly_transparent: Vec<bool>,
-    /// Per texture: some pixel is fully clear, so it needs the cutout layer.
-    pub(super) has_holes: Vec<bool>,
+    /// Per texture, its texels' transparency, as loaded (before any
+    /// halving to fit).
+    pub(super) alpha: Vec<AlphaMap>,
     pub(super) animator: TextureAnimator,
 }
 
@@ -26,11 +27,6 @@ impl PackedAtlas {
     pub(super) fn longest_side(&self) -> u32 {
         self.image.width().max(self.image.height())
     }
-}
-
-/// `Transparency.TRANSLUCENT`: any pixel neither fully clear nor opaque.
-pub(super) fn partly_transparent(image: &RgbaImage) -> bool {
-    image.pixels().any(|p| p.0[3] != 0 && p.0[3] != 255)
 }
 
 /// `Transparency.TRANSPARENT`: some pixel fully clear.
@@ -56,6 +52,13 @@ pub(super) fn pack_atlas(
     let max_side = max_side.clamp(256, MAX_SIDE) / mipmap::ALIGN * mipmap::ALIGN;
     let mut sprites: Vec<Sprite> =
         parallel_map(textures, |(id, image)| load(assets_root, id, image));
+    let alpha: Vec<AlphaMap> = sprites
+        .iter()
+        .map(|s| match &s.frames {
+            Some(frames) => AlphaMap::of_frames(frames),
+            None => AlphaMap::of(&s.image),
+        })
+        .collect();
     fit(&mut sprites, max_side);
 
     let mut unique: Vec<usize> = Vec::new();
@@ -118,11 +121,6 @@ pub(super) fn pack_atlas(
         ]);
         sizes.push((w, h));
     }
-    let partly_transparent = sprites
-        .iter()
-        .map(|s| partly_transparent(&s.image))
-        .collect();
-    let has_holes = sprites.iter().map(|s| has_holes(&s.image)).collect();
     let animator = TextureAnimator {
         sprites: sprites
             .into_iter()
@@ -138,8 +136,7 @@ pub(super) fn pack_atlas(
         mips,
         rects,
         sizes,
-        partly_transparent,
-        has_holes,
+        alpha,
         animator,
     }
 }

@@ -14,6 +14,7 @@ use crate::assets::json_model::{Model, TextureCache, element_quads, vec3};
 use crate::math::angle::{self, DEG_TO_RAD, HALF_PI, PI, Rotation};
 use crate::renderer::WorldVertex;
 use crate::world::texture_animation;
+use crate::world::transparency::{AlphaMap, AlphaRule};
 use crate::world::{block_entity, geometry, model_part};
 
 mod key;
@@ -359,19 +360,19 @@ impl ItemModel {
     }
 
     /// One pose's vertices: `ItemTransform.apply` baked in. Only the quads
-    /// `place` finds a spot for (origin and size in their texture) are
-    /// drawn.
+    /// `place` (given each one's index) finds a spot for (origin and size
+    /// in their texture) are drawn.
     fn mesh_in_pose(
         &self,
         pose: HandPose,
         quads: &[ItemQuad],
-        place: impl Fn(&str) -> Option<(Vec2, Vec2)>,
+        place: impl Fn(usize, &ItemQuad) -> Option<(Vec2, Vec2)>,
     ) -> Vec<WorldVertex> {
         let display = pose.display(&self.model);
         let shade_frame = pose.shade_frame() * Mat3::from_mat4(display);
         let mut out = Vec::with_capacity(quads.len() * 4);
-        for quad in quads {
-            let Some((origin, size)) = place(&quad.texture) else {
+        for (i, quad) in quads.iter().enumerate() {
+            let Some((origin, size)) = place(i, quad) else {
                 continue;
             };
             let shade_normal = if pose.bakes_shade_in_model_space() {
@@ -409,16 +410,15 @@ pub enum Sheet {
 }
 
 /// Finds a texture in the atlases built at load: its sheet (never
-/// [`Sheet::Own`]), its `[u0, v0, u1, v1]` and whether some pixel is
-/// partly see-through.
-pub type SpriteLookup<'a> = &'a dyn Fn(&str) -> Option<(Sheet, [f32; 4], bool)>;
+/// [`Sheet::Own`]), its `[u0, v0, u1, v1]` and its texels' transparency.
+pub type SpriteLookup<'a> = &'a dyn Fn(&str) -> Option<(Sheet, [f32; 4], AlphaMap)>;
 
 /// Where one texture of a held item is.
 struct Place {
     sheet: Sheet,
     origin: Vec2,
     size: Vec2,
-    translucent: bool,
+    alpha: AlphaMap,
 }
 
 /// The [`HeldItem`] of the models and quads `poses` holds, one entry per
@@ -445,14 +445,14 @@ fn bake_held(
                 sprites(id)
             };
             match found {
-                Some((sheet, [u0, v0, u1, v1], translucent)) => {
+                Some((sheet, [u0, v0, u1, v1], alpha)) => {
                     places.insert(
                         id.clone(),
                         Place {
                             sheet,
                             origin: Vec2::new(u0, v0),
                             size: Vec2::new(u1 - u0, v1 - v0),
-                            translucent,
+                            alpha,
                         },
                     );
                 }
@@ -463,38 +463,51 @@ fn bake_held(
     let (mut texture, mut animation) = (None, None);
     if let Some((image, own_places)) = pack_textures(&own, textures) {
         for (id, origin, size) in own_places {
-            let translucent = textures
-                .get(&id)
-                .is_some_and(|image| image.pixels().any(|p| p[3] != 0 && p[3] != 255));
+            let alpha = textures.alpha(&id).unwrap_or_default();
             places.insert(
                 id,
                 Place {
                     sheet: Sheet::Own,
                     origin,
                     size,
-                    translucent,
+                    alpha,
                 },
             );
         }
         animation = animate_packed(&own, textures, &image);
         texture = Some(image);
     }
-    let mut groups: Vec<(bool, Sheet)> =
-        places.values().map(|p| (p.translucent, p.sheet)).collect();
+    // Per pose, each quad's part: its sheet and whether it is
+    // translucent (`MaterialInfo.itemRenderType`).
+    let part_of: Vec<Vec<Option<(bool, Sheet)>>> = poses
+        .iter()
+        .map(|pose| {
+            pose.map_or(&[][..], |(_, quads)| quads)
+                .iter()
+                .map(|quad| {
+                    let place = places.get(&quad.texture)?;
+                    Some((quad.alpha.judge(&place.alpha).translucent, place.sheet))
+                })
+                .collect()
+        })
+        .collect();
+    let mut groups: Vec<(bool, Sheet)> = part_of.iter().flatten().flatten().copied().collect();
     groups.sort();
     groups.dedup();
     let parts: Vec<HeldPart> = groups
         .into_iter()
         .map(|(translucent, sheet)| {
-            let place = |id: &str| {
-                places
-                    .get(id)
-                    .filter(|p| p.sheet == sheet && p.translucent == translucent)
-                    .map(|p| (p.origin, p.size))
-            };
             let meshes = HandPose::ALL.map(|pose| {
-                poses[pose as usize]
-                    .map(|(item, quads)| item.mesh_in_pose(pose, quads, place))
+                let index = pose as usize;
+                poses[index]
+                    .map(|(item, quads)| {
+                        item.mesh_in_pose(pose, quads, |i, quad| {
+                            (part_of[index][i] == Some((translucent, sheet)))
+                                .then(|| places.get(&quad.texture))
+                                .flatten()
+                                .map(|p| (p.origin, p.size))
+                        })
+                    })
                     .unwrap_or_default()
             });
             HeldPart {
@@ -1116,6 +1129,9 @@ pub struct ItemQuad {
     pub tint: [u8; 3],
     /// The element's `shade`, default true (`FaceBakery`).
     pub shade: bool,
+    /// What its render type's see-through-ness is read from
+    /// (`BakedQuad.MaterialInfo`).
+    pub alpha: AlphaRule,
 }
 
 /// `layer`'s faces through its transform into `out`: a JSON model's
@@ -1150,6 +1166,15 @@ fn layer_quads(
                     let Some(texture) = model.texture(&quad.texture) else {
                         continue;
                     };
+                    // `ItemModelGenerator` takes the sprite's, `FaceBakery`
+                    // the face's.
+                    let alpha = if model.generated {
+                        AlphaRule::Whole
+                    } else if model.forced_translucent.contains(&texture) {
+                        AlphaRule::Translucent
+                    } else {
+                        AlphaRule::region(&quad.uvs)
+                    };
                     out.push(ItemQuad {
                         corners: quad.corners.map(|c| transform.transform_point3(c / 16.0)),
                         uvs: quad.uvs,
@@ -1160,6 +1185,7 @@ fn layer_quads(
                             .and_then(|i| tints.get(i).copied())
                             .unwrap_or([255, 255, 255]),
                         shade,
+                        alpha,
                     });
                 }
             }
@@ -1180,6 +1206,7 @@ fn layer_quads(
                         texture: part.texture.clone(),
                         tint: [255, 255, 255],
                         shade: true,
+                        alpha: AlphaRule::Whole,
                     });
                 });
             }
@@ -1639,10 +1666,10 @@ mod tests {
             atlas
                 .sprites
                 .get(&id)
-                .map(|&(rect, see_through)| (Sheet::Items, rect, see_through))
+                .map(|(rect, alpha)| (Sheet::Items, *rect, alpha.clone()))
                 .or_else(|| {
                     id.contains(":block/")
-                        .then_some((Sheet::Blocks, [0.0, 0.0, 1.0, 1.0], false))
+                        .then(|| (Sheet::Blocks, [0.0, 0.0, 1.0, 1.0], AlphaMap::default()))
                 })
         };
         let held = |key: &str| {
