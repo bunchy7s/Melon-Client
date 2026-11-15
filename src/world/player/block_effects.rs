@@ -35,6 +35,38 @@ pub(super) fn current_impulse(
     Some(impulse)
 }
 
+/// `EntityFluidInteraction.getFluidHeight`: how far water and lava reach
+/// above the feet, `0` outside them. Only cells whose fluid reaches the
+/// feet count, so a thin flowing layer under a jump is no water.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(super) struct FluidHeights {
+    pub water: f64,
+    pub lava: f64,
+}
+
+impl FluidHeights {
+    /// `Entity.isInWater`.
+    pub fn in_water(self) -> bool {
+        self.water > 0.0
+    }
+
+    /// `Entity.isInLava`.
+    pub fn in_lava(self) -> bool {
+        self.lava > 0.0
+    }
+
+    /// The fluid `LivingEntity.travelInFluid` moves through: water wins.
+    pub fn travel_fluid(self) -> Option<FluidKind> {
+        if self.in_water() {
+            Some(FluidKind::Water)
+        } else if self.in_lava() {
+            Some(FluidKind::Lava)
+        } else {
+            None
+        }
+    }
+}
+
 fn block_of(level: &Level, cell: (i32, i32, i32)) -> &'static Block {
     let id = physics::block_at(level, cell.0, cell.1, cell.2);
     Block::from_state_id(BlockStateId::new_or_air(id))
@@ -70,25 +102,30 @@ pub(super) fn honey_slide(
 }
 
 impl PlayerState {
-    /// `Entity.updateFluidInteraction`'s push: water and lava carry a
-    pub(super) fn apply_fluid_current(&mut self, level: &Level) {
-        if self.abilities.flying {
-            return;
-        }
+    /// `Entity.updateFluidInteraction`: how deep the player stands in water
+    /// and lava, and their push (`isPushedByFluid`: not while flying).
+    pub(super) fn update_fluid_interaction(&mut self, level: &Level) -> FluidHeights {
         let region = self.bounding_box().deflate(0.001);
         let feet_y = self.bounding_box().min.y;
+        let mut heights = FluidHeights::default();
         for (kind, scale) in [
             (FluidKind::Water, WATER_CURRENT),
             (FluidKind::Lava, LAVA_CURRENT),
         ] {
             let current = physics::fluid_current(level, &region, feet_y, kind);
-            if current.height > 0.0
+            match kind {
+                FluidKind::Water => heights.water = current.height,
+                FluidKind::Lava => heights.lava = current.height,
+            }
+            if !self.abilities.flying
+                && current.height > 0.0
                 && let Some(impulse) =
                     current_impulse(current.flow, current.count, scale, self.velocity)
             {
                 self.velocity += impulse;
             }
         }
+        heights
     }
 
     /// The blocks the player stands in after a move: stuck multipliers for

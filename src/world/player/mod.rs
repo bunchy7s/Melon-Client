@@ -55,6 +55,8 @@ const WATER_ACCELERATION: f32 = 0.02;
 const WATER_DRAG: f64 = 0.8;
 const WATER_SPRINT_DRAG: f64 = 0.9;
 const LAVA_DRAG: f64 = 0.5;
+/// `LivingEntity.travelInWater`'s water drag under `DOLPHINS_GRACE`.
+const DOLPHINS_GRACE_DRAG: f32 = 0.96;
 /// `LivingEntity.jumpInLiquid` / `goDownInWater`.
 const FLUID_JUMP: f64 = 0.04;
 /// `FoodConstants.MAX_FOOD * 0.3`: below this the player can't sprint.
@@ -107,6 +109,8 @@ pub struct PlayerState {
     attributes: PlayerAttributes,
     /// Effects that change the physics (`SLOW_FALLING`, `JUMP_BOOST` amplifier + 1).
     slow_falling: bool,
+    /// `DOLPHINS_GRACE`: water barely slows the player.
+    dolphins_grace: bool,
     /// `Entity.stuckSpeedMultiplier`: set by cobwebs and the like, spent by the next move.
     stuck: DVec3,
     jump_boost: u32,
@@ -215,6 +219,7 @@ impl PlayerState {
             on_climbable: false,
             attributes: PlayerAttributes::default(),
             slow_falling: false,
+            dolphins_grace: false,
             stuck: DVec3::ZERO,
             jump_boost: 0,
             fall_distance: 0.0,
@@ -381,9 +386,15 @@ impl PlayerState {
     }
 
     /// The effects the physics reads besides speed.
-    pub fn set_physics_effects(&mut self, slow_falling: bool, jump_boost: u32) {
+    pub fn set_physics_effects(
+        &mut self,
+        slow_falling: bool,
+        jump_boost: u32,
+        dolphins_grace: bool,
+    ) {
         self.slow_falling = slow_falling;
         self.jump_boost = jump_boost;
+        self.dolphins_grace = dolphins_grace;
     }
 
     /// `LivingEntity.getEffectiveGravity`.
@@ -934,6 +945,93 @@ mod tests {
         assert_eq!(player.swim_amount, 0.0);
     }
 
+    /// A pool one block deep on the floor: `state` at y = 64 around the origin.
+    fn pool(state: u16) -> Level {
+        let mut level = flat_world(false);
+        for x in -3..=3 {
+            for z in -3..=3 {
+                level.set_block([x, 64, z], state, false);
+            }
+        }
+        level
+    }
+
+    fn jump() -> MoveInput {
+        MoveInput {
+            jump: true,
+            ..MoveInput::default()
+        }
+    }
+
+    /// Water of `amount` (8 a source, 1 the thinnest flowing layer).
+    fn water(amount: u16) -> u16 {
+        pumpkin_data::Block::WATER.default_state.id.as_u16() + (8 - amount) % 8
+    }
+
+    #[test]
+    fn jumping_in_water_a_block_deep_swims_up_instead_of_jumping() {
+        let level = pool(water(8));
+        let mut player = standing(&level, 0.0);
+        assert!(player.in_water());
+        player.tick(jump(), &level, 20, SPRINT_WINDOW_DEFAULT);
+        assert!(player.velocity.y < 0.05, "jumped at {}", player.velocity.y);
+        let start = player.feet.y;
+        for _ in 0..20 {
+            player.tick(jump(), &level, 20, SPRINT_WINDOW_DEFAULT);
+        }
+        assert!(player.feet.y > start + 0.2, "rose to {}", player.feet.y);
+    }
+
+    #[test]
+    fn shallow_water_and_land_are_jumped_out_of() {
+        for level in [pool(water(1)), flat_world(false)] {
+            let mut player = standing(&level, 0.0);
+            player.tick(jump(), &level, 20, SPRINT_WINDOW_DEFAULT);
+            assert!(player.velocity.y > 0.3, "jumped at {}", player.velocity.y);
+        }
+    }
+
+    #[test]
+    fn a_thin_layer_below_the_feet_is_no_water() {
+        let level = pool(water(1));
+        let mut player = PlayerState::new(DVec3::new(0.5, 64.5, 0.5));
+        player.tick(MoveInput::default(), &level, 20, SPRINT_WINDOW_DEFAULT);
+        assert!(!player.in_water());
+        assert!(player.velocity.y < -0.07, "fell at {}", player.velocity.y);
+    }
+
+    #[test]
+    fn lava_a_block_deep_is_swum_up_too() {
+        let level = pool(pumpkin_data::Block::LAVA.default_state.id.as_u16());
+        let mut player = standing(&level, 0.0);
+        player.tick(jump(), &level, 20, SPRINT_WINDOW_DEFAULT);
+        assert!(player.velocity.y < 0.05, "jumped at {}", player.velocity.y);
+    }
+
+    #[test]
+    fn water_touching_lava_still_counts_as_water() {
+        let mut level = pool(pumpkin_data::Block::LAVA.default_state.id.as_u16());
+        level.set_block([0, 65, 0], water(8), false);
+        let mut player = standing(&level, 0.0);
+        player.tick(MoveInput::default(), &level, 20, SPRINT_WINDOW_DEFAULT);
+        assert!(player.in_water());
+    }
+
+    #[test]
+    fn dolphins_grace_swims_faster() {
+        let level = lake();
+        let distance = |grace: bool| {
+            let mut player = PlayerState::new(DVec3::new(0.5, 58.0, 0.5));
+            player.set_physics_effects(false, 0, grace);
+            for _ in 0..20 {
+                player.tick(forward(false), &level, 20, SPRINT_WINDOW_DEFAULT);
+            }
+            let moved = player.feet - DVec3::new(0.5, 58.0, 0.5);
+            (moved.x * moved.x + moved.z * moved.z).sqrt()
+        };
+        assert!(distance(true) > distance(false) * 2.0);
+    }
+
     /// Standing on the floor, facing `yaw` (Melon degrees).
     fn standing(level: &Level, yaw: f32) -> PlayerState {
         let mut player = PlayerState::new(DVec3::new(0.5, 64.0, 0.5));
@@ -1128,7 +1226,7 @@ mod tests {
         let mut player = PlayerState::new(DVec3::ZERO);
         player.velocity.y = -0.5;
         assert_eq!(player.effective_gravity(), 0.08);
-        player.set_physics_effects(true, 0);
+        player.set_physics_effects(true, 0, false);
         assert_eq!(player.effective_gravity(), 0.01);
         player.velocity.y = 0.3;
         assert_eq!(player.effective_gravity(), 0.08);

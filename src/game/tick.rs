@@ -58,13 +58,16 @@ impl InWorld {
         self.player
             .set_speed_effects(self.status_effects.speed_factor());
         {
-            use crate::world::player::status_effects::{JUMP_BOOST_ID, SLOW_FALLING_ID};
+            use crate::world::player::status_effects::{
+                DOLPHINS_GRACE_ID, JUMP_BOOST_ID, SLOW_FALLING_ID,
+            };
             let effects = &self.status_effects;
             self.player.set_physics_effects(
                 effects.get(SLOW_FALLING_ID).is_some(),
                 effects
                     .get(JUMP_BOOST_ID)
                     .map_or(0, |e| e.amplifier as u32 + 1),
+                effects.get(DOLPHINS_GRACE_ID).is_some(),
             );
         }
         let client_loaded = self.loading.is_none();

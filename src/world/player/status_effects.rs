@@ -9,6 +9,7 @@ pub const SLOWNESS_ID: i32 = 1;
 pub const BLINDNESS_ID: i32 = 14;
 pub const SLOW_FALLING_ID: i32 = pumpkin_data::effect::StatusEffect::SLOW_FALLING.id as i32;
 pub const JUMP_BOOST_ID: i32 = pumpkin_data::effect::StatusEffect::JUMP_BOOST.id as i32;
+pub const DOLPHINS_GRACE_ID: i32 = pumpkin_data::effect::StatusEffect::DOLPHINS_GRACE.id as i32;
 pub const NIGHT_VISION_ID: i32 = 15;
 /// The effects the HUD's bars change for.
 pub const REGENERATION_ID: i32 = 9;
