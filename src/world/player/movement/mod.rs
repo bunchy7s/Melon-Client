@@ -60,6 +60,8 @@ impl PlayerState {
     }
 
     /// Adds a movement state; see [`MoveState`].
+    // TODO(mods): Rust only; client mod code (native/wasm) has no bridge to
+    // register a state yet.
     pub fn register_move_state(&mut self, state: Box<dyn MoveState>) {
         self.move_states.add(state);
     }

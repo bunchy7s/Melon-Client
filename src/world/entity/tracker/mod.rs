@@ -159,6 +159,7 @@ pub struct ClientEntity {
     age: u32,
     /// A mod movement state it began (`melon:movement`'s `Started`) and the
     /// ticks since, for the mod's look; gone after [`CUSTOM_MOVE_TICKS`].
+    // TODO(mods): stored only; no hook yet lets a mod pose or draw it.
     custom_move: Option<(String, u32)>,
     /// `getTicksUsingItem`: ticks since it began using an item.
     using_ticks: u32,
