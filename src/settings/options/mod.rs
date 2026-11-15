@@ -124,6 +124,9 @@ pub struct Config {
     pub main_hand: Arm,
     /// `Options.bobView` ("View Bobbing"): the view sways while walking.
     pub bob_view: bool,
+    /// `Options.highContrastBlockOutline`: the block outline in cyan over a
+    /// wide black one.
+    pub high_contrast_block_outline: bool,
     /// `Options.attackIndicator`.
     pub attack_indicator: AttackIndicator,
     /// `Options.particles`: how many particles show.
@@ -182,6 +185,7 @@ impl Default for Config {
             model_parts: ShownParts::default(),
             main_hand: Arm::Right,
             bob_view: true,
+            high_contrast_block_outline: false,
             attack_indicator: AttackIndicator::Crosshair,
             particles: ParticleStatus::All,
             resource_packs: vec!["vanilla".to_owned()],

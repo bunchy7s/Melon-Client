@@ -69,10 +69,13 @@ fn main() {
     println!("cargo:rerun-if-changed=shaders/globals.glsl");
     println!("cargo:rerun-if-changed=shaders/fog.glsl");
     println!("cargo:rerun-if-changed=shaders/world_push.glsl");
+    println!("cargo:rerun-if-changed=shaders/world_fog.glsl");
     // The sky's flat colour, faded into the fog.
     compile_shader("shaders/skydisc.vert", &out_dir, "vertex");
     compile_shader("shaders/skydisc.frag", &out_dir, "fragment");
     compile_shader("shaders/world.vert", &out_dir, "vertex");
+    // Lines and points of a fixed width in pixels: outlines and gizmos.
+    compile_shader("shaders/lines.vert", &out_dir, "vertex");
     // Terrain faces from `TerrainQuad`s and the quad table.
     compile_shader("shaders/terrain.vert", &out_dir, "vertex");
     // The same, its section offsets read per `gl_DrawIndex` for multi-draws.

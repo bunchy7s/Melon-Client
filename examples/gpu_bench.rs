@@ -318,6 +318,7 @@ fn run(event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
                             color: CLOUD_COLOR,
                         }),
                     weather: weather.clone(),
+                    lines: Vec::new(),
                     glint_item: None,
                     glint_armor: None,
                     glowing: Vec::new(),

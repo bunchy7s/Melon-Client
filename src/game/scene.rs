@@ -369,15 +369,19 @@ impl InWorld {
         );
 
         self.hit_result = self.pick_hit(self.player.eye());
-        let (width, height) = renderer.framebuffer_size();
+        let (width, _) = renderer.framebuffer_size();
+        let mut lines = Vec::new();
         self.outline.draw(
             renderer,
             &self.level,
             self.hit_block(),
-            camera.position,
-            (width as f32 / 1920.0 * 2.5).max(2.5) * 2.0 * (camera.fov.to_radians() / 2.0).tan()
-                / height.max(1) as f32,
-            &mut entities,
+            (
+                |state| assets.models.has_translucent_quads(state),
+                config.high_contrast_block_outline,
+            ),
+            // `Window.getAppropriateLineWidth`.
+            (width as f32 / 1920.0 * 2.5).max(2.5),
+            &mut lines,
         );
 
         let debug_frustum = camera.frustum_with_fov(aspect, camera.fov.max(f32::from(config.fov)));
@@ -389,6 +393,7 @@ impl InWorld {
             partial,
             font,
             &mut entities,
+            &mut lines,
         );
 
         let celestials = self.sky_draws(assets, &look, &camera, renderer.white_texture());
@@ -446,6 +451,7 @@ impl InWorld {
             entities,
             clouds,
             weather,
+            lines,
             glint_item: Some(assets.glint_item),
             glint_armor: Some(assets.glint_armor),
             glowing,

@@ -104,6 +104,7 @@ impl InWorld {
         partial: f32,
         (font, pages): (&Font, &[TextureId]),
         out: &mut Vec<EntityDraw>,
+        lines: &mut Vec<crate::renderer::LineDraw>,
     ) {
         use crate::gui::hud::debug_entries::Entry;
         let entries = self.debug.entries();
@@ -134,8 +135,6 @@ impl InWorld {
         if others {
             self.visualizer_gizmos(&mut gizmos, camera.position, frustum);
         }
-        let (width, height) = renderer.framebuffer_size();
-        let per_pixel = 2.0 * (camera.fov.to_radians() / 2.0).tan() / height.max(1) as f32;
         let forward = camera.forward();
         let up = camera.up();
         let text = TextView {
@@ -147,11 +146,10 @@ impl InWorld {
         self.debug_view.mesh.draw(
             renderer,
             &gizmos,
-            camera.position,
-            per_pixel,
-            width as f32 / 1920.0,
+            (camera.position, forward),
             Some(text),
             out,
+            lines,
         );
     }
 
@@ -186,12 +184,30 @@ impl InWorld {
         let white = argb(0xFFFF_FFFF);
         let red = argb(0xFFFF_0000);
         let blue = argb(0xFF00_00FF);
-        for entity in visible.iter().filter_map(|&id| self.entities.get(id)) {
+        let yellow = argb(0xFFFF_FF00);
+        for &id in visible {
+            let Some(entity) = self.entities.get(id) else {
+                continue;
+            };
+            if entity.appearance.invisible() {
+                continue;
+            }
             let (min, max) = entity.bounds(partial);
             let bounds = Aabb { min, max };
             let feet = entity.pos(partial);
             gizmos.cuboid(&bounds, white, DEFAULT_WIDTH);
             gizmos.point(feet, white, 2.0);
+            // The seat it rides on: as wide as the narrower of the two, a
+            // sixteenth high, moved as far as the rider is between ticks.
+            if let Some((seat, vehicle)) = self.entities.riding_position(id) {
+                let half = f64::from(vehicle.size().0.min(entity.size().0)) / 2.0;
+                let at = seat + (feet - entity.tick_pos());
+                let seat = Aabb {
+                    min: DVec3::new(at.x - half, at.y, at.z - half),
+                    max: DVec3::new(at.x + half, at.y + 0.0625, at.z + half),
+                };
+                gizmos.cuboid(&seat, yellow, DEFAULT_WIDTH);
+            }
             let eye = entity.eye(partial).as_dvec3();
             if entity.is_living() {
                 let band = Aabb {
@@ -200,10 +216,19 @@ impl InWorld {
                 };
                 gizmos.cuboid(&band, red, DEFAULT_WIDTH);
             }
+            // TODO(parity): the ender dragon's part boxes in
+            // `ARGB.colorFromFloat(1, 0.25, 1, 0)` (`EnderDragon.getSubEntities`):
+            // Melon has the dragon's model parts, but not the
+            // `EnderDragonPart` hitboxes its `aiStep` places each tick.
             let look = entity.view_vector(partial).as_dvec3();
             gizmos.arrow(eye, eye + look * 2.0, blue, DEFAULT_WIDTH);
         }
         if self.camera_mode != CameraMode::FirstPerson {
+            // TODO(parity): the yellow seat box while the player rides, as
+            // the other riders have (`Entities::riding_position`). The
+            // tracker doesn't hold the local player as an entity, so it
+            // needs the seat point from `own_seat`'s vehicle instead of the
+            // feet that one returns.
             let (min, max) = self.player.render_bounds();
             let bounds = Aabb { min, max };
             gizmos.cuboid(&bounds, white, DEFAULT_WIDTH);

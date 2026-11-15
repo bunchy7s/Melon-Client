@@ -73,6 +73,7 @@ impl Panorama {
             entities: Vec::new(),
             clouds: None,
             weather: Vec::new(),
+            lines: Vec::new(),
             glint_item: None,
             glint_armor: None,
             glowing: Vec::new(),

@@ -74,6 +74,7 @@ fn reads_back_what_it_writes() {
         },
         main_hand: Arm::Left,
         bob_view: false,
+        high_contrast_block_outline: true,
         attack_indicator: AttackIndicator::Hotbar,
         particles: ParticleStatus::Decreased,
         resource_packs: vec!["vanilla".to_owned(), "file/Faithful 32x.zip".to_owned()],

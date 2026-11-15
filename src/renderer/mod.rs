@@ -39,8 +39,8 @@ use vk_util::{
 
 pub use frame::{
     Blending, Blur, CelestialDraw, ChunkDraw, CloudDraw, CornerLight, EntityDraw, Frame, Glint,
-    QuadCorner, RenderLayer, SceneFrame, Sky, SkyKind, TerrainMesh, TerrainQuad, WORLD_Z_NEAR,
-    WorldDraw, WorldVertex, world_projection,
+    LineDraw, LineStyle, QuadCorner, RenderLayer, SceneFrame, Sky, SkyKind, TerrainMesh,
+    TerrainQuad, WORLD_Z_NEAR, WorldDraw, WorldVertex, world_projection,
 };
 
 use ash::vk;
@@ -219,6 +219,10 @@ struct Pipelines {
     outline: pipeline::Pass,
     /// Enchantment glint overlay.
     glint: pipeline::Pass,
+    /// The block outline and the gizmos: [`LineStyle`]'s pipelines, `LINES`,
+    /// `LINES_DEPTH_BIAS`, `LINES_TRANSLUCENT` and
+    /// `LINES_TRANSLUCENT_NO_DEPTH_WRITE`.
+    lines: [pipeline::Pass; 4],
     /// The sets after the texture's that the world pipelines share: the quad
     layouts: pipeline::world::Layouts,
     /// Terrain from [`TerrainQuad`]s: solid and cutout, like `solid` and
@@ -440,6 +444,9 @@ impl Drop for Renderer {
             }
             self.pipelines.outline.destroy(&self.device);
             self.pipelines.glint.destroy(&self.device);
+            for pass in &self.pipelines.lines {
+                pass.destroy(&self.device);
+            }
             for pass in &self.pipelines.terrain {
                 pass.destroy(&self.device);
             }

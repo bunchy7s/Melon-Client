@@ -1,5 +1,6 @@
 //! Vanilla `OptionsScreen`: the title, an FOV slider beside "Online...",
 
+pub mod accessibility;
 pub mod chat;
 pub mod controls;
 pub mod debug;
@@ -15,6 +16,7 @@ use crate::gui::screen::{
     ConfigChange, CursorKind, Screen, ScreenAction, ScreenContext, TextEvent,
 };
 use crate::gui::screens::menu::placeholder::placeholder_screen;
+use crate::gui::screens::options::accessibility::accessibility_options_screen;
 use crate::gui::screens::options::chat::chat_options_screen;
 use crate::gui::screens::options::controls::controls_screen;
 use crate::gui::screens::options::language::LanguageScreen;
@@ -47,7 +49,7 @@ const SUB_MENUS: [(&str, SubMenu); 11] = [
     ("options.language", SubMenu::Language),
     ("options.chat", SubMenu::Chat),
     ("options.resourcepack", SubMenu::ResourcePacks),
-    ("options.accessibility", SubMenu::Placeholder),
+    ("options.accessibility", SubMenu::Accessibility),
     ("options.telemetry", SubMenu::Placeholder),
     ("options.credits_and_attribution", SubMenu::Placeholder),
     ("melon.options.title", SubMenu::Melon),
@@ -56,6 +58,7 @@ const SUB_MENUS: [(&str, SubMenu); 11] = [
 #[derive(Clone, Copy)]
 enum SubMenu {
     Skin,
+    Accessibility,
     Video,
     Chat,
     Language,
@@ -205,6 +208,7 @@ impl OptionsScreen {
             SubMenu::Skin => ScreenAction::open(skin_customization_screen(ctx)),
             SubMenu::Video => ScreenAction::open(video_settings_screen(ctx)),
             SubMenu::Chat => ScreenAction::open(chat_options_screen(ctx)),
+            SubMenu::Accessibility => ScreenAction::open(accessibility_options_screen(ctx)),
             SubMenu::Language => ScreenAction::open(LanguageScreen::new(ctx)),
             SubMenu::Controls => ScreenAction::open(controls_screen(ctx)),
             SubMenu::Sounds => ScreenAction::open(sound_options_screen(ctx)),

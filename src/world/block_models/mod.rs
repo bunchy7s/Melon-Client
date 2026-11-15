@@ -248,6 +248,16 @@ impl BlockModels {
         }
     }
 
+    /// Whether a face of `state` is drawn with the translucent terrain
+    /// (`BlockStateModel.hasMaterialFlag(1)`): its outline then goes after it.
+    pub fn has_translucent_quads(&self, state: u16) -> bool {
+        let mut translucent = false;
+        self.quads_at(state, [0, 0, 0], |quads| {
+            translucent |= quads.iter().any(|q| q.layer == ChunkLayer::Translucent);
+        });
+        translucent
+    }
+
     /// What the mesher asks of every block, in one lookup. Unknown states
     #[inline]
     pub fn mesh_flags(&self, state: u16) -> MeshFlags {

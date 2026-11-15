@@ -282,6 +282,12 @@ impl Renderer {
             Geometry::Vertices,
         )?;
         let glint_pass = world(Mode::Glint, Geometry::Vertices)?;
+        let lines = [
+            world(Mode::Lines, Geometry::Vertices)?,
+            world(Mode::LinesDepthBias, Geometry::Vertices)?,
+            world(Mode::LinesTranslucent, Geometry::Vertices)?,
+            world(Mode::LinesNoDepthWrite, Geometry::Vertices)?,
+        ];
         let terrain = [
             world(
                 Mode::Solid,
@@ -469,6 +475,7 @@ impl Renderer {
                 water_mask: water_mask_pass,
                 outline: outline_pass,
                 glint: glint_pass,
+                lines,
                 layouts,
                 terrain,
             },

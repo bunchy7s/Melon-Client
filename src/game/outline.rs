@@ -1,44 +1,56 @@
-//! The outline of the block looked at (`LevelRenderer.renderHitOutline`):
+//! The outline of the block looked at (`LevelRenderer.submitBlockOutline`):
+//! its shape's edges, as lines a fixed number of pixels wide.
 
 use glam::{DVec3, IVec3, Mat4};
 
-use crate::renderer::{EntityDraw, MeshId, RenderLayer, Renderer, WorldVertex};
+use crate::renderer::{LineDraw, LineStyle, MeshId, Renderer, WorldVertex};
 use crate::world::level::Level;
 use crate::world::physics::Aabb;
 use crate::world::pick::{self, BlockHit};
 
-/// `ARGB.black(102)`: the colour's alpha.
-const ALPHA: f32 = 102.0 / 255.0;
-/// A distance counts in tenths of a block.
-const DISTANCE_STEP: f64 = 10.0;
+/// `ARGB.black(102)`.
+const COLOR: [f32; 4] = [0.0, 0.0, 0.0, 102.0 / 255.0];
+/// The high contrast outline's `0xFF57FFE1`, over a black one this wide.
+const HIGH_CONTRAST: [f32; 4] = [0x57 as f32 / 255.0, 1.0, 0xE1 as f32 / 255.0, 1.0];
+const HIGH_CONTRAST_UNDER_WIDTH: f32 = 7.0;
 /// How far from an edge its corners are looked at, to tell a real edge
+/// from a seam between two boxes.
 const PROBE: f64 = 1.0e-4;
 
-/// What the mesh was built for.
+/// What the meshes were built for.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct Key {
     pos: [i32; 3],
     state: u16,
-    /// The bar width in tenths of a millimetre.
-    width: i32,
+    /// The line width in sixteenths of a pixel.
+    width: u32,
+    high_contrast: bool,
 }
 
 #[derive(Default)]
 pub struct BlockOutline {
-    mesh: Option<(MeshId, Key)>,
+    /// The outline's line meshes and how each is drawn, for `key`.
+    meshes: Vec<(MeshId, LineStyle)>,
+    key: Option<Key>,
 }
 
 impl BlockOutline {
-    /// The outline of `hit`, if any, into `out`. `camera` is where the
+    /// The outline of `hit`, if any, into `out` (`submitBlockOutline`):
+    /// lines `line_width` pixels wide (`Window.getAppropriateLineWidth`).
+    /// `translucent` tells whether a block is drawn with the translucent
+    /// terrain, which its outline then follows; `high_contrast` is
+    /// `Options.highContrastBlockOutline`.
     pub fn draw(
         &mut self,
         renderer: &mut Renderer,
         level: &Level,
         hit: Option<BlockHit>,
-        camera: DVec3,
+        (translucent, high_contrast): (impl Fn(u16) -> bool, bool),
         line_width: f32,
-        out: &mut Vec<EntityDraw>,
+        out: &mut Vec<LineDraw>,
     ) {
+        // TODO(parity): vanilla also skips a block outside the world border
+        // (`WorldBorder.isWithinBounds`); Melon doesn't track the border yet.
         let hit = hit.filter(|hit| {
             let [x, y, z] = hit.pos;
             level.block_state(x, y, z).is_some_and(|state| state != 0)
@@ -49,47 +61,60 @@ impl BlockOutline {
         };
         let [x, y, z] = hit.pos;
         let state = level.block_state(x, y, z).unwrap_or(0);
-        let centre = DVec3::new(f64::from(x) + 0.5, f64::from(y) + 0.5, f64::from(z) + 0.5);
-        let distance = (centre - camera).length();
-        let distance = (distance * DISTANCE_STEP).round() / DISTANCE_STEP;
-        let width = distance as f32 * line_width;
         let key = Key {
             pos: hit.pos,
             state,
-            width: (width * 10_000.0).round() as i32,
+            width: (line_width * 16.0).round() as u32,
+            high_contrast,
         };
-        if self.mesh.is_none_or(|(_, built)| built != key) {
+        if self.key != Some(key) {
             self.release(renderer);
+            self.key = Some(key);
             let boxes: Vec<Aabb> = pick::outline_shapes(level, (x, y, z)).collect();
+            let edges = edges(&boxes);
             let origin = IVec3::from_array(hit.pos);
-            let vertices = bars(&edges(&boxes), origin, width / 2.0);
-            if vertices.is_empty() {
-                return;
-            }
-            match renderer.upload_mesh(&vertices) {
-                Ok(mesh) => self.mesh = Some((mesh, key)),
-                Err(e) => eprintln!("Umriss-Mesh fehlgeschlagen: {e:#}"),
+            // An opaque outline goes with the solid things
+            // (`SubmitNodeCollection.submitShapeOutline`), its cyan over
+            // the black by a depth bias; a see-through one after the blob
+            // shadows, or after the translucent terrain its block is in.
+            let parts = if high_contrast {
+                vec![
+                    (
+                        HIGH_CONTRAST_UNDER_WIDTH,
+                        [0.0, 0.0, 0.0, 1.0],
+                        LineStyle::Opaque,
+                    ),
+                    (line_width, HIGH_CONTRAST, LineStyle::OpaqueDepthBias),
+                ]
+            } else if translucent(state) {
+                vec![(line_width, COLOR, LineStyle::TranslucentAfterTerrain)]
+            } else {
+                vec![(line_width, COLOR, LineStyle::Translucent)]
+            };
+            for (width, color, style) in parts {
+                let vertices = lines(&edges, origin, color, width);
+                if vertices.is_empty() {
+                    continue;
+                }
+                match renderer.upload_mesh(&vertices) {
+                    Ok(mesh) => self.meshes.push((mesh, style)),
+                    Err(e) => eprintln!("Umriss-Mesh fehlgeschlagen: {e:#}"),
+                }
             }
         }
-        if let Some((mesh, _)) = self.mesh {
-            out.push(EntityDraw {
-                mesh,
-                atlas: renderer.white_texture(),
-                model: Mat4::IDENTITY,
-                origin: IVec3::from_array(hit.pos),
-                layer: RenderLayer::Shadows,
-                blend: crate::renderer::Blending::Opaque,
-                light: None,
-                overlay: 0.0,
-                glint: crate::renderer::Glint::None,
-            });
-        }
+        out.extend(self.meshes.iter().map(|&(mesh, style)| LineDraw {
+            mesh,
+            model: Mat4::IDENTITY,
+            origin: IVec3::from_array(hit.pos),
+            style,
+        }));
     }
 
     fn release(&mut self, renderer: &mut Renderer) {
-        if let Some((mesh, _)) = self.mesh.take() {
+        for (mesh, _) in self.meshes.drain(..) {
             renderer.free_mesh(mesh);
         }
+        self.key = None;
     }
 
     pub fn clear(&mut self, renderer: &mut Renderer) {
@@ -148,50 +173,23 @@ fn edges(boxes: &[Aabb]) -> Vec<Edge> {
     out
 }
 
-/// Every edge as a square bar of half width `half`, in quads relative to
-fn bars(edges: &[Edge], origin: IVec3, half: f32) -> Vec<WorldVertex> {
+/// Every edge as a line `width` pixels wide (`ShapeOutlineFeatureRenderer`),
+/// relative to `origin`.
+fn lines(edges: &[Edge], origin: IVec3, color: [f32; 4], width: f32) -> Vec<WorldVertex> {
     let origin = origin.as_dvec3();
-    let half = f64::from(half);
-    let mut out = Vec::with_capacity(edges.len() * 16);
-    for &(a, e) in edges {
-        let axis = (0..3).find(|&i| (e[i] - a[i]).abs() > 1.0e-9).unwrap_or(0);
-        let (u, v) = ((axis + 1) % 3, (axis + 2) % 3);
-        let mut a = a - origin;
-        let mut e = e - origin;
-        a[axis] -= half;
-        e[axis] += half;
-        for (du, dv) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
-            let at = |end: DVec3, across: f64| {
-                let mut p = end;
-                if du != 0.0 {
-                    p[u] += du * half;
-                    p[v] += across * half;
-                } else {
-                    p[v] += dv * half;
-                    p[u] += across * half;
-                }
-                p
-            };
-            let mut quad = [at(a, -1.0), at(e, -1.0), at(e, 1.0), at(a, 1.0)];
-            let mut outward = DVec3::ZERO;
-            outward[u] = du;
-            outward[v] = dv;
-            let normal = (quad[1] - quad[0]).cross(quad[3] - quad[0]);
-            if normal.dot(outward) < 0.0 {
-                quad.reverse();
-            }
-            out.extend(quad.iter().map(|p| {
-                WorldVertex::rgba(p.as_vec3().to_array(), [0.0, 0.0], [0.0, 0.0, 0.0, ALPHA])
-            }));
-        }
-    }
-    out
+    edges
+        .iter()
+        .filter_map(|&(a, e)| {
+            let (a, e) = ((a - origin).as_vec3(), (e - origin).as_vec3());
+            WorldVertex::line(a, e, color, width)
+        })
+        .flatten()
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use glam::Vec3;
 
     fn cube() -> Aabb {
         Aabb {
@@ -244,18 +242,13 @@ mod tests {
     }
 
     #[test]
-    fn every_bar_side_faces_away_from_its_edge() {
+    fn every_edge_is_one_line_quad_of_the_width() {
         let found = edges(&[cube()]);
-        let vertices = bars(&found, IVec3::ZERO, 0.01);
-        assert_eq!(vertices.len(), 12 * 16);
-        for bar in vertices.chunks(16) {
-            let points: Vec<Vec3> = bar.iter().map(|v| Vec3::from_array(v.pos)).collect();
-            let axis = points.iter().sum::<Vec3>() / 16.0;
-            for quad in points.chunks(4) {
-                let normal = (quad[1] - quad[0]).cross(quad[3] - quad[0]);
-                let middle = (quad[0] + quad[2]) / 2.0;
-                assert!(normal.dot(middle - axis) > 0.0, "{quad:?} faces inwards");
-            }
+        let vertices = lines(&found, IVec3::ZERO, COLOR, 2.5);
+        assert_eq!(vertices.len(), 12 * 4);
+        for v in &vertices {
+            assert_eq!(u16::from_le_bytes(v.light), 40);
+            assert_eq!(v.color, [0, 0, 0, 102]);
         }
     }
 }

@@ -23,6 +23,8 @@ layout(std140, set = 3, binding = 0) uniform Globals {
     vec4 view_up;
     // x: `Util.getMillis() * glintSpeed * 8`, y: `GlintAlpha`.
     vec4 glint;
+    // xy: the size of the frame in pixels (vanilla `ScreenSize`).
+    vec4 screen;
 } g;
 
 #endif

@@ -3,8 +3,8 @@
 use crate::renderer::Blending;
 use crate::renderer::pipeline::world::{DrawLight, FogInput, Mode};
 use crate::renderer::{
-    ChunkDraw, MeshId, QuadMeshId, RenderLayer, Renderer, SceneFrame, Sky, SkyKind, TerrainMesh,
-    TextureId, WorldDraw, globals, mesh_arena, pipeline, world_projection,
+    ChunkDraw, LineStyle, MeshId, QuadMeshId, RenderLayer, Renderer, SceneFrame, Sky, SkyKind,
+    TerrainMesh, TextureId, WorldDraw, globals, mesh_arena, pipeline, world_projection,
 };
 use ash::vk;
 use glam::{Mat4, Vec3};
@@ -128,6 +128,16 @@ impl Renderer {
                         }
                         self.gpu_timer.mark(&self.device, label);
                     }
+                    if layer == RenderLayer::Translucent {
+                        let fog = self.model_fog(world, layer);
+                        self.draw_lines(
+                            cmd,
+                            scene,
+                            world,
+                            (view_proj, fog),
+                            LineStyle::TranslucentAfterTerrain,
+                        );
+                    }
                 }
                 RenderLayer::Atmosphere => {
                     let Some(world) = &scene.world else { continue };
@@ -197,7 +207,16 @@ impl Renderer {
                     // that leaves depth alone.
                     let writes_depth = layer != RenderLayer::Particles;
                     let fog = self.model_fog(world, layer);
+                    // The opaque gizmo lines go with the solid entities
+                    // (vanilla's solid phase), before the blended ones.
+                    let mut lines_drawn = layer != RenderLayer::Entities;
                     for (_, entity) in entities {
+                        if !lines_drawn && entity.blend != Blending::Opaque {
+                            lines_drawn = true;
+                            for style in [LineStyle::Opaque, LineStyle::OpaqueDepthBias] {
+                                self.draw_lines(cmd, scene, world, (view_proj, fog), style);
+                            }
+                        }
                         let (mode, pass) = match entity.blend {
                             Blending::Translucent if writes_depth => {
                                 (Mode::Text, &self.pipelines.text)
@@ -244,6 +263,11 @@ impl Renderer {
                                     None,
                                 );
                             }
+                        }
+                    }
+                    if !lines_drawn {
+                        for style in [LineStyle::Opaque, LineStyle::OpaqueDepthBias] {
+                            self.draw_lines(cmd, scene, world, (view_proj, fog), style);
                         }
                     }
                 }
@@ -303,6 +327,10 @@ impl Renderer {
                                 None,
                             );
                         }
+                    }
+                    // Vanilla's `shapeOutlines`, then `translucentGizmos`.
+                    for style in [LineStyle::Translucent, LineStyle::TranslucentNoDepthWrite] {
+                        self.draw_lines(cmd, scene, world, (view_proj, fog), style);
                     }
                 }
             }
@@ -433,6 +461,50 @@ impl Renderer {
         }
     }
 
+    /// The [`LineDraw`](crate::renderer::LineDraw)s of `style`, through
+    /// `shaders/lines.vert`. Each one's offset is the eye in its mesh's
+    /// space: the point the shader pulls its lines toward.
+    unsafe fn draw_lines(
+        &self,
+        cmd: vk::CommandBuffer,
+        scene: &SceneFrame,
+        world: &WorldDraw,
+        (view_proj, fog): (Mat4, FogInput),
+        style: LineStyle,
+    ) {
+        let (mode, pass) = match style {
+            LineStyle::Opaque => (Mode::Lines, &self.pipelines.lines[0]),
+            LineStyle::OpaqueDepthBias => (Mode::LinesDepthBias, &self.pipelines.lines[1]),
+            LineStyle::Translucent | LineStyle::TranslucentAfterTerrain => {
+                (Mode::LinesTranslucent, &self.pipelines.lines[2])
+            }
+            LineStyle::TranslucentNoDepthWrite => {
+                (Mode::LinesNoDepthWrite, &self.pipelines.lines[3])
+            }
+        };
+        let mut lines = scene
+            .lines
+            .iter()
+            .filter(|line| line.style == style)
+            .peekable();
+        if lines.peek().is_none() || !self.bind_world_pass(cmd, self.white_texture(), mode) {
+            return;
+        }
+        let light = DrawLight::tint([1.0; 4]).fogged(fog);
+        for line in lines {
+            let model = world.relative_to(line.model, line.origin);
+            let eye = model.inverse().transform_point3(world.eye_fraction());
+            self.draw_world_mesh(
+                cmd,
+                pass.layout,
+                line.mesh,
+                (view_proj * model, eye),
+                &light,
+                None,
+            );
+        }
+    }
+
     /// Binds the world pipeline with `atlas`. `false` if the texture is gone.
     pub(in crate::renderer) unsafe fn bind_world_pass(
         &self,
@@ -457,6 +529,10 @@ impl Renderer {
             Mode::Crumbling => &self.pipelines.crumbling,
             Mode::WaterMask => &self.pipelines.water_mask,
             Mode::Outline => &self.pipelines.outline,
+            Mode::Lines => &self.pipelines.lines[0],
+            Mode::LinesDepthBias => &self.pipelines.lines[1],
+            Mode::LinesTranslucent => &self.pipelines.lines[2],
+            Mode::LinesNoDepthWrite => &self.pipelines.lines[3],
             Mode::Glint => return false,
         };
         self.device
@@ -556,7 +632,11 @@ impl Renderer {
             | Mode::Crumbling
             | Mode::WaterMask
             | Mode::Outline
-            | Mode::Glint => return false,
+            | Mode::Glint
+            | Mode::Lines
+            | Mode::LinesDepthBias
+            | Mode::LinesTranslucent
+            | Mode::LinesNoDepthWrite => return false,
         };
         self.device
             .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pass.pipeline);

@@ -7,7 +7,7 @@ use super::frame::WorldDraw;
 use super::vk_util::{MAPPED_FOR_GPU, create_buffer_in};
 use crate::world::fog::FogData;
 
-/// `Globals` in `globals.glsl`, std140: eight `vec4`s.
+/// `Globals` in `globals.glsl`, std140: ten `vec4`s.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Globals {
@@ -25,9 +25,11 @@ pub struct Globals {
     pub view_up: [f32; 4],
     /// x: `Util.getMillis() * glintSpeed * 8`, y: `GlintAlpha`.
     pub glint: [f32; 4],
+    /// xy: the size of the frame in pixels (vanilla `ScreenSize`).
+    pub screen: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<Globals>() == 144);
+const _: () = assert!(std::mem::size_of::<Globals>() == 160);
 
 impl Globals {
     /// No fog and the overworld's light: the title screen, menus.
@@ -80,6 +82,7 @@ impl Globals {
             cardinal_b: [west, east, 1.0, 1.0],
             view_up: [up.x, up.y, up.z, 0.0],
             glint: [crate::world::glint::millis(), 1.0, 0.0, 0.0],
+            screen: [1.0, 1.0, 0.0, 0.0],
         }
     }
 }
@@ -211,8 +214,8 @@ mod tests {
     use crate::math::angle::Rotation;
 
     #[test]
-    fn the_blocks_size_is_nine_vec4s() {
-        assert_eq!(std::mem::size_of::<Globals>(), 9 * 16);
+    fn the_blocks_size_is_ten_vec4s() {
+        assert_eq!(std::mem::size_of::<Globals>(), 10 * 16);
     }
 
     #[test]

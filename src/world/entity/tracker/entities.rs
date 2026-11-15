@@ -417,18 +417,38 @@ impl Entities {
         rider_ty: &EntityType,
         kind: EntityKind,
     ) -> DVec3 {
+        let seat = Self::seat_point(vehicle, rider, rider_ty, kind);
+        ride::rider_feet(vehicle.pos, seat, rider_ty)
+    }
+
+    /// `Entity.getPassengerAttachmentPoint`: the seat of `rider` on
+    /// `vehicle`, relative to the vehicle's position.
+    fn seat_point(
+        vehicle: &ClientEntity,
+        rider: i32,
+        rider_ty: &EntityType,
+        kind: EntityKind,
+    ) -> DVec3 {
         let index = vehicle
             .passengers
             .iter()
             .position(|p| *p == rider)
             .unwrap_or(0);
-        let seat = ride::seat(
+        ride::seat(
             vehicle.as_vehicle(),
             index,
             vehicle.passengers.len(),
             ride::Rider { ty: rider_ty, kind },
-        );
-        ride::rider_feet(vehicle.pos, seat, rider_ty)
+        )
+    }
+
+    /// `Entity.getPassengerRidingPosition`: where the entity `rider` sits
+    /// this tick (its vehicle's position plus the seat), and the vehicle.
+    pub fn riding_position(&self, rider: i32) -> Option<(DVec3, &ClientEntity)> {
+        let entity = self.by_id.get(&rider)?;
+        let vehicle = self.by_id.get(&entity.vehicle?)?;
+        let seat = Self::seat_point(vehicle, rider, entity.ty, entity.kind);
+        Some((vehicle.pos + seat, vehicle))
     }
 
     /// Where the local player's feet go while it rides: the seat on the

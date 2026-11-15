@@ -142,12 +142,18 @@ impl Renderer {
 
         self.draw_cursor.set(0);
 
-        let globals = frame
+        let mut globals = frame
             .scene
             .and_then(|scene| scene.world.as_ref())
             .map_or_else(Globals::plain, |world| {
                 Globals::for_world(world, self.aspect_ratio())
             });
+        globals.screen = [
+            self.swapchain.extent.width.max(1) as f32,
+            self.swapchain.extent.height.max(1) as f32,
+            0.0,
+            0.0,
+        ];
         self.globals.write(self.frames.current, &globals);
         self.gui_uniforms.write(
             self.frames.current,

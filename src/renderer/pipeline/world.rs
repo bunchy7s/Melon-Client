@@ -7,6 +7,7 @@ use crate::renderer::{TerrainQuad, WorldVertex as Vertex};
 use crate::world::lightmap::LightmapParams;
 
 const VERT_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/world.vert.spv"));
+const LINES_VERT_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/lines.vert.spv"));
 const TERRAIN_VERT_SPV: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/terrain.vert.spv"));
 const TERRAIN_INDIRECT_VERT_SPV: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/terrain_indirect.vert.spv"));
@@ -147,6 +148,25 @@ pub enum Mode {
     Outline,
     /// Enchantment glint overlay (`RenderPipelines.GLINT`): the scrolling
     Glint,
+    /// Lines and points of a fixed width in pixels (`RenderPipelines.LINES`):
+    /// depth written, not blended.
+    Lines,
+    /// `RenderPipelines.LINES_DEPTH_BIAS`: [`Self::Lines`], nearer by a
+    /// depth bias.
+    LinesDepthBias,
+    /// `RenderPipelines.LINES_TRANSLUCENT`: blended, depth written.
+    LinesTranslucent,
+    /// `RenderPipelines.LINES_TRANSLUCENT_NO_DEPTH_WRITE`.
+    LinesNoDepthWrite,
+}
+
+impl Mode {
+    fn is_lines(self) -> bool {
+        matches!(
+            self,
+            Self::Lines | Self::LinesDepthBias | Self::LinesTranslucent | Self::LinesNoDepthWrite
+        )
+    }
 }
 
 /// What a pipeline draws.
@@ -221,6 +241,25 @@ pub unsafe fn create(
             vk::PipelineDepthStencilStateCreateInfo::default()
                 .depth_test_enable(true)
                 .depth_write_enable(false)
+                .depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL),
+            translucent_blend(),
+        ),
+        // Vanilla's `LINES_SNIPPET`: no cull, the default depth test.
+        Mode::Lines | Mode::LinesDepthBias => (
+            vk::CullModeFlags::NONE,
+            vk::PipelineDepthStencilStateCreateInfo::default()
+                .depth_test_enable(true)
+                .depth_write_enable(true)
+                .depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL),
+            vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::RGBA)
+                .blend_enable(false),
+        ),
+        Mode::LinesTranslucent | Mode::LinesNoDepthWrite => (
+            vk::CullModeFlags::NONE,
+            vk::PipelineDepthStencilStateCreateInfo::default()
+                .depth_test_enable(true)
+                .depth_write_enable(mode == Mode::LinesTranslucent)
                 .depth_compare_op(vk::CompareOp::GREATER_OR_EQUAL),
             translucent_blend(),
         ),
@@ -321,19 +360,28 @@ pub unsafe fn create(
             vk::Format::R8G8_UINT,
             std::mem::offset_of!(Vertex, light) as u32,
         ),
+        // Only `lines.vert` reads it: which side or corner a vertex is.
+        (
+            vk::Format::R8_UINT,
+            std::mem::offset_of!(Vertex, face) as u32,
+        ),
     ];
     let (vert, vertex_stride, attributes): (_, _, &[_]) = match geometry {
         Geometry::Vertices => (
             if mode == Mode::SkyDisc {
                 SKY_DISC_VERT_SPV
+            } else if mode.is_lines() {
+                LINES_VERT_SPV
             } else {
                 VERT_SPV
             },
             std::mem::size_of::<Vertex>(),
             if mode == Mode::SkyDisc {
                 &vertex_attributes[..1]
-            } else {
+            } else if mode.is_lines() {
                 &vertex_attributes
+            } else {
+                &vertex_attributes[..4]
             },
         ),
         Geometry::Quads { indirect } => (
@@ -377,6 +425,8 @@ pub unsafe fn create(
         extra_sets,
         depth_bias: match mode {
             Mode::Crumbling => Some((40.0, 3.0)),
+            // Vanilla's `DepthStencilState(GREATER_THAN_OR_EQUAL, true, 1, 1)`.
+            Mode::LinesDepthBias => Some((1.0, 1.0)),
             // The glint redraws those meshes with depth `EQUAL`: the same
             // offset, or it never meets them.
             Mode::Opaque | Mode::Translucent | Mode::Text | Mode::Glint => Some((16.0, 2.0)),

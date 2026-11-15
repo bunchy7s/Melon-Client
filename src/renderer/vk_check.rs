@@ -296,6 +296,10 @@ fn validation_layers_accept_every_pipeline() {
             Mode::SkyGlow,
             Mode::Crumbling,
             Mode::WaterMask,
+            Mode::Lines,
+            Mode::LinesDepthBias,
+            Mode::LinesTranslucent,
+            Mode::LinesNoDepthWrite,
         ] {
             keep(world(mode, Geometry::Vertices).expect("world vertices"));
         }

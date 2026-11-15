@@ -5,13 +5,16 @@ use glam::{DVec3, IVec3, Mat4, Vec3};
 use crate::gui::text::font::Font;
 use crate::renderer::quad::{DrawList, Vertex};
 use crate::renderer::{
-    Blending, EntityDraw, MeshId, RenderLayer, Renderer, TextureId, WorldVertex,
+    Blending, EntityDraw, LineDraw, LineStyle, MeshId, RenderLayer, Renderer, TextureId,
+    WorldVertex,
 };
 use crate::world::block::direction::Direction;
 use crate::world::physics::Aabb;
 
-/// `GizmoStyle.stroke`'s width, in pixels on a 1920 wide window.
+/// `GizmoStyle.stroke`'s width, in pixels.
 pub const DEFAULT_WIDTH: f32 = 2.5;
+/// How far ahead of the eye a line is cut off (`GizmoFeatureRenderer.buildLines`).
+const NEAR: f64 = 0.05;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Line {
@@ -19,8 +22,16 @@ pub struct Line {
     pub b: DVec3,
     /// `ARGB.colorFromFloat`: red, green, blue, alpha.
     pub color: [f32; 4],
-    /// Pixels wide on a 1920 wide window.
+    /// Pixels wide, whatever the window's size (`LineGizmo.width`).
     pub width: f32,
+}
+
+/// `PointGizmo`: a square `size` pixels wide on screen.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Point {
+    pub at: DVec3,
+    pub color: [f32; 4],
+    pub size: f32,
 }
 
 /// A filled quad (`GizmoStyle.fill`), its corners in order.
@@ -47,6 +58,7 @@ pub const TEXT_SCALE: f32 = 0.32;
 #[derive(Default)]
 pub struct Gizmos {
     lines: Vec<Line>,
+    points: Vec<Point>,
     fills: Vec<Fill>,
     texts: Vec<WorldText>,
 }
@@ -77,34 +89,28 @@ impl Gizmos {
         }
     }
 
-    /// `Gizmos.point`: a small cross.
+    /// `Gizmos.point`: a square `size` pixels wide on screen.
     pub fn point(&mut self, at: DVec3, color: [f32; 4], size: f32) {
-        let arm = 0.02 * f64::from(size);
-        for axis in [DVec3::X, DVec3::Y, DVec3::Z] {
-            self.line(at - axis * arm, at + axis * arm, color, size);
-        }
+        self.points.push(Point { at, color, size });
     }
 
-    /// `Gizmos.arrow`: a line and two barbs back from its tip.
+    /// `ArrowGizmo`: the line and four barbs at 45 degrees back from its
+    /// tip, a tenth of its length long (0.1 to 1 block) along it and as far
+    /// out.
     pub fn arrow(&mut self, from: DVec3, to: DVec3, color: [f32; 4], width: f32) {
         self.line(from, to, color, width);
-        let along = to - from;
-        let length = along.length();
-        if length < 1.0e-6 {
+        let Some(dir) = (to - from).as_vec3().try_normalize() else {
             return;
-        }
-        let dir = along / length;
-        let across = dir
-            .cross(if dir.y.abs() < 0.9 {
-                DVec3::Y
-            } else {
-                DVec3::X
-            })
-            .normalize();
-        let up = dir.cross(across);
-        let head = 0.1_f64.min(length / 3.0);
-        for barb in [across, -across, up, -up] {
-            self.line(to, to - dir * head + barb * head * 0.5, color, width);
+        };
+        let rotation = glam::Quat::from_rotation_arc(Vec3::X, dir);
+        let len = (to.distance(from) as f32 * 0.1).clamp(0.1, 1.0);
+        for tip in [
+            Vec3::new(-len, len, 0.0),
+            Vec3::new(-len, 0.0, len),
+            Vec3::new(-len, -len, 0.0),
+            Vec3::new(-len, 0.0, -len),
+        ] {
+            self.line(to + (rotation * tip).as_dvec3(), to, color, width);
         }
     }
 
@@ -196,7 +202,9 @@ impl Gizmos {
 /// (blended), and the text, one mesh per font page.
 #[derive(Default)]
 pub struct GizmoMesh {
-    lines: Slot,
+    /// The opaque lines and points, then the see-through ones
+    /// (`DrawableGizmoPrimitives`' two groups).
+    lines: [Slot; 2],
     fills: Slot,
     texts: Vec<(TextureId, Slot)>,
 }
@@ -246,6 +254,15 @@ impl Slot {
         self.built.clear();
     }
 
+    fn lines(&self, style: LineStyle) -> Option<LineDraw> {
+        Some(LineDraw {
+            mesh: self.mesh?,
+            model: Mat4::IDENTITY,
+            origin: self.origin,
+            style,
+        })
+    }
+
     fn draw(&self, atlas: TextureId, layer: RenderLayer, blend: Blending) -> Option<EntityDraw> {
         Some(EntityDraw {
             mesh: self.mesh?,
@@ -262,24 +279,25 @@ impl Slot {
 }
 
 impl GizmoMesh {
-    /// `gizmos` seen from `camera`, into `out`. `per_pixel` is how many
-    /// blocks a pixel covers one block ahead; `scale` the window's width
-    /// over 1920. Text needs `text`; without it, none is drawn.
+    /// `gizmos` seen from `camera`, looking along `forward`: the lines and
+    /// points into `lines`, the rest into `out`. Text needs `text`; without
+    /// it, none is drawn.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         renderer: &mut Renderer,
         gizmos: &Gizmos,
-        camera: DVec3,
-        per_pixel: f32,
-        scale: f32,
+        (camera, forward): (DVec3, Vec3),
         text: Option<TextView<'_>>,
         out: &mut Vec<EntityDraw>,
+        lines: &mut Vec<LineDraw>,
     ) {
         let origin = camera.floor().as_ivec3();
         let white = renderer.white_texture();
-        let lines = ribbons(&gizmos.lines, origin, camera, per_pixel, scale);
-        self.lines.update(renderer, lines, origin);
+        for (slot, opaque) in self.lines.iter_mut().zip([true, false]) {
+            let vertices = line_quads(gizmos, opaque, origin, (camera, forward.as_dvec3()));
+            slot.update(renderer, vertices, origin);
+        }
         let fills = fill_quads(&gizmos.fills, origin);
         self.fills.update(renderer, fills, origin);
         let mut pages: Vec<(TextureId, Vec<WorldVertex>)> = Vec::new();
@@ -304,10 +322,8 @@ impl GizmoMesh {
             };
             self.texts[at].1.update(renderer, vertices, origin);
         }
-        out.extend(
-            self.lines
-                .draw(white, RenderLayer::Shadows, Blending::Opaque),
-        );
+        lines.extend(self.lines[0].lines(LineStyle::Opaque));
+        lines.extend(self.lines[1].lines(LineStyle::TranslucentNoDepthWrite));
         out.extend(
             self.fills
                 .draw(white, RenderLayer::Shadows, Blending::Translucent),
@@ -318,7 +334,9 @@ impl GizmoMesh {
     }
 
     pub fn release(&mut self, renderer: &mut Renderer) {
-        self.lines.release(renderer);
+        for slot in &mut self.lines {
+            slot.release(renderer);
+        }
         self.fills.release(renderer);
         for (_, mut slot) in self.texts.drain(..) {
             slot.release(renderer);
@@ -392,46 +410,57 @@ fn text_quads(
     }
 }
 
-/// One quad per line, facing `camera`, relative to `origin`.
-fn ribbons(
-    lines: &[Line],
+/// Whether `color` is in `DrawableGizmoPrimitives`' opaque group.
+fn is_opaque(color: [f32; 4]) -> bool {
+    (color[3].clamp(0.0, 1.0) * 255.0).round() >= 255.0
+}
+
+/// The lines and points of one group (`opaque` or not) as
+/// [`WorldVertex::line`]s and [`WorldVertex::point`]s relative to `origin`.
+/// A line is cut off where it passes the near plane `camera` sees along
+/// `forward` (`GizmoFeatureRenderer.buildLines`); one wholly behind it is
+/// left out.
+fn line_quads(
+    gizmos: &Gizmos,
+    opaque: bool,
     origin: IVec3,
-    camera: DVec3,
-    per_pixel: f32,
-    scale: f32,
+    (camera, forward): (DVec3, DVec3),
 ) -> Vec<WorldVertex> {
     let origin = origin.as_dvec3();
-    let mut out = Vec::with_capacity(lines.len() * 4);
-    for line in lines {
-        let along = line.b - line.a;
-        let length = along.length();
-        if length < 1.0e-9 {
+    let ahead = |p: DVec3| (p - camera).dot(forward);
+    let mut out = Vec::new();
+    for line in gizmos.lines.iter().filter(|l| is_opaque(l.color) == opaque) {
+        let (mut a, mut b) = (line.a, line.b);
+        let (behind_a, behind_b) = (ahead(a) < NEAR, ahead(b) < NEAR);
+        if behind_a && behind_b {
             continue;
         }
-        let dir = along / length;
-        let to_camera = camera - (line.a + line.b) / 2.0;
-        let distance = to_camera.length();
-        let across = dir.cross(to_camera);
-        if across.length_squared() < 1.0e-18 {
-            continue;
+        if behind_a || behind_b {
+            let denom = ahead(b) - ahead(a);
+            if denom.abs() < 1.0e-9 {
+                continue;
+            }
+            let cut = a.lerp(b, ((NEAR - ahead(a)) / denom).clamp(0.0, 1.0));
+            if behind_a {
+                a = cut;
+            } else {
+                b = cut;
+            }
         }
-        let across = across.normalize();
-        let half = f64::from(line.width * scale.max(1.0) * per_pixel) * distance / 2.0;
-        let (a, b) = (line.a - dir * half - origin, line.b + dir * half - origin);
-        let mut quad = [
-            a - across * half,
-            b - across * half,
-            b + across * half,
-            a + across * half,
-        ];
-        let normal = (quad[1] - quad[0]).cross(quad[3] - quad[0]);
-        if normal.dot(to_camera) < 0.0 {
-            quad.reverse();
-        }
+        let (a, b) = ((a - origin).as_vec3(), (b - origin).as_vec3());
         out.extend(
-            quad.iter()
-                .map(|p| WorldVertex::rgba(p.as_vec3().to_array(), [0.0, 0.0], line.color)),
+            WorldVertex::line(a, b, line.color, line.width)
+                .into_iter()
+                .flatten(),
         );
+    }
+    for point in gizmos
+        .points
+        .iter()
+        .filter(|p| is_opaque(p.color) == opaque)
+    {
+        let at = (point.at - origin).as_vec3();
+        out.extend(WorldVertex::point(at, point.color, point.size));
     }
     out
 }
@@ -440,46 +469,78 @@ fn ribbons(
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_cuboid_is_twelve_ribbons() {
-        let mut gizmos = Gizmos::default();
-        gizmos.cuboid(
-            &Aabb {
-                min: DVec3::ZERO,
-                max: DVec3::ONE,
-            },
-            [1.0; 4],
-            DEFAULT_WIDTH,
-        );
-        assert_eq!(gizmos.len(), 12);
-        let vertices = ribbons(
-            &gizmos.lines,
-            IVec3::ZERO,
-            DVec3::new(3.0, 4.0, 5.0),
-            0.001,
-            1.0,
-        );
-        assert_eq!(vertices.len(), 48);
+    fn cube() -> Aabb {
+        Aabb {
+            min: DVec3::ZERO,
+            max: DVec3::ONE,
+        }
     }
 
     #[test]
-    fn a_ribbon_is_as_wide_on_screen_wherever_it_is() {
-        let width_at = |distance: f64| {
-            let line = Line {
-                a: DVec3::new(0.0, 0.0, -distance),
-                b: DVec3::new(0.0, 1.0, -distance),
-                color: [1.0; 4],
-                width: 2.0,
-            };
-            let v = ribbons(&[line], IVec3::ZERO, DVec3::ZERO, 0.002, 1.0);
-            (v[0].pos[0] - v[1].pos[0])
-                .abs()
-                .max((v[0].pos[0] - v[3].pos[0]).abs())
-        };
-        for distance in [2.0_f64, 20.0] {
-            let expected = 2.0 * 0.002 * (distance * distance + 0.25).sqrt();
-            let width = f64::from(width_at(distance));
-            assert!((width - expected).abs() < 1.0e-4, "{width} {expected}");
+    fn a_cuboid_is_twelve_line_quads() {
+        let mut gizmos = Gizmos::default();
+        gizmos.cuboid(&cube(), [1.0; 4], DEFAULT_WIDTH);
+        assert_eq!(gizmos.len(), 12);
+        let camera = (DVec3::new(0.5, 0.5, -5.0), DVec3::Z);
+        let vertices = line_quads(&gizmos, true, IVec3::ZERO, camera);
+        assert_eq!(vertices.len(), 48);
+        assert!(line_quads(&gizmos, false, IVec3::ZERO, camera).is_empty());
+        for v in &vertices {
+            assert_eq!(u16::from_le_bytes(v.light), 40, "2.5 px in sixteenths");
+        }
+    }
+
+    #[test]
+    fn lines_are_cut_off_at_the_near_plane() {
+        let mut gizmos = Gizmos::default();
+        gizmos.line(
+            DVec3::new(0.0, 0.0, -3.0),
+            DVec3::new(0.0, 0.0, 3.0),
+            [1.0; 4],
+            1.0,
+        );
+        gizmos.line(
+            DVec3::new(0.0, 1.0, -3.0),
+            DVec3::new(0.0, 1.0, -1.0),
+            [1.0; 4],
+            1.0,
+        );
+        let vertices = line_quads(&gizmos, true, IVec3::ZERO, (DVec3::ZERO, DVec3::Z));
+        assert_eq!(vertices.len(), 4, "the line wholly behind is left out");
+        let near = vertices.iter().map(|v| v.pos[2]).fold(f32::MAX, f32::min);
+        assert!((near - NEAR as f32).abs() < 1.0e-6, "{near}");
+    }
+
+    #[test]
+    fn see_through_lines_and_points_go_to_their_own_group() {
+        let mut gizmos = Gizmos::default();
+        gizmos.line(DVec3::ZERO, DVec3::X, [1.0, 0.0, 0.0, 0.5], 1.0);
+        gizmos.point(DVec3::new(0.0, 0.0, 2.0), [1.0; 4], 2.0);
+        let camera = (DVec3::new(0.0, 0.0, -5.0), DVec3::Z);
+        let opaque = line_quads(&gizmos, true, IVec3::ZERO, camera);
+        let see_through = line_quads(&gizmos, false, IVec3::ZERO, camera);
+        assert_eq!((opaque.len(), see_through.len()), (4, 4));
+        assert!(
+            opaque.iter().all(|v| (2..6).contains(&v.face)),
+            "a point's corners"
+        );
+    }
+
+    #[test]
+    fn an_arrows_barbs_are_a_tenth_of_it_back_and_out() {
+        let mut gizmos = Gizmos::default();
+        gizmos.arrow(
+            DVec3::ZERO,
+            DVec3::new(2.0, 0.0, 0.0),
+            [1.0; 4],
+            DEFAULT_WIDTH,
+        );
+        assert_eq!(gizmos.len(), 5);
+        for barb in &gizmos.lines[1..] {
+            assert_eq!(barb.b, DVec3::new(2.0, 0.0, 0.0));
+            let back = barb.a - barb.b;
+            assert!((back.x + 0.2).abs() < 1.0e-6, "{back}");
+            assert!((back.y.abs() + back.z.abs() - 0.2).abs() < 1.0e-6, "{back}");
         }
     }
 }

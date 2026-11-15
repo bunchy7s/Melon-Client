@@ -36,6 +36,8 @@ pub struct SceneFrame {
     pub clouds: Option<CloudDraw>,
     /// Rain then snow columns, camera-relative, wrapping environment textures.
     pub weather: Vec<EntityDraw>,
+    /// The block outline and the debug gizmos' lines.
+    pub lines: Vec<LineDraw>,
     /// `textures/misc/enchanted_glint_{item,armor}.png`, for the overlay.
     pub glint_item: Option<TextureId>,
     pub glint_armor: Option<TextureId>,
@@ -52,6 +54,39 @@ pub struct CloudDraw {
     pub draw: EntityDraw,
     /// Multiplied onto the vertex colours, alpha included.
     pub color: [f32; 4],
+}
+
+/// A mesh of [`WorldVertex::line`]s and [`WorldVertex::point`]s: the block
+/// outline or the debug gizmos.
+#[derive(Clone)]
+pub struct LineDraw {
+    pub mesh: MeshId,
+    /// From the mesh to world space less [`Self::origin`].
+    pub model: Mat4,
+    /// The block `model` is relative to.
+    pub origin: glam::IVec3,
+    pub style: LineStyle,
+}
+
+/// Which of vanilla's line pipelines a [`LineDraw`] takes, and when it is
+/// drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineStyle {
+    /// `RenderPipelines.LINES`: depth written, not blended. With the solid
+    /// entities (the opaque gizmos, the high contrast outline's black).
+    Opaque,
+    /// `LINES_DEPTH_BIAS`: the same, a little nearer, so it wins over an
+    /// [`Self::Opaque`] line it lies on (the high contrast outline).
+    OpaqueDepthBias,
+    /// `LINES_TRANSLUCENT`: blended, depth written. After the blob shadows,
+    /// before the translucent terrain (the block outline).
+    Translucent,
+    /// The same after the translucent terrain: the outline of a block that
+    /// is drawn in it (`BlockOutlineRenderState.isTranslucent`).
+    TranslucentAfterTerrain,
+    /// `LINES_TRANSLUCENT_NO_DEPTH_WRITE`: blended, depth left alone. After
+    /// the blob shadows (the see-through gizmos).
+    TranslucentNoDepthWrite,
 }
 
 /// One non-terrain mesh in world space: `model` places [`EntityDraw::mesh`]
@@ -493,6 +528,49 @@ impl WorldVertex {
         self.light = [block.min(15) << 4, sky.min(15) << 4];
         self
     }
+
+    /// The quad of a line from `a` to `b`, `width` pixels wide on screen,
+    /// for `shaders/lines.vert` (vanilla `RenderPipelines.LINES`): two
+    /// vertices at each end, one per side. They carry the line's direction
+    /// in `uv` (octahedron-encoded), the width in sixteenths of a pixel in
+    /// `light` and the side in `face`. `None` for a line of no length.
+    pub fn line(a: glam::Vec3, b: glam::Vec3, color: [f32; 4], width: f32) -> Option<[Self; 4]> {
+        let dir = (b - a).try_normalize()?;
+        let at = |pos: glam::Vec3, corner: u8| Self::line_corner(pos, dir, color, width, corner);
+        Some([at(a, 0), at(a, 1), at(b, 1), at(b, 0)])
+    }
+
+    /// A square `size` pixels wide on screen around `at`, for
+    /// `shaders/lines.vert` (vanilla `core/debug_point.vsh`'s points).
+    pub fn point(at: glam::Vec3, color: [f32; 4], size: f32) -> [Self; 4] {
+        [2, 3, 4, 5].map(|corner| Self::line_corner(at, glam::Vec3::X, color, size, corner))
+    }
+
+    fn line_corner(
+        pos: glam::Vec3,
+        dir: glam::Vec3,
+        color: [f32; 4],
+        width: f32,
+        corner: u8,
+    ) -> Self {
+        let sixteenths = (width.max(0.0) * 16.0).round().min(f32::from(u16::MAX)) as u16;
+        let mut v = Self::rgba(pos.to_array(), octahedron_encode(dir), color);
+        v.light = sixteenths.to_le_bytes();
+        v.face = corner;
+        v
+    }
+}
+
+/// A unit vector as a point of the octahedron's square, `-1..=1` each;
+/// `shaders/lines.vert` decodes it.
+fn octahedron_encode(v: glam::Vec3) -> [f32; 2] {
+    let v = v / (v.x.abs() + v.y.abs() + v.z.abs());
+    if v.z >= 0.0 {
+        [v.x, v.y]
+    } else {
+        let sign = |x: f32| if x >= 0.0 { 1.0 } else { -1.0 };
+        [(1.0 - v.y.abs()) * sign(v.x), (1.0 - v.x.abs()) * sign(v.y)]
+    }
 }
 
 const _: () = assert!(std::mem::size_of::<WorldVertex>() == 28);
@@ -610,6 +688,53 @@ pub const DEPTH_CLEAR: f32 = 0.0;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `lines.vert`'s `octahedron_decode`.
+    fn octahedron_decode([x, y]: [f32; 2]) -> glam::Vec3 {
+        let mut v = glam::Vec3::new(x, y, 1.0 - x.abs() - y.abs());
+        if v.z < 0.0 {
+            let sign = |x: f32| if x >= 0.0 { 1.0 } else { -1.0 };
+            let (vx, vy) = (v.x, v.y);
+            v.x = (1.0 - vy.abs()) * sign(vx);
+            v.y = (1.0 - vx.abs()) * sign(vy);
+        }
+        v.normalize()
+    }
+
+    #[test]
+    fn a_line_direction_survives_the_octahedron() {
+        let dirs = [
+            glam::Vec3::X,
+            -glam::Vec3::Y,
+            glam::Vec3::Z,
+            -glam::Vec3::Z,
+            glam::Vec3::new(1.0, -2.0, -3.0).normalize(),
+            glam::Vec3::new(-0.3, 0.1, 0.9).normalize(),
+        ];
+        for dir in dirs {
+            let back = octahedron_decode(octahedron_encode(dir));
+            assert!(back.distance(dir) < 1.0e-6, "{dir} came back as {back}");
+        }
+    }
+
+    #[test]
+    fn a_line_is_one_quad_both_sides_at_both_ends() {
+        let (a, b) = (glam::Vec3::ZERO, glam::Vec3::new(0.0, 2.0, 0.0));
+        let quad = WorldVertex::line(a, b, [1.0, 0.0, 0.0, 0.4], 2.5).unwrap();
+        let ends: Vec<_> = quad.iter().map(|v| v.pos).collect();
+        assert_eq!(
+            ends,
+            [a.to_array(), a.to_array(), b.to_array(), b.to_array()]
+        );
+        assert_eq!(quad.map(|v| v.face), [0, 1, 1, 0]);
+        assert!(quad.iter().all(|v| u16::from_le_bytes(v.light) == 40));
+        assert!(quad.iter().all(|v| v.color == [255, 0, 0, 102]));
+        assert!(WorldVertex::line(a, a, [1.0; 4], 1.0).is_none());
+        assert_eq!(
+            WorldVertex::point(a, [1.0; 4], 2.0).map(|v| v.face),
+            [2, 3, 4, 5]
+        );
+    }
 
     #[test]
     fn depth_is_reversed_and_keeps_millimetres_apart_far_out() {

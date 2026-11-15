@@ -425,6 +425,11 @@ pub(super) const KEYS: &[OptionKey] = &[
         write: |c| c.bob_view.to_string(),
     },
     OptionKey {
+        name: "highContrastBlockOutline",
+        read: |c, v| c.high_contrast_block_outline = flag(v),
+        write: |c| c.high_contrast_block_outline.to_string(),
+    },
+    OptionKey {
         name: "mainHand",
         read: |c, v| {
             if let Some(arm) = Arm::from_id(v.trim_matches('"')) {
