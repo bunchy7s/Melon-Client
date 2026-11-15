@@ -151,7 +151,7 @@ impl InWorld {
     fn tick_underwater_sounds(&mut self) {
         let eye = self.player.tick_eye();
         let at = [eye.x, eye.y, eye.z];
-        let now = eye_in_water(&self.level, eye.as_vec3());
+        let now = eye_in_water(&self.level, eye);
         let spectator = self.game_mode.current.is_spectator();
         let was = self.ambient.under_water;
         if !spectator {

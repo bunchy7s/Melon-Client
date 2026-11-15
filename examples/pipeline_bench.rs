@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use melon::game::camera;
 use melon::game::level_meshes::LevelMeshes;
+use melon::math::euler::{Look, Orientation};
 use melon::network::{self, Identity, WorldEvent};
 use melon::renderer::world_projection;
 use melon::singleplayer::{self, server};
@@ -22,7 +23,6 @@ use melon::world::culling::frustum::Frustum;
 use melon::world::culling::{CullSettings, Culler};
 use melon::world::fluid::FluidSprites;
 use melon::world::level::Level;
-use melon::world::player::view_matrix_for;
 use melon::world::terrain::{self, MeshContext, Neighborhood};
 
 /// Chunks around the spawn chunk: 17 x 17.
@@ -644,7 +644,8 @@ fn cull(report: &mut Report, level: &Level, meshes: &mut LevelMeshes, spawn: Vec
     let mut walks = Vec::new();
     let mut lists = Vec::new();
     for (name, eye, yaw, pitch) in views {
-        let view = view_matrix_for(yaw, pitch, eye);
+        let eye = eye.as_dvec3();
+        let view = Orientation::new(Look::from_melon(yaw, pitch)).view;
         let culler = Culler::new(
             Frustum::from_view_projection(projection * view),
             None,
@@ -664,7 +665,7 @@ fn cull(report: &mut Report, level: &Level, meshes: &mut LevelMeshes, spawn: Vec
         let mut count = None;
         for _ in 0..50 {
             let t = Instant::now();
-            let visible = meshes.visible_sections(&culler, eye);
+            let visible = meshes.visible_sections(&culler);
             lists.push(t.elapsed());
             count = Some(visible.count);
             meshes.recycle(visible.solid, visible.cutout, visible.translucent);

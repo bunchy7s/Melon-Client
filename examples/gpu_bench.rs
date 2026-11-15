@@ -14,6 +14,7 @@ use winit::window::{Window, WindowId};
 
 use melon::game::camera;
 use melon::game::level_meshes::LevelMeshes;
+use melon::math::euler::{Look, Orientation};
 use melon::network;
 use melon::renderer::quad::DrawList;
 use melon::renderer::{
@@ -25,7 +26,6 @@ use melon::world::culling::{CullSettings, Culler};
 use melon::world::fluid::FluidSprites;
 use melon::world::level::Level;
 use melon::world::lightmap::LightmapParams;
-use melon::world::player::view_matrix_for;
 
 const RADIUS: i32 = 8;
 const CHUNKS: &str = "target/pipeline-bench/chunks.bin";
@@ -180,7 +180,8 @@ fn run(event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
     let white = renderer.white_texture();
     let cloud_texture = melon::world::clouds::CloudTexture::load(assets.root());
     for (name, eye, yaw, pitch) in views {
-        let view = view_matrix_for(yaw, pitch, eye);
+        let eye = eye.as_dvec3();
+        let view = Orientation::new(Look::from_melon(yaw, pitch)).view;
         let culler = Culler::new(
             Frustum::from_view_projection(projection * view),
             None,
@@ -229,7 +230,8 @@ fn run(event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
             let columns: Vec<_> = columns
                 .into_iter()
                 .filter(|c| {
-                    let (dx, dz) = (c.x as f32 + 0.5 - eye.x, c.z as f32 + 0.5 - eye.z);
+                    let dx = (f64::from(c.x) + 0.5 - eye.x) as f32;
+                    let dz = (f64::from(c.z) + 0.5 - eye.z) as f32;
                     dx * dx + dz * dz >= min * min
                 })
                 .collect();
@@ -245,8 +247,8 @@ fn run(event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
             weather.push(EntityDraw {
                 mesh,
                 atlas: rain_texture,
-                model: glam::Mat4::from_translation(eye),
-                origin: glam::IVec3::ZERO,
+                model: glam::Mat4::from_translation((eye - eye.floor()).as_vec3()),
+                origin: eye.floor().as_ivec3(),
                 layer: RenderLayer::Atmosphere,
                 blend: melon::renderer::Blending::Translucent,
                 light: None,
@@ -265,17 +267,15 @@ fn run(event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
                 partial_tick: 0.5,
             };
             let verts = melon::world::clouds::build_anchored(&cloud_texture, frame);
+            let anchor = melon::world::clouds::anchor(&cloud_texture, &frame);
             if !verts.is_empty() {
                 let mesh = renderer.upload_mesh(&verts)?;
                 atmosphere_meshes.push(mesh);
                 atmosphere.push(EntityDraw {
                     mesh,
                     atlas: white,
-                    model: glam::Mat4::from_translation(melon::world::clouds::anchor(
-                        &cloud_texture,
-                        &frame,
-                    )),
-                    origin: glam::IVec3::ZERO,
+                    model: glam::Mat4::from_translation((anchor - anchor.floor()).as_vec3()),
+                    origin: anchor.floor().as_ivec3(),
                     layer: RenderLayer::Atmosphere,
                     blend: melon::renderer::Blending::Translucent,
                     light: None,
@@ -289,7 +289,7 @@ fn run(event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
             let mut frames = Vec::new();
             for frame in 0..WARMUP + FRAMES {
                 meshes.upload(&mut renderer, Vec::new());
-                let visible = meshes.visible_sections(&culler, eye);
+                let visible = meshes.visible_sections(&culler);
                 let scene = SceneFrame {
                     sky: None,
                     world: Some(WorldDraw {
@@ -347,7 +347,7 @@ fn run(event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
             rounds.push(Sample::median(&frames));
         }
         let m = Sample::median(&rounds);
-        let drawn = meshes.visible_sections(&culler, eye);
+        let drawn = meshes.visible_sections(&culler);
         println!(
             "{name:<12} {:>9.3} {:>9.3} {:>9.3} {:>11.3} {:>11.3} {:>9.3} {:>9.3}   ({} Sections, {} Draws, {} Vertices)",
             m.total,

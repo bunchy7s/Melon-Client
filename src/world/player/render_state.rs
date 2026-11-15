@@ -4,21 +4,19 @@ use super::PlayerState;
 use super::first_person;
 use super::hands::ItemUse;
 use crate::math::angle::{self, PI, Rotation};
+use crate::math::euler::{self, Look};
 use crate::math::wrap_degrees;
 use crate::world::entity::humanoid::{ArmPose, HumanoidRenderState, SwingPose};
 use crate::world::entity::living::{Swim, SwimTurn};
 use crate::world::entity::player::{Arm, AvatarRenderState, ShownParts};
-use glam::{Mat3, Mat4, Vec3};
+use glam::{DVec3, Mat4, Vec3};
 
 impl PlayerState {
     /// Once a frame: places the drawn player `partial` of the way from the
     pub fn update_render(&mut self, partial: f32, dt: f32) {
         let dt = dt.min(0.1);
         self.partial = partial.clamp(0.0, 1.0);
-        self.pos = self
-            .prev_feet
-            .lerp(self.feet, f64::from(partial.clamp(0.0, 1.0)))
-            .as_vec3();
+        self.pos = self.prev_feet.lerp(self.feet, f64::from(self.partial));
 
         self.age_ticks += 20.0 * dt;
 
@@ -31,7 +29,7 @@ impl PlayerState {
     pub fn rope_hold(&self, main_arm: Arm) -> Vec3 {
         let height = self.box_height() as f32;
         crate::world::entity::leash::player_hold(
-            self.pos,
+            self.pos.as_vec3(),
             self.yaw_degrees + 180.0,
             main_arm == Arm::Right,
             self.crouching,
@@ -42,7 +40,7 @@ impl PlayerState {
     /// Where the fishing line leaves the hand in a view that isn't the
     pub fn rod_hand(&self, right: bool) -> Vec3 {
         crate::world::entity::fishing::hand_third_person(
-            self.eye(),
+            self.eye().as_vec3(),
             self.yaw_degrees + 180.0,
             right,
             self.crouching,
@@ -51,24 +49,19 @@ impl PlayerState {
     }
 
     /// Camera position: feet plus the current pose's eye height
-    pub fn eye(&self) -> Vec3 {
-        self.pos + Vec3::new(0.0, self.eye_height(), 0.0)
+    pub fn eye(&self) -> DVec3 {
+        self.pos + DVec3::new(0.0, f64::from(self.eye_height()), 0.0)
     }
 
     /// `Camera.setup`'s position: the eye height eased between ticks, so
-    pub fn camera_eye(&self) -> Vec3 {
+    pub fn camera_eye(&self) -> DVec3 {
         let height = self.camera_eye_old + (self.camera_eye - self.camera_eye_old) * self.partial;
-        self.pos + Vec3::new(0.0, height, 0.0)
+        self.pos + DVec3::new(0.0, f64::from(height), 0.0)
     }
 
-    /// World-space look direction (yaw 0 = `-Z`, matching [`Self::tick`]'s
+    /// `Entity.getViewVector`: where it looks, as gameplay reads it.
     pub fn forward_vector(&self) -> Vec3 {
-        forward_vector_for(self.yaw_degrees, self.pitch_degrees)
-    }
-
-    /// `Camera` order: translate by `-eye`, then rotate - unlike the sky's
-    pub fn view_matrix_at(&self, eye: Vec3) -> Mat4 {
-        view_matrix_for(self.yaw_degrees, self.pitch_degrees, eye)
+        self.look_angles().view_vector()
     }
 
     /// The item being used, whose `UseEffects` slow the next ticks.
@@ -124,7 +117,7 @@ impl PlayerState {
                 swing,
                 ..Default::default()
             },
-            position: self.pos,
+            position: self.pos.as_vec3(),
             body_yaw,
             spectator,
             shown,
@@ -154,9 +147,9 @@ impl PlayerState {
 
     /// Where first-person hands are drawn from: the camera at `eye`, with
     pub fn hand_space(&self, eye: Vec3) -> Mat4 {
-        let cam_to_world = Mat4::from_translation(eye)
-            * Mat4::rot_y(-self.yaw_degrees.to_radians())
-            * Mat4::rot_x(-self.pitch_degrees.to_radians());
+        // The camera's own rotation, so the hand doesn't drift off it.
+        let rotation = euler::rotation_matrix(self.look_angles().camera_rotation());
+        let cam_to_world = Mat4::from_translation(eye) * Mat4::from_mat3(rotation);
         let yaw_lag = wrap_degrees(self.yaw_degrees - self.yaw_bob);
         let pitch_lag = self.pitch_degrees - self.pitch_bob;
         let sway = Mat4::rot_x_deg(pitch_lag * 0.1) * Mat4::rot_y_deg(yaw_lag * 0.1);
@@ -188,47 +181,29 @@ impl ArmPoses {
     }
 }
 
-/// World-space look direction for an arbitrary `yaw`/`pitch` (yaw 0 = `-Z`).
+/// `Entity.calculateViewVector` for Melon's `yaw` (0 looks north) and
+/// `pitch`.
 pub fn forward_vector_for(yaw_degrees: f32, pitch_degrees: f32) -> Vec3 {
-    let (sin_yaw, cos_yaw) = angle::unit(yaw_degrees * angle::DEG_TO_RAD);
-    let (sin_pitch, cos_pitch) = angle::unit(pitch_degrees * angle::DEG_TO_RAD);
-    Vec3::new(sin_yaw * cos_pitch, -sin_pitch, -cos_yaw * cos_pitch)
-}
-
-/// View matrix for an arbitrary `yaw`/`pitch`/`eye` (`Camera` order:
-pub fn view_matrix_for(yaw_degrees: f32, pitch_degrees: f32, eye: Vec3) -> Mat4 {
-    let (sx, cx) = angle::unit(pitch_degrees * angle::DEG_TO_RAD);
-    let (sy, cy) = angle::unit(yaw_degrees * angle::DEG_TO_RAD);
-    let rotation = Mat3::from_cols(
-        Vec3::new(cy, sx * sy, -cx * sy),
-        Vec3::new(0.0, cx, sx),
-        Vec3::new(sy, -sx * cy, cx * cy),
-    );
-    Mat4::from_cols(
-        rotation.x_axis.extend(0.0),
-        rotation.y_axis.extend(0.0),
-        rotation.z_axis.extend(0.0),
-        (-(rotation * eye)).extend(1.0),
-    )
+    Look::from_melon(yaw_degrees, pitch_degrees).view_vector()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Melon's yaw 0 looks north, and the camera turns as the old
+    /// `rot_x(pitch) * rot_y(yaw)` view did.
     #[test]
-    fn the_view_matrix_is_pitch_yaw_then_eye() {
-        let eye = Vec3::new(12.5, 70.0, -3.25);
+    fn melons_yaw_is_vanillas_turned_half_way() {
         for (yaw, pitch) in [(0.0, 0.0), (37.0, -20.0), (-140.0, 85.0), (275.0, 10.0)] {
-            let expected =
-                Mat4::rot_x_deg(pitch) * Mat4::rot_y_deg(yaw) * Mat4::from_translation(-eye);
-            assert!(
-                view_matrix_for(yaw, pitch, eye).abs_diff_eq(expected, 1e-4),
-                "{yaw} {pitch}"
-            );
-            let ahead = view_matrix_for(yaw, pitch, Vec3::ZERO)
-                .transform_vector3(forward_vector_for(yaw, pitch));
+            let look = Look::from_melon(yaw, pitch);
+            let expected = Mat4::rot_x_deg(pitch) * Mat4::rot_y_deg(yaw);
+            let view = euler::Orientation::new(look).view;
+            // `rot_*` turn by the table: a step (1e-4) off the exact view.
+            assert!(view.abs_diff_eq(expected, 1e-4), "{yaw} {pitch}");
+            let ahead = view.transform_vector3(forward_vector_for(yaw, pitch));
             assert!(ahead.abs_diff_eq(Vec3::NEG_Z, 1e-4), "{ahead}");
         }
+        assert!(forward_vector_for(0.0, 0.0).abs_diff_eq(Vec3::NEG_Z, 1e-6));
     }
 }

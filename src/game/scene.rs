@@ -79,7 +79,7 @@ impl InWorld {
         };
         camera.fov = narrowed(camera.fov);
         self.ears = Some(super::sounds::Ears {
-            position: camera.position.as_dvec3().to_array(),
+            position: camera.position.to_array(),
             forward: camera.forward().to_array(),
             up: camera.up().to_array(),
         });
@@ -121,8 +121,8 @@ impl InWorld {
             };
         let section = culler.section_of(camera.position);
         let level = &self.level;
-        let eye = smart_cull().then(|| occlusion::Eye {
-            position: camera.position.as_dvec3(),
+        let eye = smart_cull().then_some(occlusion::Eye {
+            position: camera.position,
             min_y,
         });
         let traced = self
@@ -138,7 +138,7 @@ impl InWorld {
             });
         let culler = culler.with_occlusion(mask);
         self.meshes.resort(renderer, camera.position);
-        let visible = self.meshes.visible_sections(&culler, camera.position);
+        let visible = self.meshes.visible_sections(&culler);
         let sections = visible.count;
 
         let partial = self.tick_time / player::TICK;
@@ -162,7 +162,7 @@ impl InWorld {
             &culler,
             partial,
         );
-        let visible_heads = super::heads::visible_heads(&self.level, &culler, camera.position);
+        let visible_heads = super::heads::visible_heads(&self.level, &culler);
         let own_visible = {
             let (min, max) = self.player.render_bounds();
             culler.sees_entity(min, max)
@@ -180,12 +180,14 @@ impl InWorld {
         let mut entities = std::mem::take(&mut self.spare_entities);
         entities.clear();
         let mut entities_drawn = 0;
+        // `Camera.yRot` / `xRot`, which vanilla's billboards turn to.
+        let camera_angles = (camera.look().y_rot, camera.look().x_rot);
         let main_arm = config.main_hand;
         if self.camera_mode == CameraMode::FirstPerson {
             // `GameRenderer.renderItemInHand`: not while the HUD is hidden.
             if !spectator && !self.hud_hidden {
                 let origin = camera.position.floor().as_ivec3();
-                let eye = camera.position - origin.as_vec3();
+                let eye = (camera.position - origin.as_dvec3()).as_vec3();
                 let hands = self.first_person_hands(eye, main_arm, config.model_parts, partial);
                 for draw in hands {
                     match draw {
@@ -277,7 +279,7 @@ impl InWorld {
             camera.position,
             partial,
             &lightmap_params,
-            crate::world::entity::display::camera_angles(camera.forward()),
+            camera_angles,
             &mut entities,
             &mut glowing,
         );
@@ -297,8 +299,8 @@ impl InWorld {
             assets,
             &visible_entities,
             &super::fishing::View {
-                position: camera.position,
-                angles: crate::world::entity::display::camera_angles(camera.forward()),
+                position: camera.position.as_vec3(),
+                angles: camera_angles,
                 plane: crate::world::entity::fishing::NearPlane {
                     forward: camera.forward(),
                     left: camera.left(),
@@ -315,8 +317,8 @@ impl InWorld {
         );
         self.text_display_draws(
             &visible_entities,
-            camera.position,
-            crate::world::entity::display::camera_angles(camera.forward()),
+            camera.position.as_vec3(),
+            camera_angles,
             partial,
             &lightmap_params,
             &mut entities,
@@ -324,7 +326,7 @@ impl InWorld {
         self.border_mesh.draw(
             renderer,
             &self.border,
-            camera.position.as_dvec3(),
+            camera.position,
             (f64::from(config.render_distance) * 16.0).max(3.0),
             assets.forcefield,
             &mut entities,
@@ -366,7 +368,7 @@ impl InWorld {
             &mut entities,
         );
 
-        self.hit_result = self.pick_hit(self.player.eye().as_dvec3());
+        self.hit_result = self.pick_hit(self.player.eye());
         let (width, height) = renderer.framebuffer_size();
         self.outline.draw(
             renderer,

@@ -1,7 +1,5 @@
 //! The environment attributes at the camera (vanilla
 
-use glam::Vec3;
-
 use crate::math::argb;
 use crate::world::biome::{Biome, Biomes};
 use crate::world::clock::Environment as Day;
@@ -38,11 +36,11 @@ impl BiomeMix {
 
     /// `GaussianSampler.sample` at `position`, asking `biome_at` for the
     pub fn gaussian(
-        position: Vec3,
+        position: glam::DVec3,
         mut biome_at: impl FnMut(i32, i32, i32) -> Option<u16>,
     ) -> Self {
         const KERNEL: [f64; 7] = [0.0, 1.0, 4.0, 6.0, 4.0, 1.0, 0.0];
-        let at = position.as_dvec3() * 0.25 - 0.5;
+        let at = position * 0.25 - 0.5;
         let base = at.floor();
         let rel = at - base;
         let (bx, by, bz) = (base.x as i32, base.y as i32, base.z as i32);
@@ -459,11 +457,11 @@ mod tests {
 
     #[test]
     fn the_gaussian_weights_a_whole_kernel_and_follows_the_position() {
-        let mix = BiomeMix::gaussian(Vec3::new(1.0, 70.0, 1.0), |_, _, _| Some(5));
+        let mix = BiomeMix::gaussian(glam::DVec3::new(1.0, 70.0, 1.0), |_, _, _| Some(5));
         assert_eq!(mix.weights.len(), 1);
         assert!((mix.weights[0].1 - 16.0 * 16.0 * 16.0).abs() < 1e-6);
         let border = |x: f32| {
-            BiomeMix::gaussian(Vec3::new(x, 70.0, 8.0), |bx, _, _| {
+            BiomeMix::gaussian(glam::DVec3::new(f64::from(x), 70.0, 8.0), |bx, _, _| {
                 Some(if bx < 0 { 1 } else { 2 })
             })
         };

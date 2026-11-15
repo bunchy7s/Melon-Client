@@ -323,11 +323,11 @@ impl ClientEntity {
             } else {
                 ax::IDLE_FLOOR
             };
-            for slot in 0..ax::BABY_SLOTS {
+            for (slot, anim) in self.anim.iter_mut().enumerate().take(ax::BABY_SLOTS) {
                 if slot == target {
-                    self.anim[slot].start_if_stopped(tick);
+                    anim.start_if_stopped(tick);
                 } else {
-                    self.anim[slot].stop();
+                    anim.stop();
                 }
             }
         } else {

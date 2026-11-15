@@ -160,7 +160,115 @@ pub fn wrap_degrees(degrees: f32) -> f32 {
     }
 }
 
-/// Rotations about the axes and from Euler angles, with [`unit`]
+/// `2 / π`, for the quarter turns in an angle.
+const FRAC_2_PI: f64 = std::f64::consts::FRAC_2_PI;
+/// `π / 2` in two parts (fdlibm's `pio2_1`, `pio2_1t`): the first has
+/// 33 significant bits, so a quarter-turn count below `2^20` times it
+/// is exact.
+#[allow(clippy::excessive_precision)] // fdlibm's literals, as written there.
+const PIO2_HI: f64 = 1.570_796_326_734_125_614_17;
+#[allow(clippy::excessive_precision)]
+const PIO2_LO: f64 = 6.077_100_506_506_192_249_32e-11;
+/// Past this the split above loses digits: [`sin_cos_exact`] asks libm.
+const REDUCE_LIMIT: f32 = 400_000.0;
+/// Adding and taking away `1.5 · 2^52` rounds a double to an integer.
+const ROUND_MAGIC: f64 = 6_755_399_441_055_744.0;
+
+/// fdlibm's `__kernel_sin` and `__kernel_cos` for `|r| <= π/4`, both
+/// well under a double's last bit off.
+#[inline(always)]
+#[allow(clippy::excessive_precision)] // fdlibm's literals, as written there.
+fn kernel_sin_cos(r: f64) -> (f64, f64) {
+    const S1: f64 = -1.666_666_666_666_663_243_48e-01;
+    const S2: f64 = 8.333_333_333_322_489_461_24e-03;
+    const S3: f64 = -1.984_126_982_985_794_931_34e-04;
+    const S4: f64 = 2.755_731_370_707_006_767_89e-06;
+    const S5: f64 = -2.505_076_025_340_686_341_95e-08;
+    const S6: f64 = 1.589_690_995_211_550_102_21e-10;
+    const C1: f64 = 4.166_666_666_666_660_190_37e-02;
+    const C2: f64 = -1.388_888_888_887_410_957_49e-03;
+    const C3: f64 = 2.480_158_728_947_672_941_78e-05;
+    const C4: f64 = -2.755_731_435_139_066_330_35e-07;
+    const C5: f64 = 2.087_572_321_298_174_827_90e-09;
+    const C6: f64 = -1.135_964_755_778_819_482_65e-11;
+    let z = r * r;
+    let sin = {
+        let tail = S2 + z * (S3 + z * (S4 + z * (S5 + z * S6)));
+        let sin = r + z * r * (S1 + z * tail);
+        // Keeps `-0.0`'s sign, as Java's sine does (a select, no jump).
+        if r == 0.0 { r } else { sin }
+    };
+    let cos = {
+        let tail = z * (C1 + z * (C2 + z * (C3 + z * (C4 + z * (C5 + z * C6)))));
+        let half = 0.5 * z;
+        let w = 1.0 - half;
+        w + (((1.0 - w) - half) + z * tail)
+    };
+    (sin, cos)
+}
+
+/// `(float) Math.sin(x)` and `(float) Math.cos(x)`: what JOML's
+/// `Math.sin` / `Math.cos` give vanilla's rotations (`Axis`,
+/// `Quaternionf.rotationYXZ`, `ModelPart`), unlike [`sin`]'s table.
+/// Exact in `f64` and rounded once, as Java does, without libm's call
+/// for the angles a frame turns by.
+// TODO(simd): four or eight angles at once. Nothing below jumps but the
+// rare libm fallback: the quadrant is a swap and two sign flips.
+#[inline]
+pub fn sin_cos_exact(x: f32) -> (f32, f32) {
+    if x.is_nan() || x.abs() > REDUCE_LIMIT {
+        let x = f64::from(x);
+        return (x.sin() as f32, x.cos() as f32);
+    }
+    let x = f64::from(x);
+    let rounded = x * FRAC_2_PI + ROUND_MAGIC;
+    // The quarter turns, rounded, sit in the low bits of `rounded`.
+    let quadrant = rounded.to_bits();
+    let quarters = rounded - ROUND_MAGIC;
+    let r = (x - quarters * PIO2_HI) - quarters * PIO2_LO;
+    let (s, c) = kernel_sin_cos(r);
+    // Quadrant 1: (c, -s); 2: (-s, -c); 3: (-c, s).
+    let swap = quadrant & 1 != 0;
+    let (sin, cos) = if swap { (c, s) } else { (s, c) };
+    let sin_sign = (quadrant & 2) << 62;
+    let cos_sign = (quadrant.wrapping_add(1) & 2) << 62;
+    (
+        f64::from_bits(sin.to_bits() ^ sin_sign) as f32,
+        f64::from_bits(cos.to_bits() ^ cos_sign) as f32,
+    )
+}
+
+/// [`sin_cos_exact`]'s sine: JOML `Math.sin(float)`.
+#[inline]
+pub fn sin_exact(x: f32) -> f32 {
+    sin_cos_exact(x).0
+}
+
+/// [`sin_cos_exact`]'s cosine: JOML `Math.cos(float)`.
+#[inline]
+pub fn cos_exact(x: f32) -> f32 {
+    sin_cos_exact(x).1
+}
+
+/// JOML `Math.cosFromSin(sin, angle)`: the cosine from the sine already
+/// known, `√(1 - sin²)` with the sign of the angle's half turn.
+#[inline]
+pub fn cos_from_sin(sin: f32, angle: f32) -> f32 {
+    // JOML's `PI_f`, `PI2_f` and `PIHalf_f`: the same floats.
+    let cos = (1.0 - sin * sin).sqrt();
+    let a = angle + HALF_PI;
+    let mut b = a - (a / TAU) as i32 as f32 * TAU;
+    if f64::from(b) < 0.0 {
+        b += TAU;
+    }
+    if b >= PI { -cos } else { cos }
+}
+
+/// Rotations about the axes and from Euler angles, with [`unit`]'s table:
+/// a model's parts. Vanilla turns them by JOML's exact sines; the table
+/// is a 65536th of a turn off at most, 0.0002 blocks on a two block mob,
+/// and keeps every pose a third faster (`math_bench`). What is seen from
+/// far, the camera and the billboards, turns exactly ([`super::euler`]).
 pub trait Rotation: Sized {
     /// About X by `radians`.
     fn rot_x(radians: f32) -> Self;
@@ -206,7 +314,9 @@ impl Rotation for Mat3 {
 
     #[inline]
     fn euler_zyx(radians: Vec3) -> Self {
-        let pair = |r: f32| if r == 0.0 { (0.0, 1.0) } else { unit(r) };
+        let pair = |r: f32| {
+            if r == 0.0 { (0.0, 1.0) } else { unit(r) }
+        };
         let (sx, cx) = pair(radians.x);
         let (sy, cy) = pair(radians.y);
         let (sz, cz) = pair(radians.z);
@@ -321,6 +431,60 @@ mod tests {
         assert!(tables.iter().map(|t| t.0).sum::<usize>() <= L1_SHARE);
         for (_, at) in tables {
             assert_eq!(at % 64, 0, "a table starts mid cache line");
+        }
+    }
+
+    /// Java's `(float) Math.sin(x)`: the exact value rounded once.
+    #[test]
+    fn exact_sines_are_javas() {
+        let mut mismatches = 0;
+        let mut check = |x: f32| {
+            let (s, c) = sin_cos_exact(x);
+            let (want_s, want_c) = (f64::from(x).sin() as f32, f64::from(x).cos() as f32);
+            if s.to_bits() != want_s.to_bits() || c.to_bits() != want_c.to_bits() {
+                mismatches += 1;
+                assert!(
+                    (s - want_s).abs() <= f32::EPSILON && (c - want_c).abs() <= f32::EPSILON,
+                    "{x}: {s} {c} vs {want_s} {want_c}"
+                );
+            }
+        };
+        // Every float in the first turn, both signs.
+        let mut x = 0.0f32;
+        while x < 6.3 {
+            check(x);
+            check(-x);
+            x = f32::from_bits(x.to_bits() + 97);
+        }
+        // Degrees and spins as vanilla hands them in, far out too.
+        for k in 0..2_000_000u32 {
+            let x = (k as f32 * 0.618_034 - 600_000.0) * DEG_TO_RAD;
+            check(x);
+        }
+        for x in [
+            0.0,
+            -0.0,
+            1.0e-30,
+            HALF_PI,
+            PI,
+            TAU,
+            1.0e6,
+            -3.0e7,
+            f32::MAX,
+        ] {
+            check(x);
+        }
+        // Rounding to a float twice can, very rarely, land a step off.
+        assert!(mismatches <= 2, "{mismatches} off by a step");
+        assert!(sin_cos_exact(f32::NAN).0.is_nan());
+    }
+
+    #[test]
+    fn cos_from_sin_takes_the_half_turns_sign() {
+        for k in -40..40 {
+            let a = k as f32 * 0.3;
+            let s = sin_exact(a);
+            assert!((cos_from_sin(s, a) - a.cos()).abs() < 1e-6, "{a}");
         }
     }
 

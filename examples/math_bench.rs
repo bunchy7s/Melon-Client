@@ -5,12 +5,13 @@ use std::time::Instant;
 
 use glam::{Mat4, Vec3};
 use melon::math::angle::{self, Rotation};
+use melon::math::euler::{Look, Orientation};
 use melon::world::entity::humanoid::HumanoidRenderState;
 use melon::world::entity::living::{self, LivingRenderState, Placement};
 use melon::world::entity::mobs::{MobModel, ModelId, PoseInput};
 use melon::world::entity::player::{AvatarRenderState, PlayerModel, PlayerModelType};
 use melon::world::entity::pose_cache::PoseCache;
-use melon::world::player::{forward_vector_for, view_matrix_for};
+use melon::world::player::forward_vector_for;
 
 /// Unrelated memory walked between calls: bigger than L2's share per core.
 const TRAFFIC_BYTES: usize = 1 << 20;
@@ -98,6 +99,28 @@ fn pipelines(angles: &'static [f32]) -> Vec<Pipeline> {
             }),
         },
         Pipeline {
+            name: "sin_cos_exact (JOML)",
+            calls: 400_000,
+            ops: BATCH,
+            run: Box::new(|k| {
+                batch(angles, k, |a| {
+                    let (s, c) = angle::sin_cos_exact(a);
+                    s + c
+                })
+            }),
+        },
+        Pipeline {
+            name: "libm sin + cos (f64)",
+            calls: 400_000,
+            ops: BATCH,
+            run: Box::new(|k| {
+                batch(angles, k, |a| {
+                    let a = f64::from(a);
+                    (a.sin() + a.cos()) as f32
+                })
+            }),
+        },
+        Pipeline {
             name: "movement sin_cos_deg",
             calls: 400_000,
             ops: BATCH,
@@ -131,13 +154,13 @@ fn pipelines(angles: &'static [f32]) -> Vec<Pipeline> {
             }),
         },
         Pipeline {
-            name: "camera view + look",
+            name: "camera orientation + look",
             calls: 400_000,
             ops: BATCH,
             run: Box::new(|k| {
                 batch(angles, k, |a| {
                     let (yaw, pitch) = (a * 40.0, a * 8.0);
-                    view_matrix_for(yaw, pitch, Vec3::ZERO).z_axis.x
+                    Orientation::new(Look::from_melon(yaw, pitch)).view.z_axis.x
                         + forward_vector_for(yaw, pitch).y
                 })
             }),

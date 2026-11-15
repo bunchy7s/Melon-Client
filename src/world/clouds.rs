@@ -132,7 +132,8 @@ pub struct CloudFrame {
     pub color: [f32; 4],
     pub bottom_y: f32,
     pub range_chunks: u8,
-    pub camera: glam::Vec3,
+    /// In doubles, so the clouds stay put far out.
+    pub camera: glam::DVec3,
     pub game_time: i64,
     pub partial_tick: f32,
 }
@@ -156,8 +157,8 @@ pub struct CloudKey {
 fn cell_of(texture: &CloudTexture, frame: &CloudFrame) -> (i32, i32, f32, f32) {
     let offset =
         (frame.game_time % (i64::from(texture.width) * TICKS_PER_CELL)) as f32 + frame.partial_tick;
-    let mut cloud_x = f64::from(frame.camera.x) + f64::from(offset * DRIFT);
-    let mut cloud_z = f64::from(frame.camera.z) + f64::from(Z_BIAS);
+    let mut cloud_x = frame.camera.x + f64::from(offset * DRIFT);
+    let mut cloud_z = frame.camera.z + f64::from(Z_BIAS);
     let tex_w = f64::from(texture.width) * f64::from(CELL_SIZE);
     let tex_h = f64::from(texture.height) * f64::from(CELL_SIZE);
     cloud_x -= (cloud_x / tex_w).floor() * tex_w;
@@ -181,8 +182,8 @@ pub fn key(texture: &CloudTexture, frame: &CloudFrame) -> Option<CloudKey> {
         range_chunks: frame.range_chunks,
         cell: (cell_x, cell_z),
         inside: (
-            frame.bottom_y <= frame.camera.y,
-            frame.bottom_y + CELL_HEIGHT >= frame.camera.y,
+            f64::from(frame.bottom_y) <= frame.camera.y,
+            f64::from(frame.bottom_y + CELL_HEIGHT) >= frame.camera.y,
         ),
     })
 }
@@ -193,12 +194,16 @@ pub fn build_anchored(texture: &CloudTexture, frame: CloudFrame) -> Vec<WorldVer
 }
 
 /// Where [`build_anchored`]'s mesh sits: the corner of the camera's cell.
-pub fn anchor(texture: &CloudTexture, frame: &CloudFrame) -> glam::Vec3 {
+pub fn anchor(texture: &CloudTexture, frame: &CloudFrame) -> glam::DVec3 {
     if texture.width == 0 {
-        return glam::Vec3::ZERO;
+        return glam::DVec3::ZERO;
     }
     let (.., x_in_cell, z_in_cell) = cell_of(texture, frame);
-    glam::Vec3::new(frame.camera.x - x_in_cell, 0.0, frame.camera.z - z_in_cell)
+    glam::DVec3::new(
+        frame.camera.x - f64::from(x_in_cell),
+        0.0,
+        frame.camera.z - f64::from(z_in_cell),
+    )
 }
 
 fn build_with(texture: &CloudTexture, frame: CloudFrame, anchored: bool) -> Vec<WorldVertex> {
@@ -213,8 +218,8 @@ fn build_with(texture: &CloudTexture, frame: CloudFrame, anchored: bool) -> Vec<
     } else {
         (x_in_cell, z_in_cell)
     };
-    let relative_bottom = frame.bottom_y - frame.camera.y;
-    let shift = if anchored { frame.camera.y } else { 0.0 };
+    let relative_bottom = (f64::from(frame.bottom_y) - frame.camera.y) as f32;
+    let shift = if anchored { frame.camera.y as f32 } else { 0.0 };
     let fancy = frame.status == CloudStatus::Fancy;
     let mut out = Vec::new();
     for ring in 0..=2 * radius_cells {
@@ -476,7 +481,7 @@ mod tests {
             color: [1.0, 1.0, 1.0, 0.8],
             bottom_y: 192.0,
             range_chunks: 2,
-            camera: glam::Vec3::new(10.0, 64.0, 20.0),
+            camera: glam::DVec3::new(10.0, 64.0, 20.0),
             game_time: 1200,
             partial_tick: 0.3,
         };
@@ -494,20 +499,20 @@ mod tests {
             color: [1.0, 1.0, 1.0, 0.8],
             bottom_y: 192.0,
             range_chunks: 2,
-            camera: glam::Vec3::new(10.3, 64.0, 20.7),
+            camera: glam::DVec3::new(10.3, 64.0, 20.7),
             game_time: 1200,
             partial_tick: 0.3,
         };
         let relative = build(&texture, frame);
         let anchored = build_anchored(&texture, frame);
-        let shift = anchor(&texture, &frame) - frame.camera;
+        let shift = (anchor(&texture, &frame) - frame.camera).as_vec3();
         assert_eq!(relative.len(), anchored.len());
         for (a, b) in relative.iter().zip(&anchored) {
             let moved = glam::Vec3::from_array(b.pos) + shift;
             assert!((moved - glam::Vec3::from_array(a.pos)).length() < 1e-3);
         }
         let nearby = CloudFrame {
-            camera: frame.camera + glam::Vec3::new(0.01, 0.5, 0.0),
+            camera: frame.camera + glam::DVec3::new(0.01, 0.5, 0.0),
             ..frame
         };
         assert_eq!(key(&texture, &frame), key(&texture, &nearby));
@@ -521,7 +526,7 @@ mod tests {
             color: [1.0, 1.0, 1.0, 0.8],
             bottom_y: 192.0,
             range_chunks: 2,
-            camera: glam::Vec3::new(10.0, 64.0, 20.0),
+            camera: glam::DVec3::new(10.0, 64.0, 20.0),
             game_time: 1200,
             partial_tick: 0.3,
         };
@@ -546,7 +551,7 @@ mod tests {
             color: [1.0, 1.0, 1.0, 0.0],
             bottom_y: 192.0,
             range_chunks: 2,
-            camera: glam::Vec3::ZERO,
+            camera: glam::DVec3::ZERO,
             game_time: 0,
             partial_tick: 0.0,
         };
@@ -561,7 +566,7 @@ mod tests {
             color: [1.0; 4],
             bottom_y: 192.0,
             range_chunks: 8,
-            camera: glam::Vec3::ZERO,
+            camera: glam::DVec3::ZERO,
             game_time: 0,
             partial_tick: 0.0,
         };
@@ -580,7 +585,7 @@ mod tests {
                 color: [1.0, 1.0, 1.0, 1.0],
                 bottom_y: 192.0,
                 range_chunks: 2,
-                camera: glam::Vec3::new(6.0, camera_y, 6.0 - Z_BIAS),
+                camera: glam::DVec3::new(6.0, f64::from(camera_y), f64::from(6.0 - Z_BIAS)),
                 game_time: 0,
                 partial_tick: 0.0,
             },

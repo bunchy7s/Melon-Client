@@ -14,7 +14,12 @@ use crate::world::culling::Culler;
 use crate::world::entity::skull;
 use crate::world::level::Level;
 use crate::world::model_part::{Sprite, emit};
-use glam::{Mat4, Vec2, Vec3};
+use glam::{DVec3, Mat4, Vec2, Vec3};
+
+/// The middle of the block at `pos`.
+fn block_center(pos: [i32; 3]) -> DVec3 {
+    DVec3::from_array(pos.map(f64::from)) + DVec3::splat(0.5)
+}
 
 impl BlockEntities {
     /// Builds the block entities at rest into `out` (world positions):
@@ -22,7 +27,7 @@ impl BlockEntities {
         &self,
         level: &Level,
         models: &BlockModels,
-        center: Vec3,
+        center: DVec3,
         out: &mut Vec<Vertex>,
     ) -> usize {
         let mut built = 0;
@@ -30,8 +35,8 @@ impl BlockEntities {
             let Some(kind) = level.block_state(pos[0], pos[1], pos[2]).and_then(kind_of) else {
                 continue;
             };
-            let min = Vec3::new(pos[0] as f32, pos[1] as f32, pos[2] as f32);
-            if (min + Vec3::splat(0.5)).distance_squared(center) > VIEW_DISTANCE * VIEW_DISTANCE
+            let middle = block_center(pos);
+            if middle.distance_squared(center) as f32 > VIEW_DISTANCE * VIEW_DISTANCE
                 || self.is_moving(pos, kind)
                 || drawn_with_skin(level, pos, kind)
             {
@@ -51,7 +56,7 @@ impl BlockEntities {
         level: &Level,
         models: &BlockModels,
         culler: &Culler,
-        eye: Vec3,
+        eye: DVec3,
         partial: f32,
         out: &mut Vec<Vertex>,
     ) -> usize {
@@ -60,12 +65,11 @@ impl BlockEntities {
             let Some(kind) = level.block_state(pos[0], pos[1], pos[2]).and_then(kind_of) else {
                 continue;
             };
-            let min = Vec3::new(pos[0] as f32, pos[1] as f32, pos[2] as f32);
-            let center = min + Vec3::splat(0.5);
+            let center = block_center(pos);
             if !self.is_moving(pos, kind)
                 || drawn_with_skin(level, pos, kind)
-                || center.distance_squared(eye) > VIEW_DISTANCE * VIEW_DISTANCE
-                || !culler.sees_box(min - Vec3::splat(0.5), min + Vec3::splat(1.5))
+                || center.distance_squared(eye) as f32 > VIEW_DISTANCE * VIEW_DISTANCE
+                || !culler.sees_box(center - DVec3::ONE, center + DVec3::ONE)
                 || !culler.reaches(culler.section_of(center))
             {
                 continue;

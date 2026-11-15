@@ -1,6 +1,7 @@
 //! Vanilla `Mth` and `SectionPos` helpers: the circle functions and
 
 pub mod angle;
+pub mod euler;
 
 pub use std::f32::consts::FRAC_1_SQRT_2;
 pub use std::f32::consts::SQRT_2;

@@ -71,7 +71,7 @@ impl InWorld {
             fog_type,
             spectator,
             render_distance_chunks: render_distance,
-            camera_y: camera.position.y,
+            camera_y: camera.position.y as f32,
             min_y,
             void_darkness_range: 32.0,
             water_vision: self.water_vision(fog_type == FogType::Water),
@@ -92,7 +92,7 @@ impl InWorld {
     }
 
     /// `AtmosphericFogEnvironment.updateRainFogState`: the rain's fog moves a
-    pub(super) fn update_rain_fog(&mut self, camera: glam::Vec3, now: std::time::Instant) {
+    pub(super) fn update_rain_fog(&mut self, camera: glam::DVec3, now: std::time::Instant) {
         let ticks = self
             .rain_fog_at
             .replace(now)
@@ -130,7 +130,7 @@ impl InWorld {
     /// One client tick of the eyes getting used to the water.
     pub(super) fn tick_water_vision(&mut self) {
         let eye = self.player.tick_eye();
-        let in_water = eye_in_water(&self.level, eye.as_vec3());
+        let in_water = eye_in_water(&self.level, eye);
         if in_water {
             let speed = if self.game_mode.current.is_spectator() {
                 10
@@ -208,7 +208,8 @@ impl InWorld {
                         tint: [b, b, b, b],
                     });
                 }
-                if camera.position.y < HORIZON_HEIGHT && look.fog_type != FogType::Water {
+                if camera.position.y < f64::from(HORIZON_HEIGHT) && look.fog_type != FogType::Water
+                {
                     out.push(CelestialDraw {
                         kind: SkyKind::Disc,
                         mesh: assets.dark_disc_mesh,
@@ -232,10 +233,10 @@ pub fn fog_type(level: &Level, camera: &Camera, aspect: f32) -> FogType {
         return FogType::Water;
     }
     for offset in camera.near_plane(aspect) {
-        let point = camera.position + offset;
+        let point = camera.position + offset.as_dvec3();
         let block = point.floor().as_ivec3();
         if let Some(height) = fluid_height(level, block, FluidKind::Lava) {
-            if f64::from(point.y) <= f64::from(block.y) + f64::from(height) {
+            if point.y <= f64::from(block.y) + f64::from(height) {
                 return FogType::Lava;
             }
         } else if level
@@ -261,14 +262,14 @@ mod tests {
     use crate::world::chunk::{Chunk, Section};
     use pumpkin_data::Block;
 
-    fn camera_at(position: Vec3) -> Camera {
-        Camera {
+    /// Looking north, so the view is the identity.
+    fn camera_at(position: glam::DVec3) -> Camera {
+        Camera::new(
             position,
-            view: Mat4::IDENTITY,
-            fov: 70.0,
-            far: 256.0,
-            bob: Mat4::IDENTITY,
-        }
+            crate::math::euler::Look::new(180.0, 0.0),
+            70.0,
+            256.0,
+        )
     }
 
     /// A level of air with `states` at the given positions.
@@ -294,15 +295,19 @@ mod tests {
         let level = level_with(&[([4, 70, 4], water()), ([4, 69, 4], water())]);
         let aspect = 16.0 / 9.0;
         assert_eq!(
-            fog_type(&level, &camera_at(Vec3::new(8.5, 70.5, 8.5)), aspect),
+            fog_type(&level, &camera_at(glam::DVec3::new(8.5, 70.5, 8.5)), aspect),
             FogType::Atmospheric
         );
         assert_eq!(
-            fog_type(&level, &camera_at(Vec3::new(4.5, 70.5, 4.5)), aspect),
+            fog_type(&level, &camera_at(glam::DVec3::new(4.5, 70.5, 4.5)), aspect),
             FogType::Water
         );
         assert_eq!(
-            fog_type(&level, &camera_at(Vec3::new(4.5, 70.95, 4.5)), aspect),
+            fog_type(
+                &level,
+                &camera_at(glam::DVec3::new(4.5, 70.95, 4.5)),
+                aspect
+            ),
             FogType::Atmospheric
         );
     }
@@ -314,11 +319,11 @@ mod tests {
         let level = level_with(&[([4, 70, 4], lava), ([9, 70, 4], snow)]);
         let aspect = 1.0;
         assert_eq!(
-            fog_type(&level, &camera_at(Vec3::new(4.5, 70.5, 4.5)), aspect),
+            fog_type(&level, &camera_at(glam::DVec3::new(4.5, 70.5, 4.5)), aspect),
             FogType::Lava
         );
         assert_eq!(
-            fog_type(&level, &camera_at(Vec3::new(9.5, 70.5, 4.5)), aspect),
+            fog_type(&level, &camera_at(glam::DVec3::new(9.5, 70.5, 4.5)), aspect),
             FogType::PowderSnow
         );
     }
@@ -328,7 +333,7 @@ mod tests {
         let stone = Block::STONE.default_state.id.as_u16();
         let level = level_with(&[([4, 70, 4], water()), ([4, 71, 4], stone)]);
         assert_eq!(
-            fog_type(&level, &camera_at(Vec3::new(4.5, 70.97, 4.5)), 1.0),
+            fog_type(&level, &camera_at(glam::DVec3::new(4.5, 70.97, 4.5)), 1.0),
             FogType::Water
         );
     }

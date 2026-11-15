@@ -152,7 +152,7 @@ impl PlayerState {
         fits_crouched: bool,
     ) {
         self.in_water = fluid == Some(FluidKind::Water);
-        self.eye_in_water = physics::eye_in_water(level, self.tick_eye().as_vec3());
+        self.eye_in_water = physics::eye_in_water(level, self.tick_eye());
         let under_water = self.eye_in_water && self.in_water;
         let feet_in_water = physics::fluid_at(
             level,

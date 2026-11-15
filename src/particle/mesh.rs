@@ -22,6 +22,8 @@ pub struct Batch {
 pub struct View<'a> {
     /// The block the vertices are relative to: the camera's.
     pub origin: IVec3,
+    /// Where the camera is: [`Self::frustum`] is relative to it.
+    pub camera: DVec3,
     /// The camera's right and up in the world.
     pub right: Vec3,
     pub up: Vec3,
@@ -59,7 +61,7 @@ pub fn build(
             continue;
         }
         if let Some(frustum) = view.frustum
-            && !frustum.sees_centered_box(pos.as_vec3(), Vec3::splat(size))
+            && !frustum.sees_centered_box((pos - view.camera).as_vec3(), Vec3::splat(size))
         {
             continue;
         }

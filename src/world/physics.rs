@@ -393,10 +393,10 @@ pub fn touches_fluid(level: &Level, region: &Aabb) -> Option<FluidKind> {
 }
 
 /// Whether the eye at `eye` is in water (`isEyeInFluid(WATER)`).
-pub fn eye_in_water(level: &Level, eye: glam::Vec3) -> bool {
+pub fn eye_in_water(level: &Level, eye: glam::DVec3) -> bool {
     let block = eye.floor().as_ivec3();
     fluid_height(level, block, FluidKind::Water)
-        .is_some_and(|height| f64::from(eye.y) < f64::from(block.y) + f64::from(height))
+        .is_some_and(|height| eye.y < f64::from(block.y) + f64::from(height))
 }
 
 /// `FluidState.getHeightForCamera` of `kind` at `block`, if it holds that.

@@ -3,7 +3,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::ops::Range;
 
-use glam::{IVec3, Vec3};
+use glam::{DVec3, IVec3, Vec3};
 
 use crate::math::{ChunkMap, SECTION_SIZE, section_coord};
 use crate::renderer::{
@@ -133,7 +133,7 @@ impl SectionMeshes {
         }
         let faces = built.translucent;
         if !faces.vertices.is_empty() {
-            let eye = faces.sorted_from + corner_of(pos);
+            let eye = faces.sorted_from.as_dvec3() + corner_of(pos);
             self.translucent = Some(Translucent {
                 mesh: sink.vertices(&faces.vertices)?,
                 view: point_of_view(section_of_eye(eye, built.base_y), pos),
@@ -176,12 +176,21 @@ struct Column {
 }
 
 /// The chunk-local origin of section `pos`'s vertices: its chunk's corner,
-fn corner_of((x, _, z): SectionPos) -> Vec3 {
-    Vec3::new((x * SECTION_SIZE) as f32, 0.0, (z * SECTION_SIZE) as f32)
+fn corner_of((x, _, z): SectionPos) -> DVec3 {
+    DVec3::new(
+        f64::from(x * SECTION_SIZE),
+        0.0,
+        f64::from(z * SECTION_SIZE),
+    )
+}
+
+/// `eye` from a section's corner, in the floats its faces are sorted by.
+fn from_corner(eye: DVec3, pos: SectionPos) -> Vec3 {
+    (eye - corner_of(pos)).as_vec3()
 }
 
 /// The section `eye` is in, `y` counted from the world's bottom `min_y`.
-fn section_of_eye(eye: Vec3, min_y: i32) -> IVec3 {
+fn section_of_eye(eye: DVec3, min_y: i32) -> IVec3 {
     let block = eye.floor().as_ivec3();
     IVec3::new(
         section_coord(block.x),
@@ -364,11 +373,11 @@ impl LevelMeshes {
     }
 
     /// Sorts the translucent faces of sections the camera now sees from
-    pub fn resort(&mut self, renderer: &mut Renderer, eye: Vec3) {
+    pub fn resort(&mut self, renderer: &mut Renderer, eye: DVec3) {
         self.resort_with(renderer, eye);
     }
 
-    fn resort_with(&mut self, sink: &mut impl MeshSink, eye: Vec3) {
+    fn resort_with(&mut self, sink: &mut impl MeshSink, eye: DVec3) {
         let block = eye.floor().as_ivec3();
         let seen = std::mem::take(&mut self.seen_translucent);
         let camera = section_of_eye(eye, self.min_y);
@@ -410,7 +419,7 @@ impl LevelMeshes {
     fn due_to_resort(
         &self,
         pos: SectionPos,
-        eye: Vec3,
+        eye: DVec3,
         camera: IVec3,
         block: IVec3,
         from_seen: bool,
@@ -420,7 +429,7 @@ impl LevelMeshes {
         };
         if translucent
             .faces
-            .camera_crossed_a_face(eye - corner_of(pos))
+            .camera_crossed_a_face(from_corner(eye, pos))
         {
             return true;
         }
@@ -454,13 +463,13 @@ impl LevelMeshes {
         &mut self,
         sink: &mut impl MeshSink,
         pos: SectionPos,
-        eye: Vec3,
+        eye: DVec3,
         camera: IVec3,
     ) -> usize {
         let Some(translucent) = self.translucent_mut(pos) else {
             return 0;
         };
-        translucent.faces.sort(eye - corner_of(pos));
+        translucent.faces.sort(from_corner(eye, pos));
         translucent.view = point_of_view(camera, pos);
         translucent.block = eye.floor().as_ivec3();
         match sink.vertices(&translucent.faces.vertices) {
@@ -476,7 +485,8 @@ impl LevelMeshes {
     }
 
     /// The parts of meshes `culler` lets through: per section, its solid
-    pub fn visible_sections(&mut self, culler: &Culler, eye: Vec3) -> VisibleChunks {
+    pub fn visible_sections(&mut self, culler: &Culler) -> VisibleChunks {
+        let eye = culler.eye();
         let mut visible = VisibleChunks {
             solid: std::mem::take(&mut self.spare_solid),
             cutout: std::mem::take(&mut self.spare_cutout),
@@ -493,7 +503,7 @@ impl LevelMeshes {
         let min_y = self.min_y;
         let vertical = |group: usize| {
             (0..32).fold(0u32, |mask, y| {
-                mask | u32::from(faces_camera(group, Vec3::ZERO, y, eye, min_y)) << y
+                mask | u32::from(faces_camera(group, DVec3::ZERO, y, eye, min_y)) << y
             })
         };
         let up = vertical(Direction::Up.index());
@@ -504,19 +514,19 @@ impl LevelMeshes {
                 continue;
             }
             visible.count.total += filled.count_ones() as usize;
-            let (x, z) = ((cx * SECTION_SIZE) as f32, (cz * SECTION_SIZE) as f32);
-            let bottom = |y: u32| (min_y + y as i32 * SECTION_SIZE) as f32;
-            let min = Vec3::new(x, bottom(filled.trailing_zeros()), z);
-            let max = Vec3::new(
-                x + SECTION_SIZE as f32,
+            let (x, z) = (f64::from(cx * SECTION_SIZE), f64::from(cz * SECTION_SIZE));
+            let bottom = |y: u32| f64::from(min_y + y as i32 * SECTION_SIZE);
+            let min = DVec3::new(x, bottom(filled.trailing_zeros()), z);
+            let max = DVec3::new(
+                x + f64::from(SECTION_SIZE),
                 bottom(32 - filled.leading_zeros()),
-                z + SECTION_SIZE as f32,
+                z + f64::from(SECTION_SIZE),
             );
             if !culler.sees_box(min, max) {
                 continue;
             }
             let framed = culler.frames_box(min, max);
-            let origin = Vec3::new(x, 0.0, z);
+            let origin = DVec3::new(x, 0.0, z);
             let sides: [bool; terrain::FACINGS] =
                 std::array::from_fn(|group| faces_camera(group, origin, 0, eye, min_y));
             let corner = (cx * SECTION_SIZE, cz * SECTION_SIZE);
@@ -533,8 +543,8 @@ impl LevelMeshes {
                     continue;
                 };
                 visible.count.drawn += 1;
-                let center = Vec3::new(x + 8.0, bottom(y) + 8.0, z + 8.0);
-                let distance = center.distance_squared(eye);
+                let center = DVec3::new(x + 8.0, bottom(y) + 8.0, z + 8.0);
+                let distance = center.distance_squared(eye) as f32;
                 let shown = |group: usize| {
                     if group == Direction::Up.index() {
                         up >> y & 1 != 0
@@ -694,10 +704,14 @@ pub struct SectionCount {
 }
 
 /// Whether some face of facing group `group` in section `y` of the chunk at
-fn faces_camera(group: usize, origin: Vec3, y: usize, eye: Vec3, min_y: i32) -> bool {
-    let size = SECTION_SIZE as f32;
-    let min = Vec3::new(origin.x, (min_y + y as i32 * SECTION_SIZE) as f32, origin.z);
-    let max = min + Vec3::splat(size);
+fn faces_camera(group: usize, origin: DVec3, y: usize, eye: DVec3, min_y: i32) -> bool {
+    let size = f64::from(SECTION_SIZE);
+    let min = DVec3::new(
+        origin.x,
+        f64::from(min_y + y as i32 * SECTION_SIZE),
+        origin.z,
+    );
+    let max = min + DVec3::splat(size);
     let Some(direction) = Direction::ALL.get(group) else {
         return true;
     };
@@ -762,7 +776,7 @@ const STILL_STEP: f32 = 8.0;
 pub struct BlockEntityMeshes {
     still: ChangingMesh,
     /// The level's and the animations' revision and the camera position
-    still_for: Option<(u64, u64, Vec3)>,
+    still_for: Option<(u64, u64, DVec3)>,
     /// The block `still`'s vertices are relative to.
     still_origin: IVec3,
     moving: ChangingMesh,
@@ -791,7 +805,8 @@ impl BlockEntityMeshes {
         let origin = eye.floor().as_ivec3();
         let revisions = (level.revision(), block_entities.still_revision());
         let stale = self.still_for.is_none_or(|(level_rev, anim_rev, center)| {
-            (level_rev, anim_rev) != revisions || center.distance_squared(eye) > STILL_STEP.powi(2)
+            (level_rev, anim_rev) != revisions
+                || center.distance_squared(eye) as f32 > STILL_STEP.powi(2)
         });
         if stale {
             self.still.update(renderer, |out| {
@@ -875,7 +890,7 @@ mod tests {
     }
 
     /// A section at `pos` with two flat translucent quads, at heights
-    fn two_quads(pos: SectionPos, low: f32, high: f32, eye: Vec3) -> FinishedMesh {
+    fn two_quads(pos: SectionPos, low: f32, high: f32, eye: DVec3) -> FinishedMesh {
         let quad = |y: f32| {
             [[0.0, y, 0.0], [0.0, y, 1.0], [1.0, y, 1.0], [1.0, y, 0.0]]
                 .map(|p| WorldVertex::new(p, [0.0, 0.0], [1.0; 3]))
@@ -884,7 +899,7 @@ mod tests {
             vertices: [quad(low), quad(high)].concat(),
             ..TranslucentMesh::default()
         };
-        faces.sort(eye - corner_of(pos));
+        faces.sort(from_corner(eye, pos));
         FinishedMesh {
             pos,
             mesh: SectionMesh {
@@ -917,7 +932,7 @@ mod tests {
             IVec3::new(1, 0, -1)
         );
         assert_eq!(
-            section_of_eye(Vec3::new(-0.5, -64.0, 15.9), Height::OVERWORLD.min_y),
+            section_of_eye(DVec3::new(-0.5, -64.0, 15.9), Height::OVERWORLD.min_y),
             IVec3::new(-1, 0, 0)
         );
     }
@@ -930,13 +945,13 @@ mod tests {
             next
         });
         let pos = (0, 4, 0);
-        let above = Vec3::new(0.5, 40.0, 0.5);
+        let above = DVec3::new(0.5, 40.0, 0.5);
         let mut meshes = LevelMeshes::default();
         meshes.upload_to(&mut sink, vec![two_quads(pos, 2.0, 12.0, above)]);
         assert_eq!(heights(&meshes, pos), [2.0, 12.0]);
         meshes.seen_translucent = vec![pos];
         meshes.resort_with(&mut sink, above);
-        meshes.resort_with(&mut sink, Vec3::new(0.5, -30.0, 0.5));
+        meshes.resort_with(&mut sink, DVec3::new(0.5, -30.0, 0.5));
         assert_eq!(heights(&meshes, pos), [12.0, 2.0]);
     }
 
@@ -948,7 +963,7 @@ mod tests {
             next
         });
         let pos = (40, 4, 40);
-        let eye = Vec3::new(0.5, 40.0, 0.5);
+        let eye = DVec3::new(0.5, 40.0, 0.5);
         let mut meshes = LevelMeshes::default();
         meshes.upload_to(&mut sink, vec![two_quads(pos, 2.0, 12.0, eye)]);
         meshes.seen_translucent = vec![pos];
@@ -961,7 +976,7 @@ mod tests {
         };
         let before = mesh(&meshes);
         meshes.resort_with(&mut sink, eye);
-        meshes.resort_with(&mut sink, eye + Vec3::X);
+        meshes.resort_with(&mut sink, eye + DVec3::X);
         assert_eq!(mesh(&meshes), before);
     }
 
@@ -973,13 +988,13 @@ mod tests {
             next
         });
         let pos = (10, 4, 0);
-        let above = Vec3::new(0.5, 13.5, 8.5);
+        let above = DVec3::new(0.5, 13.5, 8.5);
         let mut meshes = LevelMeshes::default();
         meshes.upload_to(&mut sink, vec![two_quads(pos, 2.0, 12.0, above)]);
         meshes.seen_translucent = vec![pos];
         meshes.resort_with(&mut sink, above);
         assert_eq!(heights(&meshes, pos), [2.0, 12.0]);
-        meshes.resort_with(&mut sink, Vec3::new(0.5, 6.5, 8.5));
+        meshes.resort_with(&mut sink, DVec3::new(0.5, 6.5, 8.5));
         assert_eq!(heights(&meshes, pos), [12.0, 2.0]);
     }
 
@@ -991,12 +1006,12 @@ mod tests {
             next
         });
         let pos = (10, 4, 0);
-        let below = Vec3::new(0.5, 6.5, 8.5);
+        let below = DVec3::new(0.5, 6.5, 8.5);
         let mut meshes = LevelMeshes::default();
         meshes.resort_with(&mut sink, below);
         meshes.upload_to(
             &mut sink,
-            vec![two_quads(pos, 2.0, 12.0, Vec3::new(0.5, 13.5, 8.5))],
+            vec![two_quads(pos, 2.0, 12.0, DVec3::new(0.5, 13.5, 8.5))],
         );
         meshes.seen_translucent = vec![pos];
         meshes.resort_with(&mut sink, below);
@@ -1011,13 +1026,13 @@ mod tests {
             next
         });
         let pos = (0, 4, 0);
-        let above = Vec3::new(0.5, 8.95, 0.5);
+        let above = DVec3::new(0.5, 8.95, 0.5);
         let mut meshes = LevelMeshes::default();
         meshes.upload_to(&mut sink, vec![two_quads(pos, 8.888889, 9.0, above)]);
         meshes.seen_translucent = vec![pos];
         meshes.resort_with(&mut sink, above);
         assert_eq!(heights(&meshes, pos), [8.888889, 9.0]);
-        meshes.resort_with(&mut sink, Vec3::new(0.5, 8.5, 0.5));
+        meshes.resort_with(&mut sink, DVec3::new(0.5, 8.5, 0.5));
         assert_eq!(heights(&meshes, pos), [9.0, 8.888889]);
     }
 
@@ -1029,11 +1044,11 @@ mod tests {
             next
         });
         let pos = (0, 4, 0);
-        let above = Vec3::new(0.5, 8.95, 0.5);
+        let above = DVec3::new(0.5, 8.95, 0.5);
         let mut meshes = LevelMeshes::default();
         meshes.upload_to(&mut sink, vec![two_quads(pos, 8.888889, 9.0, above)]);
         assert_eq!(heights(&meshes, pos), [8.888889, 9.0]);
-        meshes.resort_with(&mut sink, Vec3::new(0.5, 8.5, 0.5));
+        meshes.resort_with(&mut sink, DVec3::new(0.5, 8.5, 0.5));
         assert_eq!(heights(&meshes, pos), [9.0, 8.888889]);
     }
 
@@ -1041,7 +1056,7 @@ mod tests {
     fn a_newer_mesh_replaces_the_one_waiting() {
         let mut sink = Headless(|| 0);
         let mut meshes = LevelMeshes::default();
-        let eye = Vec3::ZERO;
+        let eye = DVec3::ZERO;
         let mut waiting = two_quads((0, 4, 0), 2.0, 12.0, eye);
         waiting.sync = false;
         meshes.waiting.push_back(waiting);
@@ -1056,7 +1071,7 @@ mod tests {
 
     #[test]
     fn faces_are_seen_only_from_their_front_side() {
-        let origin = Vec3::new(16.0, 0.0, 32.0);
+        let origin = DVec3::new(16.0, 0.0, 32.0);
         let up = Direction::Up.index();
         let down = Direction::Down.index();
         let east = Direction::East.index();
@@ -1064,49 +1079,49 @@ mod tests {
             up,
             origin,
             5,
-            Vec3::new(20.0, 40.0, 40.0),
+            DVec3::new(20.0, 40.0, 40.0),
             Height::OVERWORLD.min_y
         ));
         assert!(!faces_camera(
             up,
             origin,
             5,
-            Vec3::new(20.0, 10.0, 40.0),
+            DVec3::new(20.0, 10.0, 40.0),
             Height::OVERWORLD.min_y
         ));
         assert!(faces_camera(
             down,
             origin,
             5,
-            Vec3::new(20.0, 10.0, 40.0),
+            DVec3::new(20.0, 10.0, 40.0),
             Height::OVERWORLD.min_y
         ));
         assert!(faces_camera(
             up,
             origin,
             5,
-            Vec3::new(20.0, 20.0, 40.0),
+            DVec3::new(20.0, 20.0, 40.0),
             Height::OVERWORLD.min_y
         ));
         assert!(faces_camera(
             down,
             origin,
             5,
-            Vec3::new(20.0, 20.0, 40.0),
+            DVec3::new(20.0, 20.0, 40.0),
             Height::OVERWORLD.min_y
         ));
         assert!(!faces_camera(
             east,
             origin,
             5,
-            Vec3::new(10.0, 20.0, 40.0),
+            DVec3::new(10.0, 20.0, 40.0),
             Height::OVERWORLD.min_y
         ));
         assert!(faces_camera(
             terrain::SLANTED,
             origin,
             5,
-            Vec3::ZERO,
+            DVec3::ZERO,
             Height::OVERWORLD.min_y
         ));
     }

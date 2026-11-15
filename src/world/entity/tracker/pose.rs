@@ -43,14 +43,14 @@ impl ClientEntity {
     }
 
     /// The bounding box this frame.
-    pub fn bounds(&self, partial: f32) -> (Vec3, Vec3) {
-        let feet = self.pos(partial).as_vec3();
+    pub fn bounds(&self, partial: f32) -> (DVec3, DVec3) {
+        let feet = self.pos(partial);
         let (mut w, mut h) = self.size();
         if self.kind == EntityKind::ArmorStand && self.appearance.stand_marker() {
             [w, h] = self.ty.dimension;
         }
-        let half = Vec3::new(w / 2.0, 0.0, w / 2.0);
-        (feet - half, feet + half + Vec3::Y * h)
+        let half = DVec3::new(f64::from(w) / 2.0, 0.0, f64::from(w) / 2.0);
+        (feet - half, feet + half + DVec3::Y * f64::from(h))
     }
 
     /// Where it stands this tick, for a click's hit point.

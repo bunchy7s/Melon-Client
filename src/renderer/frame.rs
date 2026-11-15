@@ -253,7 +253,7 @@ pub struct WorldDraw {
     /// Translate by `-cam_pos` then rotate (vanilla `Camera` order), unlike
     pub view: Mat4,
     /// The camera position the view translates by. The renderer moves each
-    pub eye: glam::Vec3,
+    pub eye: glam::DVec3,
     pub fov_y_degrees: f32,
     /// The hand's: 70 degrees, narrowed while dying or in a fluid
     pub hand_fov_y_degrees: f32,
@@ -285,7 +285,7 @@ impl WorldDraw {
 
     /// A chunk's `origin` relative to the camera's block, worked out in
     pub fn offset(&self, origin: glam::IVec3) -> glam::Vec3 {
-        (origin.as_dvec3() - self.eye.floor().as_dvec3()).as_vec3()
+        (origin.as_dvec3() - self.eye.floor()).as_vec3()
     }
 
     /// `model` moved by the camera's block, as [`Self::offset`] moves the
@@ -303,7 +303,7 @@ impl WorldDraw {
 
     /// Where the camera is within its block: the part of the view's
     pub fn eye_fraction(&self) -> glam::Vec3 {
-        self.eye - self.eye.floor()
+        (self.eye - self.eye.floor()).as_vec3()
     }
 
     /// This frame's light for a world draw, with `ambient` for its
@@ -636,7 +636,7 @@ mod tests {
             translucent: Vec::new(),
             atlas: crate::renderer::TextureId(0),
             view: Mat4::IDENTITY,
-            eye: glam::Vec3::new(1234.567, 70.31, -987.654),
+            eye: glam::DVec3::new(1234.567, 70.31, -987.654),
             fov_y_degrees: 70.0,
             hand_fov_y_degrees: 70.0,
             far: 256.0,

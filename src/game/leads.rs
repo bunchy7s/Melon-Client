@@ -156,7 +156,7 @@ pub(super) fn visible_leads(
             entity.ty.eye_height * scale,
             width,
         );
-        if !culler.sees_entity(start.min(end), start.max(end)) {
+        if !culler.sees_entity(start.min(end).as_dvec3(), start.max(end).as_dvec3()) {
             continue;
         }
         let lead = Lead {

@@ -4,7 +4,7 @@ pub mod frustum;
 pub mod occlusion;
 pub mod visgraph;
 
-use glam::Vec3;
+use glam::{DVec3, IVec3, Vec3};
 
 use crate::math::{SECTION_SIZE, section_coord};
 use frustum::Frustum;
@@ -36,9 +36,15 @@ const ENTITY_BOX_MARGIN: f32 = 0.5;
 
 /// One frame's culling: the camera's frustum and, if on, the sections the
 pub struct Culler<'a> {
+    /// Relative to the eye (`Frustum.prepare`): boxes are moved by the
+    /// eye in doubles first, so culling is as exact far out as near.
     frustum: Frustum,
     occlusion: Option<&'a OcclusionMask>,
-    eye: Vec3,
+    eye: DVec3,
+    /// The block the eye is in and where in it: a section's corners,
+    /// whole blocks, come out relative to the eye without a double.
+    eye_block: IVec3,
+    eye_fraction: Vec3,
     /// The world's bottom, where section 0 starts.
     min_y: i32,
     /// Sections in the world, bottom to top.
@@ -49,17 +55,21 @@ pub struct Culler<'a> {
 }
 
 impl<'a> Culler<'a> {
+    /// `frustum` relative to `eye` (the camera's [`Frustum`]).
     pub fn new(
         frustum: Frustum,
         occlusion: Option<&'a OcclusionMask>,
-        eye: Vec3,
+        eye: DVec3,
         (min_y, height): (i32, i32),
         settings: CullSettings,
     ) -> Self {
+        let block = eye.floor();
         Self {
             frustum,
             occlusion: occlusion.filter(|_| settings.occlusion),
             eye,
+            eye_block: block.as_ivec3(),
+            eye_fraction: (eye - block).as_vec3(),
             min_y,
             height,
             settings,
@@ -84,23 +94,35 @@ impl<'a> Culler<'a> {
     }
 
     /// Where the camera is.
-    pub fn eye(&self) -> Vec3 {
+    pub fn eye(&self) -> DVec3 {
         self.eye
+    }
+
+    /// A world box relative to the eye.
+    #[inline]
+    fn relative(&self, min: DVec3, max: DVec3) -> (Vec3, Vec3) {
+        ((min - self.eye).as_vec3(), (max - self.eye).as_vec3())
     }
 
     /// Whether any of the box is in the view volume.
     #[inline]
-    pub fn sees_box(&self, min: Vec3, max: Vec3) -> bool {
+    pub fn sees_box(&self, min: DVec3, max: DVec3) -> bool {
+        let (min, max) = self.relative(min, max);
+        self.sees_relative_box(min, max)
+    }
+
+    /// [`Self::sees_box`] for a box already relative to the eye.
+    #[inline]
+    pub fn sees_relative_box(&self, min: Vec3, max: Vec3) -> bool {
         self.in_fog_range(min, max) && (!self.settings.frustum || self.frustum.sees_box(min, max))
     }
 
-    /// Whether the box's nearest point is closer than the fog's end.
+    /// Whether the box's (relative to the eye) nearest point is closer
+    /// than the fog's end.
     #[inline]
     fn in_fog_range(&self, min: Vec3, max: Vec3) -> bool {
-        self.fog_end.is_none_or(|end| {
-            let nearest = self.eye.clamp(min, max);
-            nearest.distance_squared(self.eye) < end * end
-        })
+        self.fog_end
+            .is_none_or(|end| Vec3::ZERO.clamp(min, max).length_squared() < end * end)
     }
 
     /// Whether the occlusion walk reached the section. Above or below the
@@ -118,35 +140,38 @@ impl<'a> Culler<'a> {
     #[inline]
     pub fn sees_section_within(&self, pos: SectionPos, framed: bool) -> bool {
         self.reaches(pos) && {
-            let min = Vec3::new(
-                (pos.0 * SECTION_SIZE) as f32,
-                (self.min_y + pos.1 * SECTION_SIZE) as f32,
-                (pos.2 * SECTION_SIZE) as f32,
+            let corner = IVec3::new(
+                pos.0 * SECTION_SIZE,
+                self.min_y + pos.1 * SECTION_SIZE,
+                pos.2 * SECTION_SIZE,
             );
+            let min = (corner - self.eye_block).as_vec3() - self.eye_fraction;
             let max = min + Vec3::splat(SECTION_SIZE as f32);
             if framed {
                 self.in_fog_range(min, max)
             } else {
-                self.sees_box(min, max)
+                self.sees_relative_box(min, max)
             }
         }
     }
 
     /// Whether all of the box is in the view volume, fog aside: then every
     #[inline]
-    pub fn frames_box(&self, min: Vec3, max: Vec3) -> bool {
+    pub fn frames_box(&self, min: DVec3, max: DVec3) -> bool {
+        let (min, max) = self.relative(min, max);
         !self.settings.frustum || self.frustum.contains_box(min, max)
     }
 
     /// `EntityRenderer.shouldRender`: close enough for its size and its
-    pub fn sees_entity(&self, min: Vec3, max: Vec3) -> bool {
+    pub fn sees_entity(&self, min: DVec3, max: DVec3) -> bool {
+        let (min, max) = self.relative(min, max);
         let size = max - min;
         let range = (size.x + size.y + size.z) / 3.0
             * ENTITY_RANGE_PER_BLOCK
             * self.settings.entity_distance;
         let center = (min + max) * 0.5;
-        center.distance_squared(self.eye) < range * range
-            && self.sees_box(
+        center.length_squared() < range * range
+            && self.sees_relative_box(
                 min - Vec3::splat(ENTITY_BOX_MARGIN),
                 max + Vec3::splat(ENTITY_BOX_MARGIN),
             )
@@ -155,17 +180,17 @@ impl<'a> Culler<'a> {
     /// `LevelExtractor.isEntityVisible`'s second half: the section the
     pub fn in_compiled_section(
         &self,
-        min: Vec3,
-        max: Vec3,
+        min: DVec3,
+        max: DVec3,
         compiled: impl Fn(SectionPos) -> bool,
     ) -> bool {
         let center = (min + max) * 0.5;
-        let section = self.section_of(Vec3::new(center.x, min.y, center.z));
+        let section = self.section_of(DVec3::new(center.x, min.y, center.z));
         !(0..self.height).contains(&section.1) || compiled(section)
     }
 
     /// The section holding a world position.
-    pub fn section_of(&self, position: Vec3) -> SectionPos {
+    pub fn section_of(&self, position: DVec3) -> SectionPos {
         let block = position.floor().as_ivec3();
         (
             section_coord(block.x),
@@ -185,7 +210,7 @@ mod tests {
         Culler::new(
             Frustum::from_view_projection(projection * Mat4::IDENTITY),
             occlusion,
-            Vec3::ZERO,
+            DVec3::ZERO,
             (-64, 24),
             settings,
         )
@@ -194,12 +219,17 @@ mod tests {
     #[test]
     fn the_fog_hides_what_it_has_swallowed() {
         let fogged = culler(None, CullSettings::default()).with_fog(96.0);
-        let ahead = |z: f32| (Vec3::new(-1.0, -1.0, z - 1.0), Vec3::new(1.0, 1.0, z + 1.0));
+        let ahead = |z: f64| {
+            (
+                DVec3::new(-1.0, -1.0, z - 1.0),
+                DVec3::new(1.0, 1.0, z + 1.0),
+            )
+        };
         let (min, max) = ahead(-50.0);
         assert!(fogged.sees_box(min, max));
         let (min, max) = ahead(-100.0);
         assert!(!fogged.sees_box(min, max));
-        assert!(fogged.sees_box(Vec3::new(-1.0, -1.0, -150.0), Vec3::new(1.0, 1.0, -90.0)));
+        assert!(fogged.sees_box(DVec3::new(-1.0, -1.0, -150.0), DVec3::new(1.0, 1.0, -90.0)));
         let (min, max) = ahead(-100.0);
         assert!(culler(None, CullSettings::default()).sees_box(min, max));
     }
@@ -207,7 +237,12 @@ mod tests {
     #[test]
     fn entities_fade_out_with_distance_and_scale() {
         let culler = culler(None, CullSettings::default());
-        let player = |z: f32| (Vec3::new(-0.3, 0.0, z - 0.3), Vec3::new(0.3, 1.8, z + 0.3));
+        let player = |z: f64| {
+            (
+                DVec3::new(-0.3, 0.0, z - 0.3),
+                DVec3::new(0.3, 1.8, z + 0.3),
+            )
+        };
         let (min, max) = player(-60.0);
         assert!(culler.sees_entity(min, max));
         let (min, max) = player(-70.0);
@@ -238,7 +273,7 @@ mod tests {
             })
         });
         let culler = culler(Some(&mask), CullSettings::default());
-        let (min, max) = (Vec3::new(4.0, 0.0, -30.0), Vec3::new(4.6, 1.8, -29.4));
+        let (min, max) = (DVec3::new(4.0, 0.0, -30.0), DVec3::new(4.6, 1.8, -29.4));
         assert!(!culler.sees_section((0, 4, -2)));
         assert!(culler.in_compiled_section(min, max, |pos| pos == (0, 4, -2)));
         assert!(!culler.in_compiled_section(min, max, |_| false));

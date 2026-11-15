@@ -175,8 +175,8 @@ impl MultiLineEditBox {
     /// The character on `line` nearest `x` pixels from its start.
     fn index_at(&self, (start, end): (usize, usize), x: f32, font: &Font) -> usize {
         let mut pen = 0.0;
-        for i in start..end {
-            let advance = font.advance(self.chars[i]);
+        for (i, &c) in self.chars.iter().enumerate().take(end).skip(start) {
+            let advance = font.advance(c);
             if pen + advance / 2.0 > x {
                 return i;
             }

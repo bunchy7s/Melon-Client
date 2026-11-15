@@ -1,6 +1,6 @@
 //! The other entities in the world: the server's packets about them go to
 
-use glam::{IVec3, Mat4, Vec3};
+use glam::{DVec3, IVec3, Mat4, Vec3};
 use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
 
@@ -276,7 +276,7 @@ impl InWorld {
         renderer: &mut Renderer,
         assets: &WorldResources,
         visible: &[i32],
-        camera: Vec3,
+        camera: DVec3,
         partial: f32,
         params: &LightmapParams,
         view: (f32, f32),
@@ -305,8 +305,9 @@ impl InWorld {
             }
             let glow = mobs::block_glow(entity);
             let light = self.light_at_eye(entity.eye(partial), glow, params);
-            let feet = entity.pos(partial).as_vec3();
-            let origin = feet.floor().as_ivec3();
+            let at = entity.pos(partial);
+            let origin = at.floor().as_ivec3();
+            let feet = at.as_vec3();
             if entity.kind == EntityKind::Player {
                 let spectator = self
                     .players
@@ -377,7 +378,7 @@ impl InWorld {
                 &self.level,
                 entity.id,
                 feet,
-                camera,
+                camera.as_vec3(),
                 radius,
                 assets.shadow,
                 out,
@@ -391,7 +392,7 @@ impl InWorld {
         &self,
         assets: &WorldResources,
         entity: &ClientEntity,
-        camera: Vec3,
+        camera: DVec3,
         partial: f32,
         view: (f32, f32),
         params: &LightmapParams,
@@ -401,18 +402,19 @@ impl InWorld {
         let Some(state) = entity.display.as_deref() else {
             return;
         };
-        let feet = entity.pos(partial).as_vec3();
-        if (feet - camera).length_squared() >= (state.view_range * 64.0).powi(2) {
+        let at = entity.pos(partial);
+        if at.distance_squared(camera) as f32 >= (state.view_range * 64.0).powi(2) {
             return;
         }
-        let origin = feet.floor().as_ivec3();
+        let origin = at.floor().as_ivec3();
+        let feet = at.as_vec3();
         let tick = entity.age_in_ticks(0.0) as i32;
         let facing = display::orientation(
             state.billboard,
             (entity.yaw_degrees(partial), entity.pitch_degrees(partial)),
             view,
         );
-        let model = Mat4::from_translation(feet - origin.as_vec3())
+        let model = Mat4::from_translation(from_block(at, origin))
             * Mat4::from_quat(facing)
             * state.transform(tick, partial).matrix();
         let light = match state.light_override() {
@@ -469,8 +471,9 @@ impl InWorld {
         params: &LightmapParams,
         out: &mut Vec<EntityDraw>,
     ) {
-        let feet = entity.pos(partial).as_vec3();
-        let origin = feet.floor().as_ivec3();
+        let at = entity.pos(partial);
+        let origin = at.floor().as_ivec3();
+        let feet = at.as_vec3();
         let glow = entity.kind == EntityKind::GlowItemFrame;
         let light = if glow {
             self.light_at_eye(feet, 5, params)
@@ -490,7 +493,7 @@ impl InWorld {
             5 => (Vec3::X, -90.0, 0.0),
             _ => (Vec3::Z, 180.0, 0.0),
         };
-        let base = Mat4::from_translation(feet - origin.as_vec3() + step * 0.46875)
+        let base = Mat4::from_translation(from_block(at, origin) + step * 0.46875)
             * Mat4::rot_x_deg(x_rot)
             * Mat4::rot_y_deg(y_rot);
         let map = entity.item.item.registry_key == "filled_map";
@@ -598,14 +601,15 @@ impl InWorld {
         assets: &WorldResources,
         state: AvatarRenderState,
         main_arm: Arm,
-        camera: Vec3,
+        camera: DVec3,
         light: [f32; 3],
         out: &mut Vec<EntityDraw>,
     ) {
         let mut state = state;
-        let feet = state.position;
-        let origin = feet.floor().as_ivec3();
-        state.position -= origin.as_vec3();
+        let at = self.player.pos();
+        let origin = at.floor().as_ivec3();
+        let feet = at.as_vec3();
+        state.position = from_block(at, origin);
         let hands = Hand::ALL.map(|hand| {
             let stack = self.hand_stack(hand);
             (
@@ -630,7 +634,7 @@ impl InWorld {
                 &self.level,
                 OWN,
                 feet,
-                camera,
+                camera.as_vec3(),
                 crate::world::shadow::PLAYER_RADIUS,
                 assets.shadow,
                 out,
@@ -643,6 +647,13 @@ impl InWorld {
 fn shows_when_invisible(entity: &crate::world::entity::tracker::ClientEntity) -> bool {
     !entity.appearance.invisible()
         || (mobs::wears_armor(entity.kind) && !entity.equipment.is_empty())
+}
+
+/// `point` from the block `origin`, worked out in doubles: a model
+/// placed a million blocks out is as exact as one at the origin.
+#[inline]
+fn from_block(point: DVec3, origin: IVec3) -> Vec3 {
+    (point - origin.as_dvec3()).as_vec3()
 }
 
 /// The tracked entities Melon draws that the camera can see, by id
@@ -703,7 +714,7 @@ fn remote_avatar<'a>(
     humanoid.left_arm_pose = arms.left;
     let mut state = AvatarRenderState {
         humanoid,
-        position: input.living.position - origin.as_vec3(),
+        position: from_block(entity.pos(partial), origin),
         body_yaw: input.living.body_rot,
         spectator,
         shown: entity.appearance.shown,
@@ -839,7 +850,7 @@ fn submit_block_entity(
     let Some(mesh) = assets.blocks.mesh(state, tint) else {
         return;
     };
-    let feet = entity.pos(partial).as_vec3() - placed.origin.as_vec3();
+    let feet = from_block(entity.pos(partial), placed.origin);
     let (model, overlay) = if entity.kind == EntityKind::PrimedTnt {
         let fuse = entity.fuse_remaining(partial);
         let scale = if fuse < 10.0 {
@@ -906,7 +917,7 @@ fn submit_dropped(
     let Some((min_y, depth)) = assets.held.ground_bounds(stack) else {
         return;
     };
-    let feet = feet.as_vec3() - placed.origin.as_vec3();
+    let feet = from_block(feet, placed.origin);
     let lift = item_drop::bob(age, bob_offs) - min_y + 0.0625;
     let base = Mat4::from_translation(feet + Vec3::Y * lift)
         * Mat4::from_rotation_y(item_drop::spin(age, bob_offs));
@@ -931,7 +942,7 @@ fn submit_mob(
 ) {
     let hide_body = entity.appearance.invisible();
     let mut input = mobs::pose_input(entity, partial);
-    input.living.position -= placed.origin.as_vec3();
+    input.living.position = from_block(entity.pos(partial), placed.origin);
     let root = mobs::root(entity, &input, partial);
     let overlay = mobs::overlay(entity, &input.living, partial);
     let mut poses = Some(poses);

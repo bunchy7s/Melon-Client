@@ -1,6 +1,6 @@
 //! The outline of the block looked at (`LevelRenderer.renderHitOutline`):
 
-use glam::{DVec3, IVec3, Mat4, Vec3};
+use glam::{DVec3, IVec3, Mat4};
 
 use crate::renderer::{EntityDraw, MeshId, RenderLayer, Renderer, WorldVertex};
 use crate::world::level::Level;
@@ -35,7 +35,7 @@ impl BlockOutline {
         renderer: &mut Renderer,
         level: &Level,
         hit: Option<BlockHit>,
-        camera: Vec3,
+        camera: DVec3,
         line_width: f32,
         out: &mut Vec<EntityDraw>,
     ) {
@@ -50,7 +50,7 @@ impl BlockOutline {
         let [x, y, z] = hit.pos;
         let state = level.block_state(x, y, z).unwrap_or(0);
         let centre = DVec3::new(f64::from(x) + 0.5, f64::from(y) + 0.5, f64::from(z) + 0.5);
-        let distance = (centre - camera.as_dvec3()).length();
+        let distance = (centre - camera).length();
         let distance = (distance * DISTANCE_STEP).round() / DISTANCE_STEP;
         let width = distance as f32 * line_width;
         let key = Key {
@@ -191,6 +191,7 @@ fn bars(edges: &[Edge], origin: IVec3, half: f32) -> Vec<WorldVertex> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3;
 
     fn cube() -> Aabb {
         Aabb {

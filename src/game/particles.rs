@@ -1,6 +1,6 @@
 //! The particles in the world: [`crate::particle`]'s engine fed from the
 
-use glam::{DVec3, IVec3, Quat};
+use glam::{DVec3, IVec3, Vec3};
 
 use super::InWorld;
 use super::camera::Camera;
@@ -334,13 +334,16 @@ impl InWorld {
         self.particles
             .engine
             .set_looks(&assets.models, &assets.particle_sprites);
-        let view = camera.view;
-        let right = view.row(0).truncate().normalize_or_zero();
-        let up = view.row(1).truncate().normalize_or_zero();
-        let forward = -view.row(2).truncate();
-        let yaw = Quat::from_rotation_y((-forward.x).atan2(-forward.z));
+        // `-left`, `up` and the yaw (`Camera.yRot`) of vanilla's camera.
+        let right = -camera.left();
+        let up = camera.up();
+        let yaw = crate::math::angle::axis_angle(
+            Vec3::Y,
+            (180.0 - camera.look().y_rot) * crate::math::DEG_TO_RAD,
+        );
         let view = View {
             origin: camera.position.floor().as_ivec3(),
+            camera: camera.position,
             right,
             up,
             yaw,

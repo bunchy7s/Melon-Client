@@ -1,6 +1,6 @@
 //! The name tags over entities (`NameTagFeatureRenderer`): a player's
 
-use glam::{DVec3, Mat4, Vec3, Vec4Swizzles};
+use glam::{DVec3, Mat4, Vec3};
 
 use super::InWorld;
 use super::camera::Camera;
@@ -38,8 +38,10 @@ const BEHIND_ALPHA: f32 = 32.0 / 255.0;
 /// The camera of the frame, enough to project a world point to the screen.
 #[derive(Clone, Copy, Debug)]
 pub struct NameView {
-    position: Vec3,
-    /// `bobView * view`: the world as the camera sees it, the camera's place included.
+    position: DVec3,
+    /// `Camera.yRot` / `xRot`, for billboards.
+    look: crate::math::euler::Look,
+    /// `bobView * view`: the world relative to the camera as it sees it.
     view: Mat4,
     tan_half_fov: f32,
     aspect: f32,
@@ -49,6 +51,7 @@ impl NameView {
     pub fn of(camera: &Camera, aspect: f32) -> Self {
         Self {
             position: camera.position,
+            look: camera.look(),
             view: camera.bob * camera.view,
             tan_half_fov: (camera.fov.to_radians() / 2.0).tan(),
             aspect,
@@ -56,8 +59,10 @@ impl NameView {
     }
 
     /// Where `point` falls on a GUI screen of `size`, and how far in front
-    pub fn project(&self, point: Vec3, size: (f32, f32)) -> Option<([f32; 2], f32)> {
-        let v = (self.view * point.extend(1.0)).xyz();
+    pub fn project(&self, point: DVec3, size: (f32, f32)) -> Option<([f32; 2], f32)> {
+        let v = self
+            .view
+            .transform_point3((point - self.position).as_vec3());
         let depth = -v.z;
         if depth < crate::renderer::WORLD_Z_NEAR {
             return None;
@@ -94,7 +99,7 @@ impl InWorld {
         let looked_at = self.hit_entity().map(|hit| hit.id);
         for entity in self.entities.iter() {
             let feet = entity.pos(partial);
-            let dist_sq = feet.as_vec3().distance_squared(view.position);
+            let dist_sq = feet.distance_squared(view.position) as f32;
             let discrete = entity.appearance.crouching();
             let name = if dist_sq < entity.name_tag_distance * entity.name_tag_distance
                 && !(entity.is_living() && discrete && dist_sq >= DISCRETE_RANGE * DISCRETE_RANGE)
@@ -110,7 +115,7 @@ impl InWorld {
                 None
             };
             let height = f64::from(entity.size().1);
-            let anchor = (feet + DVec3::new(0.0, height + 0.5, 0.0)).as_vec3();
+            let anchor = feet + DVec3::new(0.0, height + 0.5, 0.0);
             let projected = view.project(anchor, size);
             if crate::probe::enabled()
                 && entity.uuid != self.uuid
@@ -133,12 +138,8 @@ impl InWorld {
             let Some((at, depth)) = projected else {
                 continue;
             };
-            let occluded = pick::clip_blocks_for_nametag(
-                &self.level,
-                view.position.as_dvec3(),
-                anchor.as_dvec3(),
-            )
-            .is_some();
+            let occluded =
+                pick::clip_blocks_for_nametag(&self.level, view.position, anchor).is_some();
             if discrete && occluded {
                 continue;
             }
@@ -211,14 +212,13 @@ impl InWorld {
             }
             let tick = entity.age_in_ticks(0.0) as i32;
             let transform = state.transform(tick, partial);
-            let forward = -Vec3::new(view.view.x_axis.z, view.view.y_axis.z, view.view.z_axis.z);
             let facing = crate::world::entity::display::orientation(
                 state.billboard,
                 (entity.yaw_degrees(partial), entity.pitch_degrees(partial)),
-                crate::world::entity::display::camera_angles(forward),
+                (view.look.y_rot, view.look.x_rot),
             );
-            let anchor = entity.pos(partial).as_vec3() + facing * transform.translation;
-            if anchor.distance_squared(view.position) >= (state.view_range * 64.0).powi(2) {
+            let anchor = entity.pos(partial) + (facing * transform.translation).as_dvec3();
+            if anchor.distance_squared(view.position) as f32 >= (state.view_range * 64.0).powi(2) {
                 continue;
             }
             let Some((at, depth)) = view.project(anchor, size) else {
@@ -233,13 +233,10 @@ impl InWorld {
             let box_w = widths.iter().copied().fold(0.0_f32, f32::max);
             let box_h = lines.len() as f32 * 10.0 - 1.0;
             let up = Vec3::new(view.view.x_axis.y, view.view.y_axis.y, view.view.z_axis.y);
-            let middle = anchor + up * (box_h * 0.5 * 0.025 * transform.scale.y.abs().max(1e-3));
-            let hidden = pick::clip_blocks_for_nametag(
-                &self.level,
-                view.position.as_dvec3(),
-                middle.as_dvec3(),
-            )
-            .is_some();
+            let middle = anchor
+                + (up * (box_h * 0.5 * 0.025 * transform.scale.y.abs().max(1e-3))).as_dvec3();
+            let hidden =
+                pick::clip_blocks_for_nametag(&self.level, view.position, middle).is_some();
             if crate::probe::enabled() {
                 crate::probe::note("text_display", format!("#{}", entity.id), || {
                     format!(
@@ -510,7 +507,8 @@ mod tests {
 
     fn view() -> NameView {
         NameView {
-            position: Vec3::ZERO,
+            position: DVec3::ZERO,
+            look: crate::math::euler::Look::new(180.0, 0.0),
             view: Mat4::IDENTITY,
             tan_half_fov: (35.0_f32).to_radians().tan(),
             aspect: 16.0 / 9.0,
@@ -520,30 +518,26 @@ mod tests {
     #[test]
     fn a_point_ahead_is_in_the_middle_and_one_behind_is_not_drawn() {
         let size = (320.0, 180.0);
-        let (at, depth) = view().project(Vec3::new(0.0, 0.0, -5.0), size).unwrap();
+        let (at, depth) = view().project(DVec3::new(0.0, 0.0, -5.0), size).unwrap();
         assert!((at[0] - 160.0).abs() < 1e-3 && (at[1] - 90.0).abs() < 1e-3);
         assert!((depth - 5.0).abs() < 1e-6);
-        assert!(view().project(Vec3::new(0.0, 0.0, 5.0), size).is_none());
-        let (above, _) = view().project(Vec3::new(0.0, 1.0, -5.0), size).unwrap();
+        assert!(view().project(DVec3::new(0.0, 0.0, 5.0), size).is_none());
+        let (above, _) = view().project(DVec3::new(0.0, 1.0, -5.0), size).unwrap();
         assert!(above[1] < 90.0);
     }
 
-    /// The view matrix already moves the world by the camera's place.
+    /// Points are made relative to the camera in doubles: a million
+    /// blocks out a tag sits where it would at the origin.
     #[test]
     fn a_camera_away_from_the_origin_sees_a_point_at_its_real_distance() {
-        let eye = Vec3::new(8.0, 75.0, -44.0);
-        let camera = NameView {
-            position: eye,
-            view: crate::world::player::view_matrix_for(0.0, 0.0, eye),
-            ..view()
-        };
+        let eye = DVec3::new(1_000_000.3, 75.0, -1_000_044.7);
+        let camera = Camera::new(eye, crate::math::euler::Look::new(20.0, 10.0), 70.0, 256.0);
+        let camera = NameView::of(&camera, 16.0 / 9.0);
         let size = (320.0, 180.0);
-        let forward = -Vec3::new(
-            camera.view.x_axis.z,
-            camera.view.y_axis.z,
-            camera.view.z_axis.z,
-        );
-        let (at, depth) = camera.project(eye + forward * 4.0, size).unwrap();
+        let forward = crate::math::euler::Orientation::new(camera.look).forwards;
+        let (at, depth) = camera
+            .project(eye + forward.as_dvec3() * 4.0, size)
+            .unwrap();
         assert!((at[0] - 160.0).abs() < 1e-2 && (at[1] - 90.0).abs() < 1e-2);
         assert!((depth - 4.0).abs() < 1e-3);
     }

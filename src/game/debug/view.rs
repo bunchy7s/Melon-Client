@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use glam::{DVec3, Mat4, Vec3};
+use glam::{DVec3, Mat4};
 use serde::{Deserialize, Serialize};
 
 use crate::game::InWorld;
@@ -82,7 +82,7 @@ fn still_in_view(camera: &Camera) -> impl Fn(DVec3) -> DVec3 {
     rotation.w_axis = glam::Vec4::W;
     let undo = rotation.inverse() * camera.bob.inverse() * rotation;
     let swaying = camera.bob != Mat4::IDENTITY;
-    let eye = camera.position.as_dvec3();
+    let eye = camera.position;
     move |p: DVec3| {
         if !swaying {
             return p;
@@ -132,7 +132,7 @@ impl InWorld {
             self.chunk_border_gizmos(&mut gizmos);
         }
         if others {
-            self.visualizer_gizmos(&mut gizmos, camera.position.as_dvec3(), frustum);
+            self.visualizer_gizmos(&mut gizmos, camera.position, frustum);
         }
         let (width, height) = renderer.framebuffer_size();
         let per_pixel = 2.0 * (camera.fov.to_radians() / 2.0).tan() / height.max(1) as f32;
@@ -147,7 +147,7 @@ impl InWorld {
         self.debug_view.mesh.draw(
             renderer,
             &gizmos,
-            camera.position.as_dvec3(),
+            camera.position,
             per_pixel,
             width as f32 / 1920.0,
             Some(text),
@@ -161,7 +161,7 @@ impl InWorld {
         let length = 0.01 * f64::from(self.debug_view.gui_scale.max(1.0));
         let still = still_in_view(camera);
         let place = |p: DVec3| still(p);
-        let origin = camera.position.as_dvec3() - to_camera;
+        let origin = camera.position - to_camera;
         let axes = [
             (DVec3::X, 0xFFFF_0000),
             (DVec3::Y, 0xFF00_FF00),
@@ -188,10 +188,7 @@ impl InWorld {
         let blue = argb(0xFF00_00FF);
         for entity in visible.iter().filter_map(|&id| self.entities.get(id)) {
             let (min, max) = entity.bounds(partial);
-            let bounds = Aabb {
-                min: min.as_dvec3(),
-                max: max.as_dvec3(),
-            };
+            let bounds = Aabb { min, max };
             let feet = entity.pos(partial);
             gizmos.cuboid(&bounds, white, DEFAULT_WIDTH);
             gizmos.point(feet, white, 2.0);
@@ -208,25 +205,17 @@ impl InWorld {
         }
         if self.camera_mode != CameraMode::FirstPerson {
             let (min, max) = self.player.render_bounds();
-            let bounds = Aabb {
-                min: min.as_dvec3(),
-                max: max.as_dvec3(),
-            };
+            let bounds = Aabb { min, max };
             gizmos.cuboid(&bounds, white, DEFAULT_WIDTH);
-            gizmos.point(self.player.pos().as_dvec3(), white, 2.0);
+            gizmos.point(self.player.pos(), white, 2.0);
             let eye = self.player.eye();
             let band = Aabb {
-                min: DVec3::new(bounds.min.x, f64::from(eye.y) - 0.01, bounds.min.z),
-                max: DVec3::new(bounds.max.x, f64::from(eye.y) + 0.01, bounds.max.z),
+                min: DVec3::new(bounds.min.x, eye.y - 0.01, bounds.min.z),
+                max: DVec3::new(bounds.max.x, eye.y + 0.01, bounds.max.z),
             };
             gizmos.cuboid(&band, red, DEFAULT_WIDTH);
-            let look: Vec3 = self.player.forward_vector();
-            gizmos.arrow(
-                eye.as_dvec3(),
-                (eye + look * 2.0).as_dvec3(),
-                blue,
-                DEFAULT_WIDTH,
-            );
+            let look = self.player.forward_vector().as_dvec3();
+            gizmos.arrow(eye, eye + look * 2.0, blue, DEFAULT_WIDTH);
         }
     }
 
@@ -315,22 +304,21 @@ mod tests {
 
     #[test]
     fn the_crosshair_stays_put_through_the_views_sway() {
-        let mut camera = Camera {
-            position: Vec3::new(10.0, 70.0, 5.0),
-            view: Mat4::rot_y_deg(90.0),
-            fov: 70.0,
-            far: 256.0,
-            bob: Mat4::IDENTITY,
-        };
-        let ahead = camera.position.as_dvec3() + DVec3::X;
+        let mut camera = Camera::new(
+            DVec3::new(10.0, 70.0, 5.0),
+            crate::math::euler::Look::new(-90.0, 0.0),
+            70.0,
+            256.0,
+        );
+        let ahead = camera.position + DVec3::X;
         assert_eq!(still_in_view(&camera)(ahead), ahead);
-        camera.bob = Mat4::from_translation(Vec3::new(0.1, -0.05, 0.0))
+        camera.bob = Mat4::from_translation(glam::Vec3::new(0.1, -0.05, 0.0))
             * Mat4::rot_z_deg(2.0)
             * Mat4::rot_x_deg(3.0);
         let moved = still_in_view(&camera)(ahead);
         let mut rotation = camera.view;
         rotation.w_axis = glam::Vec4::W;
-        let eye = camera.position.as_dvec3();
+        let eye = camera.position;
         let unswayed = rotation.transform_point3((ahead - eye).as_vec3());
         let swayed = camera
             .bob

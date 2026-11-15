@@ -132,7 +132,7 @@ impl InWorld {
             self.light_section_gizmos(gizmos);
         }
         if paths || visibility {
-            self.section_gizmos(gizmos, frustum, paths, visibility);
+            self.section_gizmos(gizmos, camera, frustum, paths, visibility);
         }
         if octree {
             self.culling_tree_gizmos(gizmos, camera, frustum);
@@ -145,10 +145,7 @@ impl InWorld {
     /// The player's box, the base of the two renderers below.
     fn player_box(&self) -> Aabb {
         let (min, max) = self.player.render_bounds();
-        Aabb {
-            min: min.as_dvec3(),
-            max: max.as_dvec3(),
-        }
+        Aabb { min, max }
     }
 
     /// `CollisionBoxRenderer`: every collision box within 6 blocks of the
@@ -412,6 +409,7 @@ impl InWorld {
     fn section_gizmos(
         &self,
         gizmos: &mut Gizmos,
+        camera: DVec3,
         frustum: &Frustum,
         paths: bool,
         visibility: bool,
@@ -423,7 +421,8 @@ impl InWorld {
         let middle =
             |(x, y, z): (i32, i32, i32)| corner(x * 16 + 8, min_y + y * 16 + 8, z * 16 + 8);
         let in_view = |(x, y, z): (i32, i32, i32)| {
-            let min = Vec3::new((x * 16) as f32, (min_y + y * 16) as f32, (z * 16) as f32);
+            let min = IVec3::new(x * 16, min_y + y * 16, z * 16).as_dvec3();
+            let min = (min - camera).as_vec3();
             frustum.sees_box(min, min + Vec3::splat(16.0))
         };
         if paths {
@@ -522,10 +521,12 @@ impl InWorld {
                 bottom(32 - filled.leading_zeros()),
                 min.z + 16.0,
             );
-            if !frustum.sees_box(min, max) {
+            // The frustum is the camera's, relative to it.
+            let relative = |p: Vec3| (p.as_dvec3() - camera).as_vec3();
+            if !frustum.sees_box(relative(min), relative(max)) {
                 continue;
             }
-            let whole = frustum.contains_box(min, max);
+            let whole = frustum.contains_box(relative(min), relative(max));
             gizmos.cuboid(
                 &Aabb {
                     min: min.as_dvec3(),
@@ -540,7 +541,7 @@ impl InWorld {
                 }
                 let lo = Vec3::new(min.x, bottom(y), min.z);
                 let hi = lo + Vec3::splat(16.0);
-                if !whole && !frustum.sees_box(lo, hi) {
+                if !whole && !frustum.sees_box(relative(lo), relative(hi)) {
                     continue;
                 }
                 count += 1;

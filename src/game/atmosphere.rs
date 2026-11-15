@@ -8,7 +8,7 @@ use crate::renderer::{CloudDraw, EntityDraw, MeshId, Renderer, WorldVertex};
 use crate::settings::options::Config;
 use crate::world::clouds::{self, CloudFrame};
 use crate::world::weather::{self, WeatherQuery};
-use glam::{Mat4, Vec3};
+use glam::Mat4;
 
 impl InWorld {
     /// Cloud boxes, then rain, then snow, matching vanilla's atmosphere pass.
@@ -24,7 +24,11 @@ impl InWorld {
         partial: f32,
         aspect: f32,
     ) -> (Option<CloudDraw>, Vec<EntityDraw>) {
-        let model = Mat4::from_translation(camera.position);
+        // The weather's quads are relative to the camera: placed from its
+        // block, so the floats stay small however far out it is.
+        let camera_block = camera.position.floor();
+        let model = Mat4::from_translation((camera.position - camera_block).as_vec3());
+        let camera_origin = camera_block.as_ivec3();
         let cloud_frame = CloudFrame {
             status: config.clouds,
             color: look.atmosphere.cloud_color,
@@ -40,13 +44,18 @@ impl InWorld {
             replace_mesh(renderer, &mut self.cloud_mesh, &verts);
             self.cloud_key = cloud_key;
         }
+        let cloud_anchor = {
+            let at = clouds::anchor(&assets.clouds, &cloud_frame);
+            let block = at.floor();
+            (block.as_ivec3(), (at - block).as_vec3())
+        };
         let clouds = self.cloud_mesh.map(|mesh| CloudDraw {
             color: cloud_frame.color,
             draw: EntityDraw {
                 mesh,
                 atlas: renderer.white_texture(),
-                model: Mat4::from_translation(clouds::anchor(&assets.clouds, &cloud_frame)),
-                origin: glam::IVec3::ZERO,
+                model: Mat4::from_translation(cloud_anchor.1),
+                origin: cloud_anchor.0,
                 layer: crate::renderer::RenderLayer::Atmosphere,
                 blend: crate::renderer::Blending::Translucent,
                 light: None,
@@ -97,9 +106,17 @@ impl InWorld {
                 .flat_map(|(_, prepared)| prepared)
                 .map(|p| p.column(game_time, partial))
                 .filter(|c| {
-                    let min = Vec3::new(c.x as f32 - 0.5, c.bottom_y as f32, c.z as f32 - 0.5);
-                    let max = Vec3::new(c.x as f32 + 1.5, c.top_y as f32, c.z as f32 + 1.5);
-                    frustum.sees_box(min, max)
+                    let min = glam::DVec3::new(
+                        f64::from(c.x) - 0.5,
+                        f64::from(c.bottom_y),
+                        f64::from(c.z) - 0.5,
+                    );
+                    let max = glam::DVec3::new(
+                        f64::from(c.x) + 1.5,
+                        f64::from(c.top_y),
+                        f64::from(c.z) + 1.5,
+                    );
+                    frustum.sees_box(camera.relative(min), camera.relative(max))
                 })
                 .collect();
             let (rain, snow) = weather::mesh(
@@ -114,7 +131,7 @@ impl InWorld {
                     mesh,
                     atlas: assets.rain,
                     model,
-                    origin: glam::IVec3::ZERO,
+                    origin: camera_origin,
                     layer: crate::renderer::RenderLayer::Atmosphere,
                     blend: crate::renderer::Blending::Translucent,
                     light: None,
@@ -127,7 +144,7 @@ impl InWorld {
                     mesh,
                     atlas: assets.snow,
                     model,
-                    origin: glam::IVec3::ZERO,
+                    origin: camera_origin,
                     layer: crate::renderer::RenderLayer::Atmosphere,
                     blend: crate::renderer::Blending::Translucent,
                     light: None,

@@ -205,10 +205,7 @@ impl InWorld {
             held: self.inventory.selected_stack(),
             helmet: &self.inventory.slots()[HEAD_SLOT],
             effects: self.mining_effects,
-            eye_in_water: crate::world::physics::eye_in_water(
-                &self.level,
-                self.player.tick_eye().as_vec3(),
-            ),
+            eye_in_water: crate::world::physics::eye_in_water(&self.level, self.player.tick_eye()),
             on_ground: self.player.on_ground(),
         }
     }

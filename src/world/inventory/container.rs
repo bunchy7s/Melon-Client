@@ -670,8 +670,8 @@ mod tests {
     #[test]
     fn a_crafting_table_falls_back_to_the_hotbar_when_its_grid_is_full() {
         let mut menu = OpenContainer::new(1, ContainerKind::Crafting, String::new());
-        for slot in 1..10 {
-            menu.slots[slot] = ItemStack::new(1, &Item::DIRT);
+        for slot in &mut menu.slots[1..10] {
+            *slot = ItemStack::new(1, &Item::DIRT);
         }
         menu.slots[10] = ItemStack::new(1, &Item::STONE);
         quick_move(&mut menu, 10);

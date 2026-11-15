@@ -1,6 +1,6 @@
 //! Heads: player heads that name a profile, drawn with that player's skin
 
-use glam::{IVec3, Mat4, Vec3};
+use glam::{DVec3, IVec3, Mat4, Vec3};
 use pumpkin_data::item_stack::ItemStack;
 
 use super::InWorld;
@@ -24,15 +24,16 @@ use crate::world::lightmap::LightmapParams;
 const WORN_SCALE: f32 = 1.1875;
 
 /// The placed heads with a profile `culler` lets through, near `eye`.
-pub(super) fn visible_heads(level: &Level, culler: &Culler, eye: Vec3) -> Vec<[i32; 3]> {
+pub(super) fn visible_heads(level: &Level, culler: &Culler) -> Vec<[i32; 3]> {
+    let eye = culler.eye();
     level
         .heads()
         .map(|(pos, _)| pos)
         .filter(|&pos| {
-            let min = IVec3::from(pos).as_vec3();
-            let center = min + Vec3::splat(0.5);
-            center.distance_squared(eye) <= VIEW_DISTANCE * VIEW_DISTANCE
-                && culler.sees_box(min, min + Vec3::ONE)
+            let min = IVec3::from(pos).as_dvec3();
+            let center = min + DVec3::splat(0.5);
+            center.distance_squared(eye) as f32 <= VIEW_DISTANCE * VIEW_DISTANCE
+                && culler.sees_box(min, min + DVec3::ONE)
                 && culler.reaches(culler.section_of(center))
         })
         .collect()

@@ -8,7 +8,6 @@ use crate::gui::text::font::Font;
 use crate::math::{section_coord, section_relative, wrap_degrees};
 use crate::renderer::quad::DrawList;
 use crate::renderer::{DeviceInfo, TextureId};
-use glam::Vec3;
 
 /// `DebugScreenOverlay.extractLines`: `int height = 9`.
 const LINE_HEIGHT: f32 = 9.0;
@@ -40,7 +39,7 @@ pub struct DebugContext<'a> {
     /// `VideoMode.refreshRateLabel` of the window's monitor.
     pub refresh_rate: Option<String>,
     /// Feet position (`Entity.getX/getY/getZ`), not the eye.
-    pub position: Vec3,
+    pub position: glam::DVec3,
     pub yaw_degrees: f32,
     pub pitch_degrees: f32,
     /// `Window.getWidth()`/`getHeight()`, i.e. physical pixels.

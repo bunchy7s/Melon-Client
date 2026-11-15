@@ -27,7 +27,7 @@ pub struct Column {
 pub struct WeatherQuery<'a> {
     pub intensity: f32,
     pub radius: i32,
-    pub camera: glam::Vec3,
+    pub camera: glam::DVec3,
     pub game_time: i64,
     pub partial_tick: f32,
     pub height: &'a dyn Fn(i32, i32) -> i32,
@@ -221,7 +221,7 @@ fn rain_tick_offset(x: i32, z: i32) -> i32 {
 /// Camera-relative quads. Rain first, then snow, matching vanilla's two draws.
 pub fn mesh(
     columns: &[Column],
-    camera: glam::Vec3,
+    camera: glam::DVec3,
     radius: i32,
     intensity: f32,
     lightmap: &crate::world::lightmap::LightmapParams,
@@ -236,8 +236,8 @@ pub fn mesh(
     let cam_z = camera.z.floor() as i32;
     let sizes = column_sizes();
     for column in columns {
-        let relative_x = column.x as f32 + 0.5 - camera.x;
-        let relative_z = column.z as f32 + 0.5 - camera.z;
+        let relative_x = (f64::from(column.x) + 0.5 - camera.x) as f32;
+        let relative_z = (f64::from(column.z) + 0.5 - camera.z) as f32;
         let dist_sq = relative_x * relative_x + relative_z * relative_z;
         let max_alpha = if column.snow { 0.8 } else { 1.0 };
         let t = (dist_sq / radius_sq).min(1.0);
@@ -248,8 +248,8 @@ pub fn mesh(
         let x1 = relative_x + half_x;
         let z0 = relative_z - half_z;
         let z1 = relative_z + half_z;
-        let y1 = column.top_y as f32 - camera.y;
-        let y0 = column.bottom_y as f32 - camera.y;
+        let y1 = (f64::from(column.top_y) - camera.y) as f32;
+        let y0 = (f64::from(column.bottom_y) - camera.y) as f32;
         let u0 = column.u_offset;
         let u1 = column.u_offset + 1.0;
         let v0 = column.bottom_y as f32 * 0.25 + column.v_offset;
@@ -307,7 +307,7 @@ mod tests {
         let query = WeatherQuery {
             intensity: 1.0,
             radius: 2,
-            camera: glam::Vec3::new(8.2, 70.0, 8.4),
+            camera: glam::DVec3::new(8.2, 70.0, 8.4),
             game_time: 2400,
             partial_tick: 0.25,
             height: &height,
@@ -340,7 +340,7 @@ mod tests {
         let query = WeatherQuery {
             intensity: 1.0,
             radius: 3,
-            camera: glam::Vec3::new(8.2, 70.0, 8.4),
+            camera: glam::DVec3::new(8.2, 70.0, 8.4),
             game_time: 0,
             partial_tick: 0.0,
             height: &height,
@@ -373,7 +373,7 @@ mod tests {
             snow: false,
         };
         let params = crate::world::lightmap::LightmapParams::overworld([1.0; 3], 0.0);
-        let camera = glam::Vec3::new(8.2, 70.0, 8.4);
+        let camera = glam::DVec3::new(8.2, 70.0, 8.4);
         let dark = mesh(&[column], camera, 8, 1.0, &params).0;
         let lit = mesh(
             &[Column {

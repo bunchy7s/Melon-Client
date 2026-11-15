@@ -2,7 +2,7 @@
 
 use crate::world::game_mode::Abilities;
 use crate::world::physics::Aabb;
-use glam::{DVec3, Vec3};
+use glam::DVec3;
 
 mod attributes;
 mod block_effects;
@@ -19,7 +19,7 @@ mod render_state;
 pub mod status_effects;
 
 pub use attributes::PlayerAttributes;
-pub use render_state::{ArmPoses, forward_vector_for, view_matrix_for};
+pub use render_state::{ArmPoses, forward_vector_for};
 
 /// `Avatar.STANDING_DIMENSIONS.withEyeHeight(1.62F)`.
 pub const EYE_HEIGHT: f32 = 1.62;
@@ -88,8 +88,9 @@ pub struct PlayerState {
     prev_feet: DVec3,
     /// Per tick, like vanilla's `deltaMovement`.
     velocity: DVec3,
-    /// Feet position as drawn this frame, between `prev_feet` and `feet`.
-    pos: Vec3,
+    /// Feet position as drawn this frame, between `prev_feet` and `feet`
+    /// (`Mth.lerp` in doubles, as `Camera.alignWithEntity`).
+    pos: DVec3,
     /// Melon's yaw: 0 looks north, unlike vanilla's south.
     yaw_degrees: f32,
     pitch_degrees: f32,
@@ -203,7 +204,7 @@ impl PlayerState {
             prev_feet: feet,
             colliders: Vec::new(),
             velocity: DVec3::ZERO,
-            pos: feet.as_vec3(),
+            pos: feet,
             yaw_degrees: 0.0,
             pitch_degrees: 0.0,
             on_ground: false,
@@ -327,8 +328,13 @@ impl PlayerState {
     }
 
     /// Feet position as drawn this frame, between the last two ticks.
-    pub fn pos(&self) -> Vec3 {
+    pub fn pos(&self) -> DVec3 {
         self.pos
+    }
+
+    /// Where it looks, in vanilla's convention.
+    pub fn look_angles(&self) -> crate::math::euler::Look {
+        crate::math::euler::Look::from_melon(self.yaw_degrees, self.pitch_degrees)
     }
 
     /// Melon's yaw in degrees: 0 looks north (vanilla's 0 looks south).
@@ -456,7 +462,7 @@ impl PlayerState {
         self.feet = feet;
         self.prev_feet = prev_feet;
         self.velocity = velocity;
-        self.pos = feet.as_vec3();
+        self.pos = feet;
     }
 
     /// After a warp or setback: if a block is under the feet, stand on it.
@@ -635,12 +641,12 @@ impl PlayerState {
     }
 
     /// The bounding box where the player is drawn this frame, for culling.
-    pub fn render_bounds(&self) -> (Vec3, Vec3) {
-        let height = self.box_height() as f32;
-        let half = self.box_width() as f32 / 2.0;
+    pub fn render_bounds(&self) -> (DVec3, DVec3) {
+        let height = self.box_height();
+        let half = self.box_width() / 2.0;
         (
-            self.pos - Vec3::new(half, 0.0, half),
-            self.pos + Vec3::new(half, height, half),
+            self.pos - DVec3::new(half, 0.0, half),
+            self.pos + DVec3::new(half, height, half),
         )
     }
 
@@ -787,8 +793,8 @@ mod tests {
         player.tick(sneak, &level, 20, SPRINT_WINDOW_DEFAULT);
         player.update_render(1.0, 0.05);
         let half = EYE_HEIGHT + (CROUCH_EYE_HEIGHT - EYE_HEIGHT) * 0.5;
-        assert!((player.eye().y - player.feet.y as f32 - CROUCH_EYE_HEIGHT).abs() < 1e-5);
-        assert!((player.camera_eye().y - player.feet.y as f32 - half).abs() < 1e-5);
+        assert!((player.eye().y - player.feet.y - f64::from(CROUCH_EYE_HEIGHT)).abs() < 1e-5);
+        assert!((player.camera_eye().y - player.feet.y - f64::from(half)).abs() < 1e-5);
         for _ in 0..12 {
             player.tick(sneak, &level, 20, SPRINT_WINDOW_DEFAULT);
         }

@@ -2,13 +2,15 @@
 
 use glam::{DVec3, Mat4, Vec3};
 
+use crate::math::euler::{self, Look, Orientation};
+
 use super::InWorld;
 use crate::math::angle::{self, Rotation};
 use crate::renderer::world_projection;
 use crate::world::culling::frustum::Frustum;
 use crate::world::level::Level;
 use crate::world::pick;
-use crate::world::player::{self, PlayerState};
+use crate::world::player::PlayerState;
 
 /// `Camera.getMaxZoom`'s starting distance behind or in front of the head.
 const THIRD_PERSON_DISTANCE: f32 = 4.0;
@@ -34,7 +36,14 @@ impl crate::cycle::Cycle for CameraMode {
 
 /// One frame's camera.
 pub struct Camera {
-    pub position: Vec3,
+    /// `Camera.position`, in doubles: everything drawn is made relative
+    /// to it before it reaches a float, so the view stays exact however
+    /// far out the player is.
+    pub position: DVec3,
+    /// Its rotation and axes, as `Camera.setRotation` works them out.
+    pub orientation: Orientation,
+    /// `Camera.getViewRotationMatrix`: from world space relative to
+    /// [`Self::position`] to camera space. No translation.
     pub view: Mat4,
     /// Vertical field of view, degrees.
     pub fov: f32,
@@ -45,7 +54,21 @@ pub struct Camera {
 }
 
 impl Camera {
-    /// `Camera.setup`: at the eye, or pulled back along (or against) the
+    /// A camera at `position` looking `look`'s way.
+    pub fn new(position: DVec3, look: Look, fov: f32, far: f32) -> Self {
+        let orientation = Orientation::new(look);
+        Self {
+            position,
+            orientation,
+            view: orientation.view,
+            fov,
+            far,
+            bob: Mat4::IDENTITY,
+        }
+    }
+
+    /// `Camera.alignWithEntity`: at the eye, or pulled back along (or
+    /// against) the look by `getMaxZoom`, as far as the blocks allow.
     pub fn follow(
         player: &PlayerState,
         level: &Level,
@@ -54,44 +77,51 @@ impl Camera {
         far: f32,
     ) -> Self {
         let eye = player.camera_eye();
-        let clip = |from: DVec3, to: DVec3| pick::clip_blocks(level, from, to).map(|h| h.location);
-        let (position, view) = match mode {
-            CameraMode::FirstPerson => (eye, player.view_matrix_at(eye)),
-            CameraMode::ThirdPersonBack => {
-                let forward = player.forward_vector();
-                let pos = eye - forward * max_zoom(eye, forward, THIRD_PERSON_DISTANCE, clip);
-                (pos, player.view_matrix_at(pos))
-            }
-            CameraMode::ThirdPersonFront => {
-                let yaw = player.yaw() + 180.0;
-                let pitch = -player.pitch();
-                let forward = player::forward_vector_for(yaw, pitch);
-                let pos = eye - forward * max_zoom(eye, forward, THIRD_PERSON_DISTANCE, clip);
-                (pos, player::view_matrix_for(yaw, pitch, pos))
-            }
+        let look = player.look_angles();
+        let look = match mode {
+            CameraMode::ThirdPersonFront => look.mirrored(),
+            _ => look,
         };
-        Self {
-            position,
-            view,
-            fov,
-            far,
-            bob: Mat4::IDENTITY,
+        let mut camera = Self::new(eye, look, fov, far);
+        if mode != CameraMode::FirstPerson {
+            let clip =
+                |from: DVec3, to: DVec3| pick::clip_blocks(level, from, to).map(|h| h.location);
+            let zoom = max_zoom(eye, camera.forward(), THIRD_PERSON_DISTANCE, clip);
+            camera.position = eye + camera.offset(-zoom, 0.0, 0.0);
         }
+        camera
     }
 
-    /// Where the camera looks, in world space.
+    /// `Camera.move`'s offset: `forwards`, `up` and `right` along the
+    /// camera's own axes.
+    pub fn offset(&self, forwards: f32, up: f32, right: f32) -> DVec3 {
+        euler::transform(self.orientation.rotation, Vec3::new(right, up, -forwards)).as_dvec3()
+    }
+
+    /// `point` relative to the camera, in the floats the GPU takes.
+    #[inline]
+    pub fn relative(&self, point: DVec3) -> Vec3 {
+        (point - self.position).as_vec3()
+    }
+
+    /// Where the camera looks, in world space (`Camera.forwards`).
     pub fn forward(&self) -> Vec3 {
-        -Vec3::new(self.view.x_axis.z, self.view.y_axis.z, self.view.z_axis.z)
+        self.orientation.forwards
     }
 
     /// The camera's up, in world space.
     pub fn up(&self) -> Vec3 {
-        Vec3::new(self.view.x_axis.y, self.view.y_axis.y, self.view.z_axis.y)
+        self.orientation.up
     }
 
     /// The camera's left, in world space.
     pub fn left(&self) -> Vec3 {
-        -Vec3::new(self.view.x_axis.x, self.view.y_axis.x, self.view.z_axis.x)
+        self.orientation.left
+    }
+
+    /// `Camera.yRot` and `xRot`, as vanilla's billboards turn to them.
+    pub fn look(&self) -> Look {
+        self.orientation.look
     }
 
     /// `Camera.getNearPlane`: where the middle and the corners of the near
@@ -110,7 +140,8 @@ impl Camera {
         ]
     }
 
-    /// The view volume for a framebuffer of this `aspect`, the same one the
+    /// The view volume for a framebuffer of this `aspect`, relative to
+    /// [`Self::position`] (`Frustum.prepare`), the same one the
     pub fn frustum(&self, aspect: f32) -> Frustum {
         self.frustum_with_fov(aspect, self.fov)
     }
@@ -123,27 +154,28 @@ impl Camera {
     }
 }
 
-/// `Camera.getMaxZoom`: how far behind `eye` (against `forward`) the camera
+/// `Camera.getMaxZoom`: how far behind `eye` (against `forward`) the
+/// camera can go, at most `distance`, before a block is in the way of
+/// any corner of a 0.2 block cube around it.
 pub fn max_zoom(
-    eye: Vec3,
+    eye: DVec3,
     forward: Vec3,
     distance: f32,
     clip: impl Fn(DVec3, DVec3) -> Option<DVec3>,
 ) -> f32 {
     let mut distance = distance;
-    let back = -forward.as_dvec3();
     for corner in 0..8 {
         let offset = Vec3::new(
             ((corner & 1) * 2 - 1) as f32,
             (((corner >> 1) & 1) * 2 - 1) as f32,
             (((corner >> 2) & 1) * 2 - 1) as f32,
         ) * 0.1;
-        let from = (eye + offset).as_dvec3();
-        let to = from + back * f64::from(distance);
+        let from = eye + offset.as_dvec3();
+        let to = from + forward.as_dvec3() * f64::from(-distance);
         if let Some(hit) = clip(from, to) {
-            let hit_distance = hit.distance(eye.as_dvec3()) as f32;
-            if hit_distance < distance {
-                distance = hit_distance;
+            let squared = hit.distance_squared(eye) as f32;
+            if squared < distance * distance {
+                distance = squared.sqrt();
             }
         }
     }
@@ -230,15 +262,51 @@ mod tests {
         }
     }
 
+    /// A million blocks out a float steps by 1/16: the camera, made from
+    /// doubles, still moves by the 1/200 block a slow frame moves it,
+    /// and what it culls and draws is relative to it before it is a float.
+    #[test]
+    fn far_out_the_camera_is_as_exact_as_at_the_origin() {
+        use crate::world::culling::{CullSettings, Culler};
+        let far = DVec3::new(1_000_000.0, 64.0, -2_000_000.0);
+        let mut player = PlayerState::new(far);
+        player.teleport(far + DVec3::X * 0.01, DVec3::ZERO, far);
+        player.update_render(0.5, 0.0);
+        let eye = player.camera_eye();
+        assert_eq!(eye.x, 1_000_000.005);
+        // f32 can't hold this: the old eye snapped to a 16th of a block.
+        assert_eq!(eye.x as f32 as f64, 1_000_000.0);
+
+        let camera = Camera::new(eye, Look::new(-90.0, 0.0), 70.0, 256.0);
+        let ahead = eye + DVec3::new(2.0, 0.0, 0.0);
+        assert!((camera.relative(ahead) - Vec3::new(2.0, 0.0, 0.0)).length() < 1e-9);
+        let culler = Culler::new(
+            camera.frustum(1.0),
+            None,
+            camera.position,
+            (-64, 24),
+            CullSettings::default(),
+        );
+        let block = |at: DVec3| (at - DVec3::splat(0.05), at + DVec3::splat(0.05));
+        let (min, max) = block(ahead);
+        assert!(culler.sees_box(min, max));
+        let (min, max) = block(eye - DVec3::new(2.0, 0.0, 0.0));
+        assert!(!culler.sees_box(min, max));
+        // A tenth-block box just past the edge of the view stays culled.
+        let edge = eye + DVec3::new(2.0, 0.0, 2.0 * (35f64.to_radians().tan() + 0.1));
+        let (min, max) = block(edge);
+        assert!(!culler.sees_box(min, max));
+    }
+
     #[test]
     fn the_camera_goes_the_whole_way_back_in_open_air() {
-        let eye = Vec3::new(0.0, 65.0, 0.0);
+        let eye = DVec3::new(0.0, 65.0, 0.0);
         assert_eq!(max_zoom(eye, Vec3::X, 4.0, |_, _| None), 4.0);
     }
 
     #[test]
     fn a_wall_behind_the_player_stops_the_camera_short_of_it() {
-        let eye = Vec3::new(0.0, 65.0, 0.0);
+        let eye = DVec3::new(0.0, 65.0, 0.0);
         let zoom = max_zoom(eye, Vec3::X, 4.0, wall(-2.0));
         assert!((2.0..2.01).contains(&zoom), "{zoom}");
         assert_eq!(max_zoom(eye, Vec3::X, 4.0, wall(2.0)), 4.0);
@@ -254,16 +322,14 @@ mod tests {
 
     #[test]
     fn the_axes_follow_the_view() {
-        let camera = Camera {
-            position: Vec3::ZERO,
-            view: Mat4::rot_y(HALF_PI),
-            fov: 70.0,
-            far: 256.0,
-            bob: Mat4::IDENTITY,
-        };
+        // Vanilla's yRot -90 looks east.
+        let camera = Camera::new(DVec3::ZERO, Look::new(-90.0, 0.0), 70.0, 256.0);
+        assert!(camera.view.abs_diff_eq(Mat4::rot_y(HALF_PI), 1e-6));
         assert!((camera.forward() - Vec3::X).length() < 1e-6);
         assert!((camera.up() - Vec3::Y).length() < 1e-6);
         assert!((camera.left() - Vec3::NEG_Z).length() < 1e-6);
+        let back = camera.offset(-4.0, 0.0, 0.0);
+        assert!(back.abs_diff_eq(DVec3::NEG_X * 4.0, 1e-6), "{back}");
         let plane = camera.near_plane(2.0);
         assert!((plane[0] - Vec3::X * 0.05).length() < 1e-6);
         let mean = plane[1..].iter().copied().sum::<Vec3>() / 4.0;

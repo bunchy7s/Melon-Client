@@ -250,7 +250,7 @@ impl InWorld {
             ];
         }
         if let Some(world) = &server {
-            let at = [f64::from(feet.x), f64::from(feet.y), f64::from(feet.z)];
+            let at = feet.to_array();
             if on(Entry::LocalDifficulty) {
                 extras.local_difficulty = super::server::local_difficulty(world, at);
             }
