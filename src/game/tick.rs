@@ -88,6 +88,7 @@ impl InWorld {
                 self.status.food,
                 u32::from(ui.config.input.sprint_window),
             );
+            self.report_started_moves();
             self.after_airborne_tick();
             self.tick_footsteps();
         }
@@ -254,6 +255,33 @@ impl InWorld {
     }
 
     /// `LocalPlayer.sendPosition`: every tick, so the server follows the
+    /// `melon:movement`'s `Start` for each mod state that began, ahead of
+    /// the move it makes, so the server's checks already grant it.
+    fn report_started_moves(&mut self) {
+        use pumpkin_protocol::java::melon_movement::{CHANNEL, MovementPayload};
+        for id in self.player.take_started_moves() {
+            let start = MovementPayload::Start { id: id.to_owned() };
+            self.joined
+                .session
+                .send_custom_payload(CHANNEL, &start.encode());
+        }
+    }
+
+    /// `melon:movement` from the server.
+    pub(super) fn apply_movement_payload(
+        &mut self,
+        payload: pumpkin_protocol::java::melon_movement::MovementPayload,
+    ) {
+        use pumpkin_protocol::java::melon_movement::MovementPayload;
+        match payload {
+            MovementPayload::Allowed(ids) => self.player.set_allowed_moves(ids),
+            MovementPayload::Started { entity_id, id } => {
+                self.entities.start_custom_move(entity_id, id);
+            }
+            MovementPayload::Start { .. } => {}
+        }
+    }
+
     pub(super) fn send_position(&mut self) {
         if crate::probe::enabled()
             && self.clocks.game_time()

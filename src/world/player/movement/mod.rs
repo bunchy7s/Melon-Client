@@ -64,6 +64,20 @@ impl PlayerState {
         self.move_states.add(state);
     }
 
+    /// `melon:movement`'s `Allowed`: the mod states this server accepts.
+    pub fn set_allowed_moves(&mut self, ids: Vec<String>) {
+        self.allowed_moves = ids;
+    }
+
+    pub fn move_allowed(&self, id: &str) -> bool {
+        self.allowed_moves.iter().any(|allowed| allowed == id)
+    }
+
+    /// The mod states that began since the last call, for `Start`.
+    pub fn take_started_moves(&mut self) -> Vec<&'static str> {
+        std::mem::take(&mut self.started_moves)
+    }
+
     /// The mode the last tick moved in; a riptide spin over anything but
     /// flight.
     pub fn move_mode(&self) -> super::MoveMode {
@@ -113,13 +127,19 @@ impl PlayerState {
         }
         self.jump_trigger_ticks = self.jump_trigger_ticks.saturating_sub(1);
 
+        let mut server_move = None;
         if let Some(state) = states.select(self, &env) {
             if !state.own_vertical_input() {
                 self.vertical_input(&env);
             }
             self.move_mode = state.mode(self);
+            server_move = state.server_id();
             state.travel(self, &env);
         }
+        if server_move.is_some() && server_move != self.server_move {
+            self.started_moves.extend(server_move);
+        }
+        self.server_move = server_move;
         self.move_states = states;
     }
 

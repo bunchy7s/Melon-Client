@@ -32,6 +32,8 @@ pub enum WorldEvent {
     },
     /// `ClientboundPlayerPositionPacket`: the server moved the player.
     Teleport(Teleport),
+    /// `melon:movement` from the server: allowed states, others' starts.
+    Movement(pumpkin_protocol::java::melon_movement::MovementPayload),
     /// `ClientboundPingPacket` in play: the game loop sends the matching
     Ping(i32),
     Game(game::GameEvent),
@@ -173,6 +175,20 @@ impl Session {
         self.send(id::SB_PLAY_CONFIRM_TELEPORT, |buf| {
             write_accept_teleport(buf, id, pos, yaw, pitch)
         });
+    }
+
+    /// `ServerboundCustomPayloadPacket` on `channel`.
+    pub fn send_custom_payload(&self, channel: &str, data: &[u8]) {
+        self.send(id::SB_PLAY_CUSTOM_PAYLOAD, |buf| {
+            packet::write_string(buf, channel)?;
+            buf.write_all(data)?;
+            Ok(())
+        });
+    }
+
+    /// `minecraft:register`: the plugin channels Melon listens on.
+    pub fn send_register(&self, channels: &[&str]) {
+        self.send_custom_payload("minecraft:register", channels.join("\0").as_bytes());
     }
 
     /// `ServerboundPongPacket`: the same number the ping carried.
@@ -898,6 +914,7 @@ fn handle_play_packet(
             crate::dialog::connection::read_tags(body)?;
             (None, Play::Nothing)
         }
+        pid if pid == cb::CUSTOM_PAYLOAD.0 => (None, read_custom_payload(&mut r)?),
         pid if IGNORED.contains(&pid) => (None, Play::Nothing),
         _ => {
             let decoded = game::decode(pid, body);
@@ -1059,12 +1076,22 @@ fn write_accept_teleport(
     Ok(())
 }
 
+/// `ClientboundCustomPayloadPacket`: only `melon:movement` means anything;
+/// a broken one is dropped like an unknown channel.
+fn read_custom_payload(r: &mut Reader) -> Result<Play> {
+    use pumpkin_protocol::java::melon_movement::{CHANNEL, MovementPayload};
+    if r.string()? != CHANNEL {
+        return Ok(Play::Nothing);
+    }
+    Ok(MovementPayload::decode(r.remaining())
+        .map_or(Play::Nothing, |payload| Play::Event(WorldEvent::Movement(payload))))
+}
+
 /// Packets Melon knows and has no use for.
-const IGNORED: [i32; 6] = [
+const IGNORED: [i32; 5] = [
     cb::BUNDLE_DELIMITER.0,
     cb::STOP_SOUND.0,
     cb::CUSTOM_CHAT_COMPLETIONS.0,
-    cb::CUSTOM_PAYLOAD.0,
     cb::OPEN_SIGN_EDITOR.0,
     cb::SERVER_DATA.0,
 ];

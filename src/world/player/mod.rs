@@ -188,6 +188,11 @@ pub struct PlayerState {
     /// The ways of moving, by priority, and the one the last tick used.
     move_states: movement::MoveStates,
     move_mode: MoveMode,
+    /// What the server allows (`melon:movement`), the mod state the last
+    /// tick ran, and the starts not yet reported.
+    allowed_moves: Vec<String>,
+    server_move: Option<&'static str>,
+    started_moves: Vec<&'static str>,
 }
 
 impl PlayerState {
@@ -266,6 +271,9 @@ impl PlayerState {
             ride_body: None,
             move_states: movement::MoveStates::vanilla(),
             move_mode: MoveMode::Walk,
+            allowed_moves: Vec::new(),
+            server_move: None,
+            started_moves: Vec::new(),
         }
     }
 

@@ -157,6 +157,9 @@ pub struct ClientEntity {
     hurt_time: i32,
     death_time: i32,
     age: u32,
+    /// A mod movement state it began (`melon:movement`'s `Started`) and the
+    /// ticks since, for the mod's look; gone after [`CUSTOM_MOVE_TICKS`].
+    custom_move: Option<(String, u32)>,
     /// `getTicksUsingItem`: ticks since it began using an item.
     using_ticks: u32,
     /// A cat's lying amounts, this tick's and last tick's.
@@ -252,7 +255,15 @@ pub struct ClientEntity {
     vehicle_body: Option<(f32, f32)>,
 }
 
+/// How long a started mod movement state stays on an entity.
+pub const CUSTOM_MOVE_TICKS: u32 = 40;
+
 impl ClientEntity {
+    /// The mod movement state it began and the ticks since.
+    pub fn custom_move(&self) -> Option<(&str, u32)> {
+        self.custom_move.as_ref().map(|(id, age)| (id.as_str(), *age))
+    }
+
     /// `recreateFromPacket`; `None` for a type the registry doesn't know.
     pub fn spawn(add: &AddEntity) -> Option<Self> {
         let ty = EntityType::from_raw(u16::try_from(add.kind).ok()?)?;
@@ -291,6 +302,7 @@ impl ClientEntity {
             hurt_time: 0,
             death_time: 0,
             age: 0,
+            custom_move: None,
             using_ticks: 0,
             feline: Default::default(),
             interest: (0.0, 0.0),

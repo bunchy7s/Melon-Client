@@ -533,6 +533,13 @@ impl Entities {
         self.by_id.get(&id)
     }
 
+    /// `melon:movement`'s `Started`: entity `id` began the mod state `state`.
+    pub fn start_custom_move(&mut self, id: i32, state: String) {
+        if let Some(entity) = self.by_id.get_mut(&id) {
+            entity.custom_move = Some((state, 0));
+        }
+    }
+
     /// Whether a bobber of `owner`'s is out (`Player.fishing != null`).
     pub fn is_fishing(&self, owner: i32) -> bool {
         self.by_id

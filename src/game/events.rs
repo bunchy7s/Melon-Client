@@ -47,6 +47,7 @@ impl InWorld {
                     self.level.apply_light(x, z, &update);
                 }
                 WorldEvent::Ping(id) => self.joined.session.send_pong(id),
+                WorldEvent::Movement(payload) => self.apply_movement_payload(payload),
                 WorldEvent::Teleport(teleport) => self.teleport(&teleport),
                 WorldEvent::Game(GameEvent::Respawn {
                     dimension_id,

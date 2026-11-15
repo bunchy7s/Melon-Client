@@ -384,6 +384,9 @@ impl InWorld {
             ..Default::default()
         };
         let chat = Chat::new(chat_types, info.uuid, Some(game_dir.to_path_buf()));
+        joined
+            .session
+            .send_register(&[pumpkin_protocol::java::melon_movement::CHANNEL]);
         Self {
             uuid: info.uuid,
             preview: Default::default(),

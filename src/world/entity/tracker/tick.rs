@@ -219,6 +219,12 @@ impl ClientEntity {
         if self.hurt_time > 0 {
             self.hurt_time -= 1;
         }
+        if let Some((_, age)) = &mut self.custom_move {
+            *age += 1;
+            if *age >= super::CUSTOM_MOVE_TICKS {
+                self.custom_move = None;
+            }
+        }
         self.swing.tick();
         if self.kind == EntityKind::Creeper {
             self.tick_swell();

@@ -3,7 +3,9 @@
 //! The built-ins mirror `LivingEntity.travel` (flight, water, lava, elytra,
 //! land). A mod adds its own (a dodge, a wall run) with
 //! [`PlayerState::register_move_state`]; the first active state by priority
-//! moves the player.
+//! moves the player. A mod state has a [`MoveState::server_id`] and runs
+//! only once the server allows it (`melon:movement`); its start is
+//! reported back for the server's grace.
 
 use glam::DVec3;
 
@@ -101,6 +103,17 @@ pub trait MoveState: Send {
 
     /// One tick of movement.
     fn travel(&mut self, player: &mut PlayerState, env: &Travel);
+
+    /// The id a server must allow over `melon:movement`; vanilla's
+    /// states need none.
+    fn server_id(&self) -> Option<&'static str> {
+        None
+    }
+}
+
+/// A built-in, or a mod state the server allows.
+fn allowed(state: &dyn MoveState, player: &PlayerState) -> bool {
+    state.server_id().is_none_or(|id| player.move_allowed(id))
 }
 
 /// The registered states, by priority.
@@ -126,7 +139,9 @@ impl MoveStates {
 
     pub(in super::super) fn update(&mut self, player: &mut PlayerState, env: &Travel) {
         for state in &mut self.0 {
-            state.update(player, env);
+            if allowed(state.as_ref(), player) {
+                state.update(player, env);
+            }
         }
     }
 
@@ -139,7 +154,7 @@ impl MoveStates {
         let at = self
             .0
             .iter()
-            .position(|s| s.active(player, env))
+            .position(|s| allowed(s.as_ref(), player) && s.active(player, env))
             .unwrap_or(self.0.len().saturating_sub(1));
         self.0.get_mut(at)
     }
@@ -195,6 +210,10 @@ mod tests {
         fn travel(&mut self, player: &mut PlayerState, env: &Travel) {
             player.travel_on_land(env);
         }
+
+        fn server_id(&self) -> Option<&'static str> {
+            Some("example:dodge")
+        }
     }
 
     fn settle(player: &mut PlayerState, level: &Level) {
@@ -212,23 +231,41 @@ mod tests {
         assert_eq!(player.move_mode(), MoveMode::Walk);
     }
 
+    const DODGE: MoveInput = MoveInput {
+        forward: 0.0,
+        strafe: 1.0,
+        jump: false,
+        sprint: false,
+        sneak: true,
+    };
+
     #[test]
-    fn a_registered_state_takes_over_and_hands_back() {
+    fn an_allowed_state_takes_over_reports_its_start_and_hands_back() {
+        let level = floor();
+        let mut player = PlayerState::new(DVec3::new(0.5, 64.0, 0.5));
+        player.register_move_state(Box::new(Dodge { ticks: 0 }));
+        player.set_allowed_moves(vec!["example:dodge".into()]);
+        settle(&mut player, &level);
+        let start = player.feet();
+        player.tick(DODGE, &level, 20, SPRINT_WINDOW_DEFAULT);
+        assert_eq!(player.move_mode(), MoveMode::Custom("example:dodge"));
+        assert!((player.feet() - start).length() > 0.3, "{}", player.feet());
+        assert_eq!(player.take_started_moves(), ["example:dodge"]);
+        player.tick(MoveInput::default(), &level, 20, SPRINT_WINDOW_DEFAULT);
+        assert!(player.take_started_moves().is_empty(), "one start per dodge");
+        settle(&mut player, &level);
+        assert_eq!(player.move_mode(), MoveMode::Walk);
+    }
+
+    #[test]
+    fn a_state_the_server_did_not_allow_never_runs() {
         let level = floor();
         let mut player = PlayerState::new(DVec3::new(0.5, 64.0, 0.5));
         player.register_move_state(Box::new(Dodge { ticks: 0 }));
         settle(&mut player, &level);
-        let start = player.feet();
-        let dodge = MoveInput {
-            strafe: 1.0,
-            sneak: true,
-            ..MoveInput::default()
-        };
-        player.tick(dodge, &level, 20, SPRINT_WINDOW_DEFAULT);
-        assert_eq!(player.move_mode(), MoveMode::Custom("example:dodge"));
-        assert!((player.feet() - start).length() > 0.3, "{}", player.feet());
-        settle(&mut player, &level);
+        player.tick(DODGE, &level, 20, SPRINT_WINDOW_DEFAULT);
         assert_eq!(player.move_mode(), MoveMode::Walk);
+        assert!(player.take_started_moves().is_empty());
     }
 
     #[test]
