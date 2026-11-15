@@ -14,6 +14,7 @@ mod gui_uniforms;
 mod indirect;
 mod mesh_arena;
 pub(crate) mod pack_outline;
+mod picture;
 mod pipeline;
 pub mod post;
 pub mod quad;
@@ -31,6 +32,7 @@ mod vk_util;
 
 use device_info::read_device_info;
 pub use gpu_timer::PassStats;
+pub use picture::{PictureDraw, pixel_projection};
 pub use swapchain::FIFO_LATEST_READY;
 use vk_util::{
     PassStart, choose_surface_format, create_buffer, create_depth_image, create_render_pass,
@@ -157,6 +159,8 @@ pub struct Renderer {
     pack_outline: Option<pack_outline::PackOutline>,
     /// A frame asked for by [`Renderer::request_capture`].
     capture: capture::Capture,
+    /// Targets of [`PictureDraw`]s.
+    pictures: picture::Pictures,
 }
 
 /// The swapchain and what is sized with it, rebuilt together (see
@@ -466,6 +470,7 @@ impl Drop for Renderer {
             self.post
                 .destroy(&self.device, &|t| free_effect_texture(&device, pools, t));
             self.textures.descriptor_pools.destroy(&self.device);
+            self.pictures.destroy(&self.device);
             self.device.destroy_render_pass(self.render_pass, None);
             self.device.destroy_render_pass(self.overwrite_pass, None);
             self.device.destroy_render_pass(self.split_pass, None);

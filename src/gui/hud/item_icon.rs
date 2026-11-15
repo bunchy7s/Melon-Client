@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use glam::{Mat3, Vec2, Vec3};
-use image::{Rgba, RgbaImage};
+use image::RgbaImage;
 use pumpkin_data::item_stack::ItemStack;
 
 use crate::assets::json_model::{Display, TextureCache};
@@ -15,6 +15,7 @@ use crate::math::angle::Rotation;
 use crate::renderer::quad::DrawList;
 use crate::renderer::{Renderer, TextureId};
 use crate::world::block_entity::models::SkullType;
+use crate::world::glint::GlintUv;
 use crate::world::head_profile::HeadProfile;
 use crate::world::item_model::{self, Count, ItemKey, ItemModel, ItemQuad};
 use crate::world::texture_animation;
@@ -496,6 +497,11 @@ fn gui_light(normal: Vec3, front: bool) -> f32 {
 }
 
 /// Fills one triangle with the nearest texel, keeping the nearest surface
+/// (`depth`, larger is nearer) and blending see-through texels over what is
+/// there.
+///
+/// Each barycentric weight is a linear function of the pixel, worked out
+/// once per triangle; pixels are read and written in the buffers directly.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_triangle(
     out: &mut RgbaImage,
@@ -508,121 +514,150 @@ pub(crate) fn draw_triangle(
     glint: Option<&RgbaImage>,
 ) {
     let area = (p[1].x - p[0].x) * (p[2].y - p[0].y) - (p[2].x - p[0].x) * (p[1].y - p[0].y);
-    if area.abs() < 1.0e-6 {
+    if area.abs() < 1.0e-6 || texture.width() == 0 || texture.height() == 0 {
         return;
     }
     let (w, h) = (out.width() as i32, out.height() as i32);
-    let min_x = p
-        .iter()
-        .map(|v| v.x)
+    let xs = [p[0].x, p[1].x, p[2].x];
+    let ys = [p[0].y, p[1].y, p[2].y];
+    let min_x = xs
+        .into_iter()
         .fold(f32::INFINITY, f32::min)
         .floor()
         .max(0.0) as i32;
-    let max_x = p
-        .iter()
-        .map(|v| v.x)
+    let max_x = xs
+        .into_iter()
         .fold(f32::NEG_INFINITY, f32::max)
         .ceil()
         .min(w as f32) as i32;
-    let min_y = p
-        .iter()
-        .map(|v| v.y)
+    let min_y = ys
+        .into_iter()
         .fold(f32::INFINITY, f32::min)
         .floor()
         .max(0.0) as i32;
-    let max_y = p
-        .iter()
-        .map(|v| v.y)
+    let max_y = ys
+        .into_iter()
         .fold(f32::NEG_INFINITY, f32::max)
         .ceil()
         .min(h as f32) as i32;
-    let (tw, th) = (texture.width() as f32, texture.height() as f32);
+    if min_x >= max_x || min_y >= max_y {
+        return;
+    }
+    // Weight `i` at `(px, py)` is `c[i] + a[i] * px + b[i] * py`: the edge
+    // opposite corner `i` over the area.
+    let inv = 1.0 / area;
+    let edge = |j: usize, k: usize| {
+        (
+            (p[j].y - p[k].y) * inv,
+            (p[k].x - p[j].x) * inv,
+            (p[j].x * p[k].y - p[k].x * p[j].y) * inv,
+        )
+    };
+    let (a0, b0, c0) = edge(1, 2);
+    let (a1, b1, c1) = edge(2, 0);
+    let (tw, th) = (texture.width() as usize, texture.height() as usize);
+    let texels = texture.as_raw();
+    let glint = glint.map(|g| {
+        let millis = crate::world::glint::millis();
+        (g, GlintUv::new(crate::world::glint::ARMOR_SCALE, millis))
+    });
+    let lit = tint.map(|t| f32::from(t) / 255.0 * shade);
+    let width = w as usize;
+    let pixels: &mut [u8] = out;
     for y in min_y..max_y {
-        for x in min_x..max_x {
-            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-            let w0 = ((p[1].x - px) * (p[2].y - py) - (p[2].x - px) * (p[1].y - py)) / area;
-            let w1 = ((p[2].x - px) * (p[0].y - py) - (p[0].x - px) * (p[2].y - py)) / area;
+        let py = y as f32 + 0.5;
+        let (row0, row1) = (c0 + b0 * py, c1 + b1 * py);
+        let Some((from, to)) = row_span(
+            [(row0, a0), (row1, a1), (1.0 - row0 - row1, -a0 - a1)],
+            (min_x, max_x),
+        ) else {
+            continue;
+        };
+        for x in from..to {
+            let px = x as f32 + 0.5;
+            let w0 = row0 + a0 * px;
+            let w1 = row1 + a1 * px;
             let w2 = 1.0 - w0 - w1;
             if w0 < -1.0e-4 || w1 < -1.0e-4 || w2 < -1.0e-4 {
                 continue;
             }
             let z = w0 * p[0].z + w1 * p[1].z + w2 * p[2].z;
-            let index = (y * w + x) as usize;
+            let index = y as usize * width + x as usize;
             // `GL_LEQUAL`: a layer at the same depth (an armor trim on its
             // armor, the leather overlay) draws over the one before.
             if z < depth[index] {
                 continue;
             }
             let t = uv[0] * w0 + uv[1] * w1 + uv[2] * w2;
-            let tx = ((t.x * tw) as i32).clamp(0, tw as i32 - 1) as u32;
-            let ty = ((t.y * th) as i32).clamp(0, th as i32 - 1) as u32;
-            let texel = texture.get_pixel(tx, ty);
+            let tx = ((t.x * tw as f32) as i32).clamp(0, tw as i32 - 1) as usize;
+            let ty = ((t.y * th as f32) as i32).clamp(0, th as i32 - 1) as usize;
+            let at = (ty * tw + tx) * 4;
+            let texel = &texels[at..at + 4];
             if texel[3] < 26 {
                 continue;
             }
-            let lit = |c: u8, t: u8| f32::from(c) * f32::from(t) / 255.0 * shade;
-            let color = [
-                lit(texel[0], tint[0]),
-                lit(texel[1], tint[1]),
-                lit(texel[2], tint[2]),
-            ];
+            let color = [0, 1, 2].map(|i| f32::from(texel[i]) * lit[i]);
+            let pixel = &mut pixels[index * 4..index * 4 + 4];
             if texel[3] == 255 {
                 depth[index] = z;
-                out.put_pixel(
-                    x as u32,
-                    y as u32,
-                    Rgba([
-                        color[0].round() as u8,
-                        color[1].round() as u8,
-                        color[2].round() as u8,
-                        255,
-                    ]),
-                );
-                add_glint(out, x as u32, y as u32, t, glint);
-                continue;
+                for i in 0..3 {
+                    pixel[i] = to_byte(color[i]);
+                }
+                pixel[3] = 255;
+            } else {
+                let alpha = f32::from(texel[3]) / 255.0;
+                let below_alpha = f32::from(pixel[3]) / 255.0;
+                let total = alpha + below_alpha * (1.0 - alpha);
+                for i in 0..3 {
+                    let below = f32::from(pixel[i]) * below_alpha * (1.0 - alpha);
+                    pixel[i] = to_byte((color[i] * alpha + below) / total);
+                }
+                pixel[3] = to_byte(total * 255.0);
             }
-            let alpha = f32::from(texel[3]) / 255.0;
-            let below = out.get_pixel(x as u32, y as u32);
-            let below_alpha = f32::from(below[3]) / 255.0;
-            let total = alpha + below_alpha * (1.0 - alpha);
-            let mix = |c: f32, b: u8| {
-                ((c * alpha + f32::from(b) * below_alpha * (1.0 - alpha)) / total).round() as u8
-            };
-            out.put_pixel(
-                x as u32,
-                y as u32,
-                Rgba([
-                    mix(color[0], below[0]),
-                    mix(color[1], below[1]),
-                    mix(color[2], below[2]),
-                    (total * 255.0).round() as u8,
-                ]),
-            );
-            add_glint(out, x as u32, y as u32, t, glint);
+            if let Some((glint, at)) = &glint {
+                add_glint(pixel, at.at(t), glint);
+            }
         }
     }
 }
 
+/// The pixels `from..to` of `bounds` a row may cover: where every weight,
+/// `row + step * (x + 0.5)`, can still be at least the inside tolerance.
+/// A pixel wider each side, so the exact test per pixel decides.
+fn row_span(weights: [(f32, f32); 3], (min_x, max_x): (i32, i32)) -> Option<(i32, i32)> {
+    let (mut lo, mut hi) = (min_x as f32, max_x as f32);
+    for (row, step) in weights {
+        // `row + step * px >= -1e-4`.
+        let edge = (-1.0e-4 - row) / step;
+        if step > 0.0 {
+            lo = lo.max(edge - 0.5);
+        } else if step < 0.0 {
+            hi = hi.min(edge - 0.5);
+        } else if row < -1.0e-4 {
+            return None;
+        }
+    }
+    let from = (lo.floor() as i32 - 1).max(min_x);
+    let to = (hi.ceil() as i32 + 2).min(max_x);
+    (from < to).then_some((from, to))
+}
+
+/// `v.round() as u8` for `v >= 0`, without the `roundf` call `round`
+/// becomes on CPUs before SSE 4.1. Saturates at 255 as the cast does.
+#[inline]
+fn to_byte(v: f32) -> u8 {
+    (v + 0.5) as u8
+}
+
 /// `BlendFunction.GLINT`: `dst + src * src` of the scrolling armor glint.
-fn add_glint(out: &mut RgbaImage, x: u32, y: u32, uv: Vec2, glint: Option<&RgbaImage>) {
-    let Some(glint) = glint else {
-        return;
-    };
-    let sample = crate::world::glint::sample(
-        glint,
-        crate::world::glint::uv(
-            uv,
-            crate::world::glint::ARMOR_SCALE,
-            crate::world::glint::millis(),
-        ),
-    );
+fn add_glint(pixel: &mut [u8], uv: Vec2, glint: &RgbaImage) {
+    let sample = crate::world::glint::sample(glint, uv);
     if sample[3] < 26 {
         return;
     }
-    let pixel = out.get_pixel_mut(x, y);
     for i in 0..3 {
         let src = f32::from(sample[i]) / 255.0;
-        pixel[i] = (f32::from(pixel[i]) + src * src * 255.0).min(255.0).round() as u8;
+        pixel[i] = to_byte(f32::from(pixel[i]) + src * src * 255.0);
     }
 }
 

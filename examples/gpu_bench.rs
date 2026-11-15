@@ -331,6 +331,7 @@ fn run(event_loop: &ActiveEventLoop) -> anyhow::Result<()> {
                     ui_size: (width as f32, heights as f32),
                     clear_color: [0.5, 0.7, 1.0, 1.0],
                     blur,
+                    pictures: &[],
                 })?;
                 let waits = renderer.last_waits();
                 let cpu = started

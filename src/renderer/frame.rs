@@ -15,6 +15,9 @@ pub struct Frame<'a> {
     pub clear_color: [f32; 4],
     /// Blur what was drawn before a point in the UI list, then draw the rest
     pub blur: Option<Blur>,
+    /// Drawn before everything else, into their own textures, which `ui`
+    /// shows.
+    pub pictures: &'a [super::PictureDraw],
 }
 
 /// `Screen.extractBlurredBackground`: the frame so far, blurred, under a menu.

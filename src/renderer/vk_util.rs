@@ -164,6 +164,9 @@ pub(super) enum PassStart {
     SceneSplit,
     /// What follows a post chain: loads what the chain left in colour and
     Resume,
+    /// A [`super::PictureDraw`]'s own target: clears, and leaves the colour
+    /// as an attachment for the barrier that hands it to the UI.
+    Picture,
 }
 
 pub(super) unsafe fn create_render_pass(
@@ -173,7 +176,9 @@ pub(super) unsafe fn create_render_pass(
     start: PassStart,
 ) -> anyhow::Result<vk::RenderPass> {
     let load_op = match start {
-        PassStart::Clear | PassStart::SceneSplit => vk::AttachmentLoadOp::CLEAR,
+        PassStart::Clear | PassStart::SceneSplit | PassStart::Picture => {
+            vk::AttachmentLoadOp::CLEAR
+        }
         PassStart::Overwrite => vk::AttachmentLoadOp::DONT_CARE,
         PassStart::Resume => vk::AttachmentLoadOp::LOAD,
     };
@@ -191,7 +196,11 @@ pub(super) unsafe fn create_render_pass(
         } else {
             vk::ImageLayout::UNDEFINED
         })
-        .final_layout(vk::ImageLayout::PRESENT_SRC_KHR);
+        .final_layout(if start == PassStart::Picture {
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+        } else {
+            vk::ImageLayout::PRESENT_SRC_KHR
+        });
     let depth_attachment = vk::AttachmentDescription::default()
         .format(depth_format)
         .samples(vk::SampleCountFlags::TYPE_1)

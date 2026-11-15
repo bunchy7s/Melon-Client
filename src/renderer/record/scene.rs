@@ -559,7 +559,7 @@ impl Renderer {
     }
 
     /// Glint overlay: item atlas at set 0 (the alpha mask), glint texture
-    unsafe fn bind_glint_pass(
+    pub(in crate::renderer) unsafe fn bind_glint_pass(
         &self,
         cmd: vk::CommandBuffer,
         item: TextureId,

@@ -129,6 +129,7 @@ impl RunningState {
             ui_size: size,
             clear_color: crate::gui::background::CLEAR_COLOR,
             blur,
+            pictures: &[],
         };
         if let Err(e) = self.renderer.render(&frame) {
             self.device_lost |= render_failed(&e);
@@ -328,6 +329,7 @@ impl RunningState {
             ui_size: size,
             clear_color: world.sky_clear_color(),
             blur,
+            pictures: world.pictures(),
         };
         if let Err(e) = self.renderer.render(&frame) {
             self.device_lost |= render_failed(&e);

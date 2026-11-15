@@ -201,6 +201,7 @@ impl Renderer {
         }
 
         self.gpu_timer.mark(&self.device, "upload");
+        self.record_pictures(cmd, frame.pictures);
 
         let clear_values = [
             vk::ClearValue {

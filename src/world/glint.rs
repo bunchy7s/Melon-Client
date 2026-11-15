@@ -49,11 +49,38 @@ pub fn millis() -> f32 {
 
 /// `TextureTransform.setupGlintTexturing` on a model's UV.
 pub fn uv(uv: Vec2, scale: f32, millis: f32) -> Vec2 {
-    let o0 = millis.rem_euclid(110_000.0) / 110_000.0;
-    let o1 = millis.rem_euclid(30_000.0) / 30_000.0;
-    let (s, c) = (std::f32::consts::PI / 18.0).sin_cos();
-    let p = uv * scale;
-    Vec2::new(p.x * c - p.y * s, p.x * s + p.y * c) + Vec2::new(-o0, o1)
+    GlintUv::new(scale, millis).at(uv)
+}
+
+/// [`uv`] worked out once for many texels of one moment.
+#[derive(Clone, Copy, Debug)]
+pub struct GlintUv {
+    sin: f32,
+    cos: f32,
+    scale: f32,
+    offset: Vec2,
+}
+
+impl GlintUv {
+    pub fn new(scale: f32, millis: f32) -> Self {
+        let o0 = millis.rem_euclid(110_000.0) / 110_000.0;
+        let o1 = millis.rem_euclid(30_000.0) / 30_000.0;
+        let (sin, cos) = (std::f32::consts::PI / 18.0).sin_cos();
+        Self {
+            sin,
+            cos,
+            scale,
+            offset: Vec2::new(-o0, o1),
+        }
+    }
+
+    pub fn at(&self, uv: Vec2) -> Vec2 {
+        let p = uv * self.scale;
+        Vec2::new(
+            p.x * self.cos - p.y * self.sin,
+            p.x * self.sin + p.y * self.cos,
+        ) + self.offset
+    }
 }
 
 /// A wrapping sample of `texture` at `uv`.

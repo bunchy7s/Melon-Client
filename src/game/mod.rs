@@ -739,6 +739,7 @@ impl InWorld {
         self.cracks.clear(renderer);
         self.clear_particles(renderer);
         self.outline.clear(renderer);
+        self.preview.release(renderer);
     }
 
     /// What this frame is cleared to: the fog's colour, as vanilla clears

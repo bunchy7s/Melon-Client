@@ -205,6 +205,7 @@ impl Renderer {
         let resume_pass =
             create_render_pass(&device, surface_format, depth_format, PassStart::Resume)?;
         let post = super::post::gpu::Post::new(&device, surface_format)?;
+        let pictures = super::picture::Pictures::new(&device, surface_format, depth_format)?;
 
         let descriptor_set_layout = pipeline::create_descriptor_set_layout(&device)?;
         let sky_pass = pipeline::sky::create(&device, render_pass, descriptor_set_layout)?;
@@ -501,6 +502,7 @@ impl Renderer {
             gui_uniforms,
             pack_outline: None,
             capture: Default::default(),
+            pictures,
             sky_cube: super::SkyCube {
                 buffer: sky_vertex_buffer,
                 memory: sky_vertex_memory,

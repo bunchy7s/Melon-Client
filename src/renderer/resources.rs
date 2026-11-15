@@ -133,7 +133,7 @@ impl Renderer {
     }
 
     /// Stores a new texture: in the next slot to reuse, else a freed one,
-    fn put_texture(&mut self, tex: texture::Texture) -> TextureId {
+    pub(super) fn put_texture(&mut self, tex: texture::Texture) -> TextureId {
         let id = if let Some(id) = self.textures.reuse.pop_front() {
             self.retire(id);
             id
@@ -152,6 +152,7 @@ impl Renderer {
 
     /// Puts the white texture in slot `id` and destroys what was there
     fn retire(&mut self, id: TextureId) {
+        self.retire_picture(id);
         let mut white = self.textures.list[self.textures.white.0];
         white.shared = true;
         let old = std::mem::replace(&mut self.textures.list[id.0], white);
@@ -217,6 +218,7 @@ impl Renderer {
     /// Destroys the retired textures no frame in flight can still use.
     pub(super) fn destroy_retired_textures(&mut self) {
         self.destroy_retired(false);
+        self.destroy_retired_pictures(false);
     }
 
     /// With `all`, also the ones retired in the last frames: only once the
@@ -261,6 +263,7 @@ impl Renderer {
                 return;
             }
             self.destroy_retired(true);
+            self.destroy_retired_pictures(true);
             let super::Textures {
                 list,
                 cubemaps,

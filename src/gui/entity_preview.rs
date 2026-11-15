@@ -104,6 +104,35 @@ pub fn rasterize(
     rasterize_layers(&[layer], width, height)
 }
 
+/// What [`rasterize_layers`] draws `layers` from, hashed: the same
+/// signature, the same picture. `None` when a layer shimmers, whose glint
+/// moves on every frame.
+pub fn signature(layers: &[PreviewLayer], width: u32, height: u32) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    if layers.iter().any(|layer| layer.glint.is_some()) {
+        return None;
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (width, height).hash(&mut hasher);
+    for layer in layers {
+        for matrix in layer.model.part_matrices(layer.pose, layer.root) {
+            match matrix {
+                Some(matrix) => matrix.to_cols_array().map(f32::to_bits).hash(&mut hasher),
+                None => 0u8.hash(&mut hasher),
+            }
+        }
+        std::ptr::from_ref(layer.model).hash(&mut hasher);
+        layer.texture.dimensions().hash(&mut hasher);
+        layer.texture.as_raw().hash(&mut hasher);
+        layer.tint.hash(&mut hasher);
+        let parts = |parts: &[PartId]| parts.iter().map(|p| p.0).collect::<Vec<_>>();
+        parts(layer.skip).hash(&mut hasher);
+        layer.only.map(parts).hash(&mut hasher);
+        layer.share_depth.hash(&mut hasher);
+    }
+    Some(hasher.finish())
+}
+
 /// The layers over one another, first at the back. A layer with
 pub fn rasterize_layers(layers: &[PreviewLayer], width: u32, height: u32) -> RgbaImage {
     let mut out = RgbaImage::new(width, height);

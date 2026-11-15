@@ -1,42 +1,92 @@
-//! The player in an inventory's box, turned toward the mouse: drawn into a
+//! The player in an inventory's box (or the mount in its screen's),
+//! turned toward the mouse. Drawn on the GPU into a picture of its own,
+//! as vanilla's `GuiEntityRenderer` does; on the CPU only where that
+//! picture can't be made.
 
 use std::collections::HashMap;
 
-use glam::Vec3;
+use glam::{IVec3, Mat4, Vec3};
 use image::RgbaImage;
 
 use super::InWorld;
+use super::entities::{Avatar, submit_avatar};
+use super::entity_models::DrawStyle;
 use super::world_resources::WorldResources;
 use crate::gui::entity_preview::{self, EntityPreview, PreviewLayer};
-use crate::renderer::{Renderer, TextureId};
+use crate::renderer::{
+    EntityDraw, Glint, PictureDraw, RenderLayer, Renderer, TextureId, pixel_projection,
+};
 use crate::settings::options::Config;
 use crate::world::block_entity::models::SkullType;
 use crate::world::entity::kind::EntityKind;
 use crate::world::entity::mobs;
 use crate::world::entity::mobs::custom_head::HeadTransforms;
 use crate::world::entity::model::PartId;
-use crate::world::entity::player::PlayerModel;
+use crate::world::entity::player::{AvatarRenderState, PlayerModel};
 use crate::world::head_profile::HeadProfile;
+use crate::world::player::hands::Hand;
 
 /// `Avatar.STANDING_DIMENSIONS`' and `POSES[CROUCHING]`'s heights.
 const STANDING_HEIGHT: f32 = 1.8;
 const CROUCHING_HEIGHT: f32 = 1.5;
+/// How far before and behind the box's middle a picture reaches, in blocks.
+const PICTURE_DEPTH: f32 = 4.0;
 
 #[derive(Default)]
 pub struct PreviewTextures {
+    /// The GPU picture the preview is drawn into.
+    picture: Option<TextureId>,
+    /// This frame's draws into it, for the renderer.
+    picture_draw: Option<PictureDraw>,
+    /// No picture could be made: drawn on the CPU from then on.
+    cpu_only: bool,
+    /// The CPU pictures' textures, by size.
     by_size: HashMap<(u32, u32), TextureId>,
-    /// The picture last written, and where.
+    /// The CPU picture last written, and where.
     last: Option<(TextureId, RgbaImage)>,
+    /// What it was drawn from ([`entity_preview::signature`]).
+    signature: Option<u64>,
     /// This frame's, if the overlay shows one.
     pub current: Option<TextureId>,
     /// The mob textures drawn so far, decoded (`None`: not there).
     mob_images: HashMap<String, Option<RgbaImage>>,
 }
 
+impl PreviewTextures {
+    /// The pictures the renderer draws this frame.
+    pub fn pictures(&self) -> &[PictureDraw] {
+        self.picture_draw.as_slice()
+    }
+
+    /// Frees the textures, on leaving the world.
+    pub fn release(&mut self, renderer: &mut Renderer) {
+        for texture in self
+            .picture
+            .into_iter()
+            .chain(self.by_size.values().copied())
+        {
+            renderer.free_texture(texture);
+        }
+        *self = Self::default();
+    }
+}
+
+/// A CPU picture: unchanged since the last, or drawn anew with what it was
+/// drawn from.
+enum Drawn {
+    Same,
+    New(RgbaImage, Option<u64>),
+}
+
 impl InWorld {
     /// The own profile id.
     pub fn profile_id(&self) -> uuid::Uuid {
         self.uuid
+    }
+
+    /// The pictures the renderer draws this frame.
+    pub fn pictures(&self) -> &[PictureDraw] {
+        self.preview.pictures()
     }
 
     /// Draws the player for the open overlay's box, if it has one.
@@ -47,18 +97,98 @@ impl InWorld {
         config: &Config,
         gui_scale: u32,
     ) {
+        self.preview.picture_draw = None;
         let Some(preview) = self.overlay.as_ref().and_then(|o| o.entity_preview()) else {
             self.preview.current = None;
             return;
         };
         let scale = gui_scale.max(1) as f32;
-        let image = match preview.entity {
-            Some(id) => self.mob_preview(assets, &preview, id, scale),
-            None => Some(self.player_preview(assets, config, &preview, scale)),
-        };
-        let Some(image) = image else {
-            self.preview.current = None;
+        if !self.preview.cpu_only && self.prepare_picture(renderer, assets, config, &preview, scale)
+        {
             return;
+        }
+        self.prepare_cpu_preview(renderer, assets, config, &preview, scale);
+    }
+
+    /// The preview as a GPU picture. `false` when no picture can be made.
+    fn prepare_picture(
+        &mut self,
+        renderer: &mut Renderer,
+        assets: &WorldResources,
+        config: &Config,
+        preview: &EntityPreview,
+        scale: f32,
+    ) -> bool {
+        let mut entities = Vec::new();
+        let view = match preview.entity {
+            Some(id) => self.mob_draws(assets, preview, id, scale, &mut entities),
+            None => Some(self.player_draws(assets, config, preview, scale, &mut entities)),
+        };
+        let Some(view) = view else {
+            self.preview.current = None;
+            return true;
+        };
+        let (width, height) = preview.pixels(scale);
+        let kept = self
+            .preview
+            .picture
+            .filter(|&t| renderer.picture_size(t) == Some((width, height)));
+        let target = match kept {
+            Some(target) => target,
+            None => {
+                if let Some(old) = self.preview.picture.take() {
+                    renderer.free_texture(old);
+                }
+                match renderer.create_picture(width, height) {
+                    Ok(target) => {
+                        self.preview.picture = Some(target);
+                        target
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "Spielervorschau nicht auf der GPU, zeichne sie auf der CPU: {e:#}"
+                        );
+                        self.preview.cpu_only = true;
+                        return false;
+                    }
+                }
+            }
+        };
+        let depth = scale * preview.size * PICTURE_DEPTH;
+        self.preview.picture_draw = Some(PictureDraw {
+            target,
+            view_proj: pixel_projection(width, height, depth) * view,
+            entities,
+            glint_armor: Some(assets.glint_armor),
+            glint_item: Some(assets.glint_item),
+        });
+        self.preview.current = Some(target);
+        true
+    }
+
+    /// The preview drawn on the CPU, uploaded when it changed.
+    fn prepare_cpu_preview(
+        &mut self,
+        renderer: &mut Renderer,
+        assets: &WorldResources,
+        config: &Config,
+        preview: &EntityPreview,
+        scale: f32,
+    ) {
+        let drawn = match preview.entity {
+            Some(id) => self.mob_preview(assets, preview, id, scale),
+            None => Some(self.player_preview(assets, config, preview, scale)),
+        };
+        let (image, signature) = match drawn {
+            None => {
+                self.preview.current = None;
+                return;
+            }
+            Some(Drawn::Same) => {
+                self.preview.current = self.preview.last.as_ref().map(|(at, _)| *at);
+                return;
+            }
+            Some(Drawn::New(image, signature)) => (image, signature),
         };
         let (width, height) = (image.width(), image.height());
         let previews = &mut self.preview;
@@ -86,21 +216,31 @@ impl InWorld {
             },
         };
         previews.last = Some((texture, image));
+        previews.signature = signature;
         previews.current = Some(texture);
     }
-}
 
-impl InWorld {
-    /// The own player turned toward the mouse, skin then worn armor.
-    fn player_preview(
-        &mut self,
-        assets: &WorldResources,
+    /// Whether the CPU picture of `layers` is the one shown last, and what
+    /// it is drawn from.
+    fn cpu_picture(&self, layers: &[PreviewLayer], width: u32, height: u32) -> Drawn {
+        let signature = entity_preview::signature(layers, width, height);
+        if signature.is_some() && signature == self.preview.signature && self.preview.last.is_some()
+        {
+            return Drawn::Same;
+        }
+        Drawn::New(
+            entity_preview::rasterize_layers(layers, width, height),
+            signature,
+        )
+    }
+
+    /// The own player as the preview shows it: turned toward the mouse,
+    /// and its height.
+    fn preview_avatar_state(
+        &self,
         config: &Config,
         preview: &EntityPreview,
-        scale: f32,
-    ) -> RgbaImage {
-        let look = assets.players.for_profile(self.uuid);
-        let player = &look.model.model;
+    ) -> (AvatarRenderState, f32) {
         let partial = self.tick_time / crate::world::player::TICK;
         let arms = self.arm_poses(config.main_hand);
         let swing = self.swing_pose(config.main_hand, partial);
@@ -117,6 +257,93 @@ impl InWorld {
         } else {
             STANDING_HEIGHT
         };
+        (state, height)
+    }
+
+    /// The own player's draws, as the world draws it (`submit_avatar`):
+    /// skin, armor, worn head and the items in hand, at full light. The
+    /// preview's view.
+    fn player_draws(
+        &self,
+        assets: &WorldResources,
+        config: &Config,
+        preview: &EntityPreview,
+        scale: f32,
+        out: &mut Vec<EntityDraw>,
+    ) -> Mat4 {
+        let (state, height) = self.preview_avatar_state(config, preview);
+        let hands = Hand::ALL.map(|hand| {
+            let stack = self.hand_stack(hand);
+            let using = self.hands.using_in(hand).is_some();
+            (stack, self.held_use(hand, stack, using))
+        });
+        let avatar = Avatar {
+            state,
+            look: assets.players.for_profile(self.uuid),
+            main_arm: config.main_hand,
+            hands,
+            armor: self.own_armor(),
+            light: [1.0; 3],
+            overlay: mobs::hurt_overlay(self.own_hurt > 0 || self.own_death > 0),
+        };
+        submit_avatar(assets, &avatar, IVec3::ZERO, RenderLayer::Entities, out);
+        preview.view(scale, height)
+    }
+
+    /// A tracked mob's draws, layer by layer as [`Self::mob_preview`] has
+    /// them, and the preview's view. `None` once it is gone.
+    fn mob_draws(
+        &self,
+        assets: &WorldResources,
+        preview: &EntityPreview,
+        id: i32,
+        scale: f32,
+        out: &mut Vec<EntityDraw>,
+    ) -> Option<Mat4> {
+        let entity = self.entities.get(id)?;
+        let (specs, input) = mob_specs(assets, entity, preview, true);
+        let root = mobs::root(entity, &input, 1.0);
+        for (layer, pose) in specs.iter().zip(pose_layers(assets, &specs, &input)) {
+            let (mob, meshes) = assets.mobs.get(layer.model);
+            let Some(texture) = assets.mobs.texture(&layer.texture) else {
+                continue;
+            };
+            let matrices = mob.model.part_matrices(&pose, root);
+            let first = out.len();
+            meshes.draws(
+                &matrices,
+                IVec3::ZERO,
+                DrawStyle {
+                    texture,
+                    layer: RenderLayer::Entities,
+                    light: Some(layer.tint),
+                    overlay: 0.0,
+                    glint: Glint::armor(layer.foil),
+                },
+                out,
+            );
+            if layer.translucent {
+                for draw in &mut out[first..] {
+                    draw.blend = crate::renderer::Blending::Translucent;
+                }
+            }
+        }
+        Some(preview.view(scale, entity.size().1))
+    }
+}
+
+impl InWorld {
+    /// The own player turned toward the mouse, skin then worn armor.
+    fn player_preview(
+        &mut self,
+        assets: &WorldResources,
+        config: &Config,
+        preview: &EntityPreview,
+        scale: f32,
+    ) -> Drawn {
+        let look = assets.players.for_profile(self.uuid);
+        let player = &look.model.model;
+        let (state, height) = self.preview_avatar_state(config, preview);
         let root = preview.view(scale, height) * PlayerModel::root_transform(&state);
         let pose = player.pose(&state);
         let overlay = player.overlay_parts();
@@ -246,52 +473,26 @@ impl InWorld {
             }
         }
         let (width, height) = preview.pixels(scale);
-        entity_preview::rasterize_layers(&layers, width, height)
+        self.cpu_picture(&layers, width, height)
     }
 
     /// A tracked mob turned toward the mouse, layer by layer (a horse's
+    /// armor over its body), drawn on the CPU.
     fn mob_preview(
         &mut self,
         assets: &WorldResources,
         preview: &EntityPreview,
         id: i32,
         scale: f32,
-    ) -> Option<RgbaImage> {
+    ) -> Option<Drawn> {
         let entity = self.entities.get(id)?;
-        let mut specs = Vec::new();
-        mobs::layers(entity, 0.0, &|id| assets.mobs.hat(id), &mut specs);
-        specs.retain(|layer| !layer.translucent);
-        let mut input = mobs::pose_input(entity, 1.0);
-        let (x_angle, y_angle) = preview.angles();
-        input.living.position = Vec3::ZERO;
-        input.living.body_rot = x_angle * 20.0;
-        input.living.y_rot = x_angle * 20.0;
-        input.living.x_rot = -y_angle * 20.0;
-        input.living.walk_position = 0.0;
-        input.living.walk_speed = 0.0;
-        input.living.riding = false;
+        let (specs, input) = mob_specs(assets, entity, preview, false);
         let root = preview.view(scale, entity.size().1) * mobs::root(entity, &input, 1.0);
-        let mut posed = Vec::new();
-        let mut body_pose: Option<(&mobs::MobModel, crate::world::entity::model::ModelPose)> = None;
-        for layer in &specs {
-            let (mob, _) = assets.mobs.get(layer.model);
-            let pose = if layer.copy_humanoid {
-                body_pose
-                    .as_ref()
-                    .and_then(|(from_mob, from_pose)| {
-                        let parts = from_mob.humanoid()?;
-                        mob.humanoid()?;
-                        Some(mobs::pose_worn((&from_mob.model, parts, from_pose), mob))
-                    })
-                    .unwrap_or_else(|| mob.model.initial_pose())
-            } else {
-                mob.pose(&input)
-            };
-            if body_pose.is_none() {
-                body_pose = Some((mob, pose.clone()));
-            }
-            posed.push((mob, pose));
-        }
+        let posed: Vec<_> = specs
+            .iter()
+            .zip(pose_layers(assets, &specs, &input))
+            .map(|(layer, pose)| (assets.mobs.get(layer.model).0, pose))
+            .collect();
         for layer in &specs {
             let images = &mut self.preview.mob_images;
             images
@@ -324,6 +525,60 @@ impl InWorld {
             })
             .collect();
         let (width, height) = preview.pixels(scale);
-        Some(entity_preview::rasterize_layers(&layers, width, height))
+        Some(self.cpu_picture(&layers, width, height))
     }
+}
+
+/// The layers of `entity` the preview shows (the see-through ones only
+/// with `translucent`: the CPU can't blend them in order), and its pose
+/// turned toward the mouse.
+fn mob_specs(
+    assets: &WorldResources,
+    entity: &crate::world::entity::tracker::ClientEntity,
+    preview: &EntityPreview,
+    translucent: bool,
+) -> (Vec<mobs::LayerSpec>, mobs::PoseInput) {
+    let mut specs = Vec::new();
+    mobs::layers(entity, 0.0, &|id| assets.mobs.hat(id), &mut specs);
+    specs.retain(|layer| translucent || !layer.translucent);
+    let mut input = mobs::pose_input(entity, 1.0);
+    let (x_angle, y_angle) = preview.angles();
+    input.living.position = Vec3::ZERO;
+    input.living.body_rot = x_angle * 20.0;
+    input.living.y_rot = x_angle * 20.0;
+    input.living.x_rot = -y_angle * 20.0;
+    input.living.walk_position = 0.0;
+    input.living.walk_speed = 0.0;
+    input.living.riding = false;
+    (specs, input)
+}
+
+/// Each layer's pose: its own, or for worn armor the body's it copies.
+fn pose_layers(
+    assets: &WorldResources,
+    specs: &[mobs::LayerSpec],
+    input: &mobs::PoseInput,
+) -> Vec<crate::world::entity::model::ModelPose> {
+    let mut posed = Vec::with_capacity(specs.len());
+    let mut body_pose: Option<(&mobs::MobModel, crate::world::entity::model::ModelPose)> = None;
+    for layer in specs {
+        let (mob, _) = assets.mobs.get(layer.model);
+        let pose = if layer.copy_humanoid {
+            body_pose
+                .as_ref()
+                .and_then(|(from_mob, from_pose)| {
+                    let parts = from_mob.humanoid()?;
+                    mob.humanoid()?;
+                    Some(mobs::pose_worn((&from_mob.model, parts, from_pose), mob))
+                })
+                .unwrap_or_else(|| mob.model.initial_pose())
+        } else {
+            mob.pose(input)
+        };
+        if body_pose.is_none() {
+            body_pose = Some((mob, pose.clone()));
+        }
+        posed.push(pose);
+    }
+    posed
 }
