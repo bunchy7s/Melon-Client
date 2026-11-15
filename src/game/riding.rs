@@ -1,4 +1,5 @@
 //! Riding pipe: collect how the vehicle steers, drive it, seat the rider,
+//! then tell the server.
 
 use super::{InWorld, melon_yaw, minecraft_yaw};
 use crate::network::play::game::PlayerCommand;
@@ -6,6 +7,7 @@ use crate::world::entity::boat_sim::BoatInput;
 use crate::world::entity::horse_sim::HorseInput;
 use crate::world::entity::kind::EntityKind;
 use crate::world::entity::ride::{JumpCharge, Steering};
+use crate::world::entity::tracker::DriveInput;
 use crate::world::inventory::OFFHAND_SLOT;
 use crate::world::player::MoveInput;
 
@@ -13,8 +15,6 @@ use crate::world::player::MoveInput;
 #[derive(Default)]
 pub struct RideState {
     pub jump: JumpCharge,
-    /// The paddles the server was last told about.
-    paddles: (bool, bool),
 }
 
 impl InWorld {
@@ -39,7 +39,8 @@ impl InWorld {
             .send_player_command(PlayerCommand::OpenInventory);
     }
 
-    /// One riding tick, after the entities have moved: collect steering,
+    /// One riding tick, after the entities have moved: steer the vehicle,
+    /// seat the rider on it, then the jump charge and the paddles.
     pub(super) fn tick_ride(&mut self, input: MoveInput) {
         let steering = self.steering();
         self.drive_vehicle(input, steering);
@@ -47,30 +48,33 @@ impl InWorld {
         self.send_ride_packets(input, riding);
     }
 
-    /// The vehicle's own motion from the rider's keys (a boat's paddles,
+    /// The vehicle's own motion from the rider's keys: a boat's paddles or
+    /// a horse's walk. Any other steering hands the vehicle back to the
+    /// server.
     fn drive_vehicle(&mut self, input: MoveInput, steering: Option<Steering>) {
-        let paddles = (steering == Some(Steering::Paddles))
-            .then(|| Steering::Paddles.controls().filter(input))
-            .map(|keys| BoatInput {
-                left: keys.strafe < 0.0,
-                right: keys.strafe > 0.0,
-                up: keys.forward > 0.0,
-                down: keys.forward < 0.0,
-            });
-        self.entities.drive_boat(&self.level, paddles);
-        let horse = (steering == Some(Steering::Horse)).then(|| {
-            let keys = Steering::Horse.controls().filter(input);
-            HorseInput::from_keys(
-                keys.forward,
-                keys.strafe,
-                minecraft_yaw(self.player.yaw()),
-                self.player.pitch() * 0.5,
-            )
+        let drive = steering.and_then(|steering| {
+            let keys = steering.controls().filter(input);
+            match steering {
+                Steering::Paddles => Some(DriveInput::Boat(BoatInput {
+                    left: keys.strafe < 0.0,
+                    right: keys.strafe > 0.0,
+                    up: keys.forward > 0.0,
+                    down: keys.forward < 0.0,
+                })),
+                Steering::Horse => Some(DriveInput::Horse(HorseInput::from_keys(
+                    keys.forward,
+                    keys.strafe,
+                    minecraft_yaw(self.player.yaw()),
+                    self.player.pitch() * 0.5,
+                ))),
+                _ => None,
+            }
         });
-        self.entities.drive_horse(&self.level, horse);
+        self.entities.drive(&self.level, drive);
     }
 
     /// The player stays on its seat (`Entity.positionRider`). `None` when
+    /// it rides nothing.
     fn seat_on_vehicle(&mut self, steering: Option<Steering>) -> Option<Steering> {
         let (steering, seat) = match (steering, self.entities.own_seat()) {
             (Some(steering), Some(seat)) => (steering, seat),
@@ -103,23 +107,12 @@ impl InWorld {
                 .session
                 .send_player_command_with(PlayerCommand::StartRidingJump, strength);
         }
-        self.send_paddles(steering, keys);
-        self.status.jump_bar = self.jump_bar();
-    }
-
-    /// `AbstractBoat.controlBoat`'s paddle state, sent when it changes:
-    fn send_paddles(&mut self, steering: Steering, keys: MoveInput) {
-        let paddles = if steering == Steering::Paddles {
-            let (left, right) = (keys.strafe < 0.0, keys.strafe > 0.0);
-            let ahead = keys.forward > 0.0;
-            (right && !left || ahead, left && !right || ahead)
-        } else {
-            (false, false)
-        };
-        if paddles != self.ride.paddles {
-            self.ride.paddles = paddles;
-            self.joined.session.send_paddle_boat(paddles.0, paddles.1);
+        // `AbstractBoat.tick` sends the paddles every tick it steers the
+        // boat, ahead of the move; a server reads them as the rowing.
+        if let Some((left, right)) = self.entities.driven_vehicle().and_then(|v| v.paddles) {
+            self.joined.session.send_paddle_boat(left, right);
         }
+        self.status.jump_bar = self.jump_bar();
     }
 
     /// The mount, if it is a horse-like one, for the HUD's jump bar.

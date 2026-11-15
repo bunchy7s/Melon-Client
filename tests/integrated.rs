@@ -948,6 +948,8 @@ fn summoned_mobs_are_tracked() {
 struct MobWorld {
     world: TestWorld,
     entities: melon::world::entity::tracker::Entities,
+    /// Every `ClientboundMoveVehicle`: where the server put the vehicle back.
+    vehicle_resets: Vec<[f64; 3]>,
 }
 
 impl MobWorld {
@@ -965,6 +967,7 @@ impl MobWorld {
         let mut this = Self {
             world,
             entities: Default::default(),
+            vehicle_resets: Vec::new(),
         };
         this.feed(joined);
         std::thread::sleep(std::time::Duration::from_secs(1));
@@ -976,8 +979,12 @@ impl MobWorld {
         use melon::network::play::game::GameEvent;
         let own = self.world.session.info.entity_id;
         for event in events {
-            if let WorldEvent::Game(GameEvent::Entity(packet)) = event {
-                self.entities.apply(packet, own);
+            match event {
+                WorldEvent::Game(GameEvent::Entity(packet)) => self.entities.apply(packet, own),
+                WorldEvent::Game(GameEvent::MoveVehicle { pos, .. }) => {
+                    self.vehicle_resets.push(pos);
+                }
+                _ => {}
             }
         }
     }
@@ -1135,6 +1142,58 @@ fn a_click_boards_a_boat_and_sneaking_gets_off() {
             .send_command(&format!("kill @e[type=minecraft:{name}]"));
         mobs.wait(&format!("the {name} gone"), |e| e.get(id).is_none());
     }
+}
+
+/// The boat the player steers goes where its client says, within what
+/// the server's checks allow: a short paddle is taken and seen by the
+/// boat's watchers, a jump far off is put back with
+/// `ClientboundMoveVehicle`, and the paddles rest once nobody rows.
+#[test]
+#[ignore = "starts an integrated server"]
+fn a_steered_boat_follows_its_client_until_it_jumps() {
+    use melon::network::play::game::PlayerInput;
+    use melon::world::entity::kind::EntityKind;
+    use melon::world::player::hands::Hand;
+
+    let mut mobs = MobWorld::open("boat", "Rower");
+    let id = mobs.summon("oak_boat", EntityKind::Boat);
+    mobs.world
+        .session
+        .send_interact(id, Hand::Main, [0.0, 0.2, 0.0], false);
+    mobs.wait("the boat boarded", |e| e.own_vehicle() == Some(id));
+    // The server takes the boat's moves from the tick after boarding.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let at = mobs.entities.get(id).unwrap().tick_pos();
+    let near = [at.x + 0.3, at.y + 0.5, at.z];
+    mobs.world.session.send_paddle_boat(true, false);
+    mobs.world.session.send_move_vehicle(near, 0.0, 0.0, false);
+    mobs.wait("the boat followed", |e| {
+        let boat = e.get(id).unwrap();
+        (boat.tick_pos().x - near[0]).abs() < 1e-3 && boat.appearance.paddles == (true, false)
+    });
+    assert!(mobs.vehicle_resets.is_empty(), "{:?}", mobs.vehicle_resets);
+
+    let far = [near[0] + 50.0, near[1], near[2]];
+    mobs.world.session.send_move_vehicle(far, 0.0, 0.0, false);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while mobs.vehicle_resets.is_empty() {
+        assert!(
+            std::time::Instant::now() < until,
+            "the jump wasn't put back"
+        );
+        mobs.wait("a tick", |_| true);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let back = mobs.vehicle_resets[0];
+    assert!((back[0] - near[0]).abs() < 1e-3, "{back:?} {near:?}");
+
+    mobs.world.session.send_player_input(PlayerInput {
+        sneak: true,
+        ..Default::default()
+    });
+    mobs.wait("off the boat, the paddles at rest", |e| {
+        e.own_vehicle().is_none() && e.get(id).unwrap().appearance.paddles == (false, false)
+    });
 }
 
 /// A creative world and the menu the server has open, kept the way the

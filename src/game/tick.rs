@@ -329,11 +329,7 @@ impl InWorld {
                 false,
                 false,
             );
-            if let Some((pos, yaw, pitch, on_ground)) = self.entities.driven_vehicle() {
-                self.joined
-                    .session
-                    .send_move_vehicle(pos, yaw, pitch, on_ground);
-            }
+            self.send_move_vehicle();
             return;
         }
         let feet = self.player.feet();
@@ -352,6 +348,19 @@ impl InWorld {
             Some(Report::Rot) => session.send_rotation(yaw, pitch, on_ground, wall),
             Some(Report::StatusOnly) => session.send_status_only(on_ground, wall),
             None => {}
+        }
+    }
+
+    /// `ServerboundMoveVehiclePacket.fromEntity` for the vehicle the player
+    /// steers; nothing when the server moves it.
+    pub(super) fn send_move_vehicle(&self) {
+        if let Some(vehicle) = self.entities.driven_vehicle() {
+            self.joined.session.send_move_vehicle(
+                vehicle.pos.to_array(),
+                vehicle.yaw,
+                vehicle.pitch,
+                vehicle.on_ground,
+            );
         }
     }
 }

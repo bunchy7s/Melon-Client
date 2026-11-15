@@ -67,6 +67,9 @@ pub struct BoatSim {
     /// `deltaMovement`, blocks a tick.
     pub velocity: DVec3,
     pub on_ground: bool,
+    /// `DATA_ID_PADDLE_LEFT`/`RIGHT` as `controlBoat` sets them: what
+    /// `ServerboundPaddleBoatPacket` reports.
+    pub paddles: (bool, bool),
 }
 
 impl Default for BoatSim {
@@ -80,6 +83,7 @@ impl Default for BoatSim {
             delta_rotation: 0.0,
             velocity: DVec3::ZERO,
             on_ground: false,
+            paddles: (false, false),
         }
     }
 }
@@ -263,6 +267,7 @@ impl BoatSim {
             0.0,
             f64::from(cos(body.yaw * DEG_TO_RAD) * acceleration),
         );
+        self.paddles = input.paddles();
     }
 
     /// `Entity.move(MoverType.SELF, deltaMovement)`: against the blocks

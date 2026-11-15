@@ -59,6 +59,7 @@ pub mod id {
     pub const SB_MOVE_PLAYER_POS: i32 = 30;
     pub const SB_MOVE_PLAYER_STATUS_ONLY: i32 = 33;
     pub const SB_MOVE_PLAYER_ROT: i32 = sb::MOVE_PLAYER_ROT.0;
+    pub const CB_MOVE_VEHICLE: i32 = cb::MOVE_VEHICLE.0;
     pub const SB_MOVE_VEHICLE: i32 = sb::MOVE_VEHICLE.0;
     pub const SB_PADDLE_BOAT: i32 = sb::PADDLE_BOAT.0;
     pub const SB_SET_CARRIED_ITEM: i32 = 54;

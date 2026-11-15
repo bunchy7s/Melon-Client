@@ -408,6 +408,15 @@ impl InWorld {
                     self.inventory.select(slot as u8);
                 }
             }
+            GameEvent::MoveVehicle { pos, yaw, pitch } => {
+                // `handleMoveVehicle` answers at once with where it is now.
+                if self
+                    .entities
+                    .snap_driven(glam::DVec3::from_array(pos), yaw, pitch)
+                {
+                    self.send_move_vehicle();
+                }
+            }
             GameEvent::GameMode(mode) => {
                 self.set_game_mode(mode, None);
             }

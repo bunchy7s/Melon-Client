@@ -12,12 +12,10 @@ pub struct Entities {
     /// The dimension turns piglins into zombified ones
     piglins_zombify: bool,
     /// The vehicle the local player rides, and the local player's id, which
-    own_vehicle: Option<i32>,
-    own_id: i32,
-    /// The boat the local player steers, and its physics: the client moves
-    boat: Option<(i32, boat_sim::BoatSim)>,
-    /// The saddled horse the local player steers, likewise.
-    horse: Option<(i32, horse_sim::HorseSim)>,
+    pub(super) own_vehicle: Option<i32>,
+    pub(super) own_id: i32,
+    /// The vehicle the local player steers, and its simulation.
+    pub(super) driven: Option<super::drive::Driven>,
     /// Passenger lists whose vehicle has not spawned yet.
     pending_passengers: HashMap<i32, Vec<i32>, crate::math::ChunkHash>,
     /// Items flying into hands, and the sounds of them being taken.
@@ -151,14 +149,8 @@ impl Entities {
     pub fn clear(&mut self) {
         self.by_id.clear();
         self.own_vehicle = None;
-        self.boat = None;
-        self.horse = None;
+        self.driven = None;
         self.pending_passengers.clear();
-    }
-
-    fn steers_vehicle(&self, id: i32) -> bool {
-        self.boat.as_ref().is_some_and(|(boat, _)| *boat == id)
-            || self.horse.as_ref().is_some_and(|(horse, _)| *horse == id)
     }
 
     /// A newly spawned entity: apply a queued passenger list, and sit it
@@ -189,8 +181,7 @@ impl Entities {
     pub(super) fn remove(&mut self, id: i32) {
         self.pending_passengers.remove(&id);
         if self.steers_vehicle(id) {
-            self.boat = None;
-            self.horse = None;
+            self.driven = None;
         }
         let Some(gone) = self.by_id.remove(&id) else {
             return;
@@ -276,133 +267,6 @@ impl Entities {
     #[cfg(test)]
     pub(super) fn set_own_vehicle_for_test(&mut self, vehicle: Option<i32>) {
         self.own_vehicle = vehicle;
-    }
-
-    /// `AbstractBoat.tick` for the boat the local player steers, once a
-    pub fn drive_boat(&mut self, level: &Level, input: Option<boat_sim::BoatInput>) {
-        let boat = self
-            .own_vehicle
-            .and_then(|id| Some((id, self.by_id.get(&id)?)))
-            .filter(|(_, e)| e.kind == EntityKind::Boat)
-            .filter(|(_, e)| e.passengers.first() == Some(&self.own_id));
-        let (Some((id, entity)), Some(input)) = (boat, input) else {
-            if let Some((id, _)) = self.boat.take()
-                && let Some(entity) = self.by_id.get_mut(&id)
-            {
-                entity.base = entity.pos;
-                entity.lerp = None;
-            }
-            return;
-        };
-        let (width, height) = entity.size();
-        let mut body = boat_sim::BoatBody {
-            pos: entity.pos,
-            yaw: entity.yaw,
-            width: f64::from(width),
-            height: f64::from(height),
-        };
-        let near = Aabb::at_feet(body.pos, body.width, body.height).deflate(-3.0);
-        let colliders = self.colliders_near(&near, body.pos.y);
-        let velocity = entity.velocity;
-        let sim = match &mut self.boat {
-            Some((boat, sim)) if *boat == id => sim,
-            slot => &mut slot.insert((id, boat_sim::BoatSim::new(velocity))).1,
-        };
-        sim.tick(level, &colliders, &mut body, input);
-        let on_ground = sim.on_ground;
-        if let Some(entity) = self.by_id.get_mut(&id) {
-            entity.pos = body.pos;
-            entity.yaw = body.yaw;
-            entity.base = body.pos;
-            entity.lerp = None;
-            entity.on_ground = on_ground;
-        }
-        self.position_riders();
-    }
-
-    /// `AbstractHorse.travelRidden` for the horse the local player steers.
-    pub fn drive_horse(&mut self, level: &Level, input: Option<horse_sim::HorseInput>) {
-        let horse = self
-            .own_vehicle
-            .and_then(|id| Some((id, self.by_id.get(&id)?)))
-            .filter(|(_, e)| e.kind.is_equine())
-            .filter(|(_, e)| e.passengers.first() == Some(&self.own_id));
-        let (Some((id, entity)), Some(input)) = (horse, input) else {
-            if let Some((id, _)) = self.horse.take()
-                && let Some(entity) = self.by_id.get_mut(&id)
-            {
-                entity.base = entity.pos;
-                entity.lerp = None;
-            }
-            return;
-        };
-        let (width, height) = entity.size();
-        let mut body = horse_sim::HorseBody {
-            pos: entity.pos,
-            yaw: entity.yaw,
-            pitch: entity.pitch,
-            width: f64::from(width),
-            height: f64::from(height),
-            speed: entity.movement_speed,
-            jump_strength: entity.jump_strength,
-            step_height: entity.step_height,
-        };
-        let rearing = entity.appearance.horse_rearing();
-        let baby = entity.appearance.baby;
-        let near = Aabb::at_feet(body.pos, body.width, body.height).deflate(-3.0);
-        let colliders = self.colliders_near(&near, body.pos.y);
-        let velocity = entity.velocity;
-        let sim = match &mut self.horse {
-            Some((horse, sim)) if *horse == id => sim,
-            slot => &mut slot.insert((id, horse_sim::HorseSim::new(velocity))).1,
-        };
-        sim.tick(level, &colliders, &mut body, input, rearing);
-        let on_ground = sim.on_ground;
-        let velocity = sim.velocity;
-        if let Some(entity) = self.by_id.get_mut(&id) {
-            let moved = body.pos - entity.pos;
-            let distance = (moved.x * moved.x + moved.z * moved.z).sqrt() as f32;
-            entity.walk.tick(distance, baby);
-            entity.pos = body.pos;
-            entity.yaw = body.yaw;
-            entity.pitch = body.pitch;
-            entity.body = body.yaw;
-            entity.head = body.yaw;
-            entity.base = body.pos;
-            entity.lerp = None;
-            entity.on_ground = on_ground;
-            entity.velocity = velocity;
-        }
-        self.position_riders();
-    }
-
-    /// `PlayerRideableJumping.onPlayerJump` on the steered horse.
-    pub fn horse_jump(&mut self, power: i32) {
-        if let Some((_, sim)) = &mut self.horse {
-            sim.on_player_jump(power);
-        }
-    }
-
-    /// Where the steered boat is, for `ServerboundMoveVehicle`: its place,
-    pub fn driven_boat(&self) -> Option<([f64; 3], f32, bool)> {
-        let (id, sim) = self.boat.as_ref()?;
-        let entity = self.by_id.get(id)?;
-        Some((entity.pos.to_array(), entity.yaw, sim.on_ground))
-    }
-
-    /// The boat or horse the player steers, for `ServerboundMoveVehicle`.
-    pub fn driven_vehicle(&self) -> Option<([f64; 3], f32, f32, bool)> {
-        if let Some((pos, yaw, on_ground)) = self.driven_boat() {
-            return Some((pos, yaw, 0.0, on_ground));
-        }
-        let (id, sim) = self.horse.as_ref()?;
-        let entity = self.by_id.get(id)?;
-        Some((
-            entity.pos.to_array(),
-            entity.yaw,
-            entity.pitch,
-            sim.on_ground,
-        ))
     }
 
     pub fn own_vehicle(&self) -> Option<i32> {
@@ -497,7 +361,7 @@ impl Entities {
     }
 
     /// `Entity.rideTick`'s second half, for every tracked rider: they stay
-    fn position_riders(&mut self) {
+    pub(super) fn position_riders(&mut self) {
         for _ in 0..3 {
             let moves: Vec<RiderMove> = self
                 .by_id

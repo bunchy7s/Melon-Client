@@ -74,6 +74,13 @@ pub enum GameEvent {
     },
     /// `ClientboundSetHeldSlotPacket`.
     HeldSlot(i32),
+    /// `ClientboundMoveVehiclePacket`: the server puts the vehicle the
+    /// player steers back where it has it.
+    MoveVehicle {
+        pos: [f64; 3],
+        yaw: f32,
+        pitch: f32,
+    },
     /// `ClientboundGameEventPacket` `NO_RESPAWN_BLOCK_AVAILABLE`: the bed
     NoRespawnBlock,
     /// A packet Melon reads and has no use for yet.
@@ -362,6 +369,11 @@ pub fn decode(pid: i32, body: &[u8]) -> Result<Option<GameEvent>> {
             item: r.item_stack()?,
         },
         id::CB_SET_HELD_SLOT => GameEvent::HeldSlot(r.var_int()?),
+        id::CB_MOVE_VEHICLE => GameEvent::MoveVehicle {
+            pos: [r.f64_be()?, r.f64_be()?, r.f64_be()?],
+            yaw: r.f32_be()?,
+            pitch: r.f32_be()?,
+        },
         id::CB_INITIALIZE_BORDER => GameEvent::Border(BorderUpdate::Initialize {
             center: (r.f64_be()?, r.f64_be()?),
             from: r.f64_be()?,

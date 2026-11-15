@@ -30,6 +30,7 @@ use crate::world::level::Level;
 use crate::world::physics::{self, Aabb};
 use crate::world::player::hands::{Hand, SwingState};
 
+mod drive;
 mod entities;
 mod movement;
 mod pickup;
@@ -39,6 +40,7 @@ mod push;
 mod tests;
 mod tick;
 
+pub use drive::{DriveInput, DrivenVehicle};
 pub use entities::Entities;
 
 /// `LivingEntity`'s interpolation and head lerp: three ticks to reach

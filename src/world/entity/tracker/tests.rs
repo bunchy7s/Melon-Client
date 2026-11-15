@@ -715,16 +715,18 @@ fn a_steered_boat_is_moved_by_the_client_and_not_by_the_server() {
         },
         99,
     );
-    let ahead = boat_sim::BoatInput {
+    let ahead = DriveInput::Boat(boat_sim::BoatInput {
         up: true,
         ..Default::default()
-    };
+    });
     for _ in 0..30 {
         entities.tick();
-        entities.drive_boat(&level, Some(ahead));
+        entities.drive(&level, Some(ahead));
     }
-    let (pos, _, _) = entities.driven_boat().expect("steered");
-    assert!(pos[2] > 8.0 + 2.0, "{pos:?}");
+    let driven = entities.driven_vehicle().expect("steered");
+    let pos = driven.pos;
+    assert!(pos.z > 8.0 + 2.0, "{pos}");
+    assert_eq!(driven.paddles, Some((true, true)), "both row ahead");
     entities.apply(
         EntityPacket::SetPosition(SetPosition {
             id: 1,
@@ -737,9 +739,23 @@ fn a_steered_boat_is_moved_by_the_client_and_not_by_the_server() {
         }),
         99,
     );
-    assert_eq!(entities.driven_boat().unwrap().0, pos);
-    entities.drive_boat(&level, None);
-    assert!(entities.driven_boat().is_none());
+    assert_eq!(entities.driven_vehicle().unwrap().pos, pos);
+    assert!(entities.snap_driven(DVec3::new(8.0, 62.5, 8.0), 0.0, 0.0));
+    assert_eq!(
+        entities.driven_vehicle().unwrap().pos,
+        DVec3::new(8.0, 62.5, 8.0),
+        "the server's correction holds"
+    );
+    for _ in 0..30 {
+        entities.tick();
+        entities.drive(&level, Some(ahead));
+    }
+    entities.drive(&level, None);
+    assert!(entities.driven_vehicle().is_none());
+    assert!(
+        !entities.snap_driven(DVec3::ZERO, 0.0, 0.0),
+        "nothing to snap"
+    );
     entities.apply(
         EntityPacket::Passengers {
             id: 1,
@@ -803,14 +819,21 @@ fn a_steered_horse_walks_on_the_client() {
         },
         99,
     );
-    let ahead = horse_sim::HorseInput::from_keys(1.0, 0.0, 0.0, 0.0);
+    let ahead = DriveInput::Horse(horse_sim::HorseInput::from_keys(1.0, 0.0, 0.0, 0.0));
+    let paddles = DriveInput::Boat(boat_sim::BoatInput::default());
+    entities.drive(&level, Some(paddles));
+    assert!(
+        entities.driven_vehicle().is_none(),
+        "a horse takes no paddles"
+    );
     for _ in 0..20 {
         entities.tick();
-        entities.drive_horse(&level, Some(ahead));
+        entities.drive(&level, Some(ahead));
     }
-    let (pos, yaw, _, _) = entities.driven_vehicle().expect("steered");
-    assert!(pos[2] > 8.0 + 1.5, "{pos:?}");
-    assert_eq!(yaw, 0.0);
+    let driven = entities.driven_vehicle().expect("steered");
+    let pos = driven.pos;
+    assert!(pos.z > 8.0 + 1.5, "{pos}");
+    assert_eq!((driven.yaw, driven.paddles), (0.0, None));
     entities.apply(
         EntityPacket::SetPosition(SetPosition {
             id: 1,
@@ -823,8 +846,8 @@ fn a_steered_horse_walks_on_the_client() {
         }),
         99,
     );
-    assert_eq!(entities.driven_vehicle().unwrap().0, pos);
-    entities.drive_horse(&level, None);
+    assert_eq!(entities.driven_vehicle().unwrap().pos, pos);
+    entities.drive(&level, None);
     assert!(entities.driven_vehicle().is_none());
 }
 
