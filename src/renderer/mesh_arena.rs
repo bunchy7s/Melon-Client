@@ -77,6 +77,13 @@ struct Block {
     free: FreeList,
 }
 
+impl Block {
+    /// No mesh in it, live or retired.
+    fn is_empty(&self) -> bool {
+        self.free.free == [(0, self.capacity)]
+    }
+}
+
 /// Where one mesh sits.
 #[derive(Clone, Copy)]
 pub struct Slot {
@@ -100,7 +107,12 @@ pub struct MeshArena {
     element_size: u64,
     /// Elements per block.
     block_elements: u32,
-    blocks: Vec<Block>,
+    /// By [`Slot::block`]; `None` where an empty block was destroyed, so
+    /// the indices of the others stay put.
+    blocks: Vec<Option<Block>>,
+    /// Buffers of blocks [`Self::record`] destroyed, for the caller to drop
+    /// what it keeps per buffer (descriptor sets).
+    destroyed: Vec<vk::Buffer>,
     /// By `MeshId`; `None` for a free id.
     slots: Vec<Option<Slot>>,
     free_ids: Vec<usize>,
@@ -130,6 +142,7 @@ impl MeshArena {
             element_size,
             block_elements: (BLOCK_BYTES / element_size) as u32,
             blocks: Vec::new(),
+            destroyed: Vec::new(),
             slots: Vec::new(),
             free_ids: Vec::new(),
             retired: Vec::new(),
@@ -166,26 +179,52 @@ impl MeshArena {
         self.index.map_or(vk::Buffer::null(), |(buffer, _)| buffer)
     }
 
+    /// The mesh's slot; `None` for a free id or an empty mesh, which has
+    /// nothing to draw and no block.
     pub fn slot(&self, id: usize) -> Option<Slot> {
-        self.slots.get(id).copied().flatten()
+        self.slots
+            .get(id)
+            .copied()
+            .flatten()
+            .filter(|slot| slot.count > 0)
     }
 
-    /// Every block's buffer, oldest first.
+    /// Every block's buffer.
     pub fn buffers(&self) -> impl Iterator<Item = vk::Buffer> + '_ {
-        self.blocks.iter().map(|block| block.buffer)
+        self.blocks.iter().flatten().map(|block| block.buffer)
+    }
+
+    /// Buffers of the blocks destroyed since the last call.
+    pub fn take_destroyed(&mut self) -> Vec<vk::Buffer> {
+        std::mem::take(&mut self.destroyed)
     }
 
     /// The buffer a slot is in and its first element there.
     pub fn location(&self, slot: Slot) -> (vk::Buffer, u32) {
-        (self.blocks[slot.block].buffer, slot.offset)
+        let block = self.blocks[slot.block]
+            .as_ref()
+            .expect("a live mesh's block is kept");
+        (block.buffer, slot.offset)
+    }
+
+    /// Bytes of a block of the usual size.
+    #[cfg(test)]
+    pub(super) fn block_bytes(&self) -> u64 {
+        u64::from(self.block_elements) * self.element_size
     }
 
     /// Total and used bytes of the blocks, for F3.
     pub fn usage(&self) -> (u64, u64) {
-        let total: u64 = self.blocks.iter().map(|b| u64::from(b.capacity)).sum();
+        let total: u64 = self
+            .blocks
+            .iter()
+            .flatten()
+            .map(|b| u64::from(b.capacity))
+            .sum();
         let free: u64 = self
             .blocks
             .iter()
+            .flatten()
             .flat_map(|b| b.free.free.iter())
             .map(|&(_, len)| u64::from(len))
             .sum();
@@ -229,11 +268,10 @@ impl MeshArena {
                 count: 0,
             }
         } else {
-            let found = self
-                .blocks
-                .iter_mut()
-                .enumerate()
-                .find_map(|(i, block)| block.free.alloc(count).map(|offset| (i, offset)));
+            let found = self.blocks.iter_mut().enumerate().find_map(|(i, block)| {
+                let offset = block.as_mut()?.free.alloc(count)?;
+                Some((i, offset))
+            });
             let (block, offset) = match found {
                 Some(found) => found,
                 None => {
@@ -247,16 +285,32 @@ impl MeshArena {
                     )?;
                     let mut free = FreeList::new(capacity);
                     let offset = free.alloc(count).expect("a new block fits its mesh");
-                    self.blocks.push(Block {
+                    let block = Some(Block {
                         buffer,
                         memory,
                         capacity,
                         free,
                     });
-                    (self.blocks.len() - 1, offset)
+                    let index = match self.blocks.iter().position(Option::is_none) {
+                        Some(index) => {
+                            self.blocks[index] = block;
+                            index
+                        }
+                        None => {
+                            self.blocks.push(block);
+                            self.blocks.len() - 1
+                        }
+                    };
+                    (index, offset)
                 }
             };
-            let dst = self.blocks[block].buffer;
+            let dst = self
+                .location(Slot {
+                    block,
+                    offset,
+                    count,
+                })
+                .0;
             self.queue_copy(
                 dst,
                 u64::from(offset) * self.element_size,
@@ -323,24 +377,17 @@ impl MeshArena {
         }
     }
 
-    /// Releases retired slots no frame in flight can still draw, then
+    /// Releases retired slots no frame in flight can still draw and
+    /// destroys blocks left empty, then
     pub unsafe fn record(
         &mut self,
         device: &ash::Device,
         mem_props: &vk::PhysicalDeviceMemoryProperties,
         cmd: vk::CommandBuffer,
         frame: usize,
-        frame_number: u64,
-        frames_in_flight: u64,
+        oldest_in_flight: u64,
     ) -> anyhow::Result<()> {
-        let blocks = &mut self.blocks;
-        self.retired.retain(|&(freed_at, slot)| {
-            let done = frame_number >= freed_at + frames_in_flight;
-            if done {
-                blocks[slot.block].free.release(slot.offset, slot.count);
-            }
-            !done
-        });
+        self.release_retired(device, oldest_in_flight);
         if self.pending.is_empty() {
             return Ok(());
         }
@@ -394,8 +441,56 @@ impl MeshArena {
         Ok(())
     }
 
+    /// Gives the space of slots freed before `oldest_in_flight` back to
+    /// their blocks and destroys the blocks that leaves empty, all but one
+    /// of the usual size: a spare, so meshes that come and go (entities,
+    /// a column at the edge of the render distance) don't allocate and
+    /// free 64 MiB over and over.
+    pub(super) unsafe fn release_retired(&mut self, device: &ash::Device, oldest_in_flight: u64) {
+        let blocks = &mut self.blocks;
+        let mut released = false;
+        self.retired.retain(|&(freed_at, slot)| {
+            let done = freed_at < oldest_in_flight;
+            if done {
+                if let Some(block) = &mut blocks[slot.block] {
+                    block.free.release(slot.offset, slot.count);
+                }
+                released = true;
+            }
+            !done
+        });
+        if !released {
+            return;
+        }
+        let mut spare = false;
+        let first_destroyed = self.destroyed.len();
+        for entry in &mut self.blocks {
+            let Some(block) = entry.as_ref().filter(|block| block.is_empty()) else {
+                continue;
+            };
+            if !spare && block.capacity == self.block_elements {
+                spare = true;
+                continue;
+            }
+            // Every mesh in it was last drawn by a frame that is done:
+            // nothing in flight reads the buffer any more.
+            device.destroy_buffer(block.buffer, None);
+            device.free_memory(block.memory, None);
+            self.destroyed.push(block.buffer);
+            *entry = None;
+        }
+        let gone = &self.destroyed[first_destroyed..];
+        if !gone.is_empty() {
+            // Uploads of meshes freed before a frame recorded them.
+            self.pending.retain(|copy| !gone.contains(&copy.dst));
+        }
+        while self.blocks.last().is_some_and(Option::is_none) {
+            self.blocks.pop();
+        }
+    }
+
     pub unsafe fn destroy(&mut self, device: &ash::Device) {
-        for block in self.blocks.drain(..) {
+        for block in self.blocks.drain(..).flatten() {
             device.destroy_buffer(block.buffer, None);
             device.free_memory(block.memory, None);
         }

@@ -237,11 +237,29 @@ struct Frames {
     current: usize,
     /// Frames rendered so far.
     number: u64,
+    /// By frame in flight: the [`Self::number`] of the frame it last
+    /// submitted, 0 once its fence was waited on.
+    submitted: [u64; MAX_FRAMES_IN_FLIGHT],
     /// Where the last [`Renderer::render`] waited.
     last_waits: FrameWaits,
     /// The post chains the last world frame ran, the entity outline's left
     /// out (`GameRenderer.getAppliedPostEffects`).
     applied_post_effects: Vec<String>,
+}
+
+impl Frames {
+    /// The oldest frame the GPU may still run: whatever only earlier frames
+    /// used can be reused or destroyed. Frames that end before they are
+    /// submitted (an allocation failing) count up [`Self::number`] without
+    /// taking a fence, so a count of frames since is not enough.
+    fn oldest_in_flight(&self) -> u64 {
+        self.submitted
+            .iter()
+            .copied()
+            .filter(|&n| n != 0)
+            .min()
+            .unwrap_or(u64::MAX)
+    }
 }
 
 /// What one [`Renderer::render`] spent blocked, for the F3 profiler.

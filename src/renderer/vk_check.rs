@@ -775,6 +775,87 @@ fn queued_texture_uploads_land_without_waiting() {
     );
 }
 
+/// Mesh blocks a world left behind are destroyed once no frame in flight
+/// can draw from them, all but one spare, and their descriptor sets go with
+/// them; later meshes fill the spare first, then get a new block.
+#[test]
+fn empty_mesh_blocks_are_released() {
+    use super::TerrainQuad;
+    use super::mesh_arena::{Kind, MeshArena};
+    use super::quad_table::{QuadSets, create_layout};
+
+    let _serial = serial();
+    messages().clear();
+    unsafe {
+        let gpu = Gpu::new().expect("Vulkan instance with validation");
+        let device = &gpu.device;
+        let mem_props = gpu
+            .instance
+            .get_physical_device_memory_properties(gpu.physical);
+        let mut arena =
+            MeshArena::new::<TerrainQuad>(device, &mem_props, 2, Kind::Quads).expect("arena");
+        let layout = create_layout(device).expect("quad set layout");
+        let mut sets = QuadSets::new(device).expect("quad sets");
+        let block_bytes = arena.block_bytes();
+        let per_block = (block_bytes / std::mem::size_of::<TerrainQuad>() as u64) as usize;
+        let quads = vec![TerrainQuad([0; 5]); per_block + 4];
+        let upload = |arena: &mut MeshArena, n: usize| {
+            arena
+                .upload(device, &mem_props, &quads[..n])
+                .expect("mesh upload")
+        };
+        let buffer = |arena: &MeshArena, id: usize| arena.location(arena.slot(id).unwrap()).0;
+
+        let full = upload(&mut arena, per_block);
+        let halves = [
+            upload(&mut arena, per_block / 2),
+            upload(&mut arena, per_block / 2),
+        ];
+        let oversized = upload(&mut arena, per_block + 4);
+        let empty = upload(&mut arena, 0);
+        assert_eq!(arena.slot(empty).map(|s| s.count), None, "nothing to draw");
+        assert_eq!(arena.buffers().count(), 3);
+        assert_eq!(buffer(&arena, halves[0]), buffer(&arena, halves[1]));
+        sets.sync(device, layout, arena.buffers()).expect("sets");
+        let spare = buffer(&arena, full);
+
+        for id in [full, halves[0], halves[1], oversized, empty] {
+            arena.free(id, 7);
+        }
+        arena.release_retired(device, 7);
+        assert_eq!(arena.buffers().count(), 3, "frame 7 may still draw them");
+        arena.release_retired(device, 8);
+        assert_eq!(arena.buffers().collect::<Vec<_>>(), vec![spare]);
+        assert_eq!(arena.usage(), (block_bytes, 0));
+        let gone = arena.take_destroyed();
+        assert_eq!(gone.len(), 2);
+        for &buffer in &gone {
+            assert!(sets.get(buffer).is_some());
+            sets.forget(device, buffer);
+            assert!(sets.get(buffer).is_none());
+        }
+        assert!(sets.get(spare).is_some());
+
+        let again = upload(&mut arena, per_block);
+        assert_eq!(buffer(&arena, again), spare, "the spare is filled first");
+        let more = upload(&mut arena, 4);
+        assert_ne!(buffer(&arena, more), spare);
+        sets.sync(device, layout, arena.buffers()).expect("sets");
+        assert!(sets.get(buffer(&arena, more)).is_some());
+        assert_eq!(arena.buffers().count(), 2);
+
+        sets.destroy(device);
+        device.destroy_descriptor_set_layout(layout, None);
+        arena.destroy(device);
+    }
+    let messages = messages();
+    assert!(
+        messages.is_empty(),
+        "Vulkan validation:\n{}",
+        messages.join("\n")
+    );
+}
+
 /// One level and layer of a sampled `R8G8B8A8` image, copied back to the
 /// host; leaves it in `SHADER_READ_ONLY_OPTIMAL` again.
 #[allow(clippy::too_many_arguments)]

@@ -94,6 +94,7 @@ impl Renderer {
         let started = Instant::now();
         let fence = self.frames.in_flight[self.frames.current];
         self.device.wait_for_fences(&[fence], true, u64::MAX)?;
+        self.frames.submitted[self.frames.current] = 0;
         self.frames.number += 1;
         self.destroy_retired_textures();
         waits.gpu = started.elapsed();
@@ -178,15 +179,19 @@ impl Renderer {
             &inits,
             &updates,
         )?;
+        let oldest_in_flight = self.frames.oldest_in_flight();
         for arena in [&mut self.meshes, &mut self.quad_meshes] {
             arena.record(
                 &self.device,
                 &self.mem_props,
                 cmd,
                 self.frames.current,
-                self.frames.number,
-                MAX_FRAMES_IN_FLIGHT as u64,
+                oldest_in_flight,
             )?;
+        }
+        self.meshes.take_destroyed();
+        for buffer in self.quad_meshes.take_destroyed() {
+            self.quad_sets.forget(&self.device, buffer);
         }
 
         self.gpu_timer.mark(&self.device, "upload");
@@ -310,6 +315,7 @@ impl Renderer {
             .command_buffers(&command_buffers)
             .signal_semaphores(&signal_semaphores);
         self.device.queue_submit(self.queue, &[submit], fence)?;
+        self.frames.submitted[self.frames.current] = self.frames.number;
         for arena in [&mut self.meshes, &mut self.quad_meshes] {
             arena.submitted();
         }

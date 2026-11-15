@@ -222,7 +222,7 @@ impl Renderer {
     /// With `all`, also the ones retired in the last frames: only once the
     /// device is idle.
     fn destroy_retired(&mut self, all: bool) {
-        let now = self.frames.number;
+        let oldest_in_flight = self.frames.oldest_in_flight();
         let device = &self.device;
         let pools = &self.textures.descriptor_pools;
         let (inits, updates) = (
@@ -230,7 +230,7 @@ impl Renderer {
             &mut self.textures.pending_updates,
         );
         self.textures.retired.retain(|(frame, tex)| {
-            if !all && now < frame + super::MAX_FRAMES_IN_FLIGHT as u64 + 1 {
+            if !all && *frame >= oldest_in_flight {
                 return true;
             }
             // Frames that end before recording (an out-of-date swapchain)

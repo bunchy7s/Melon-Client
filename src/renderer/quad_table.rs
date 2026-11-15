@@ -129,6 +129,7 @@ impl QuadSets {
         }];
         let pool = device.create_descriptor_pool(
             &vk::DescriptorPoolCreateInfo::default()
+                .flags(vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET)
                 .pool_sizes(&sizes)
                 .max_sets(MAX_QUAD_BUFFERS),
             None,
@@ -146,7 +147,10 @@ impl QuadSets {
         layout: vk::DescriptorSetLayout,
         buffers: impl Iterator<Item = vk::Buffer>,
     ) -> anyhow::Result<()> {
-        for buffer in buffers.skip(self.sets.len()) {
+        for buffer in buffers {
+            if self.get(buffer).is_some() {
+                continue;
+            }
             let set = device.allocate_descriptor_sets(
                 &vk::DescriptorSetAllocateInfo::default()
                     .descriptor_pool(self.pool)
@@ -175,6 +179,17 @@ impl QuadSets {
             .iter()
             .find(|&&(b, _)| b == buffer)
             .map(|&(_, set)| set)
+    }
+
+    /// Frees the set of a buffer that was destroyed: a new buffer may get
+    /// its handle. No frame in flight may still bind it.
+    pub unsafe fn forget(&mut self, device: &ash::Device, buffer: vk::Buffer) {
+        if let Some(i) = self.sets.iter().position(|&(b, _)| b == buffer) {
+            let (_, set) = self.sets.swap_remove(i);
+            if let Err(e) = device.free_descriptor_sets(self.pool, &[set]) {
+                eprintln!("Mesh-Deskriptor nicht freigegeben: {e}");
+            }
+        }
     }
 
     pub unsafe fn destroy(&self, device: &ash::Device) {

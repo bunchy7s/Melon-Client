@@ -481,6 +481,7 @@ impl Renderer {
                 images_in_flight: Vec::new(),
                 current: 0,
                 number: 0,
+                submitted: [0; super::MAX_FRAMES_IN_FLIGHT],
                 last_waits: super::FrameWaits::default(),
                 applied_post_effects: Vec::new(),
             },
