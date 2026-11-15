@@ -30,6 +30,8 @@ pub trait Bytes: Copy {
     fn lookup(self, table: &Self::Table, index: Self::V) -> Self::V;
     /// `out[i] = lo[i] | hi[i] << 8`, `out` being `LEN` words.
     fn store_words(self, lo: Self::V, hi: Self::V, out: &mut [u16]);
+    /// `out[i] = v[i]`, `out` being `LEN` bytes.
+    fn store_bytes(self, v: Self::V, out: &mut [u8]);
     /// Bit `i` set where lane `i` has bit `bit` (`0..8`) set.
     fn bit_mask(self, v: Self::V, bit: u32) -> u64;
 }

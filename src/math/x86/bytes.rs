@@ -213,6 +213,11 @@ impl Bytes for Ssse3Bytes {
     }
 
     #[inline(always)]
+    fn store_bytes(self, v: [u8; 16], out: &mut [u8]) {
+        out[..16].copy_from_slice(&v);
+    }
+
+    #[inline(always)]
     fn bit_mask(self, v: [u8; 16], bit: u32) -> u64 {
         // The bit to the top of each byte, where `pmovmskb` reads it.
         let s = self.sse2;
@@ -319,6 +324,11 @@ impl Bytes for Avx2Bytes {
         let second: [u8; 32] = concat(quarter(low, 1), quarter(high, 1));
         store_pairs(&first, &mut out[..16]);
         store_pairs(&second, &mut out[16..32]);
+    }
+
+    #[inline(always)]
+    fn store_bytes(self, v: [u8; 32], out: &mut [u8]) {
+        out[..32].copy_from_slice(&v);
     }
 
     #[inline(always)]
@@ -445,6 +455,11 @@ impl Bytes for VbmiBytes {
         let (a, b) = (bw.unpacklo_u8x64(lo, hi), bw.unpackhi_u8x64(lo, hi));
         store_pairs(&vbmi.permutex2var_u8x64(a, FIRST, b), &mut out[..32]);
         store_pairs(&vbmi.permutex2var_u8x64(a, SECOND, b), &mut out[32..64]);
+    }
+
+    #[inline(always)]
+    fn store_bytes(self, v: [u8; 64], out: &mut [u8]) {
+        out[..64].copy_from_slice(&v);
     }
 
     #[inline(always)]

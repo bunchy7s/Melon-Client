@@ -69,6 +69,7 @@ impl LightSection {
 #[derive(Clone, Debug)]
 pub struct ChunkLight {
     height: Height,
+    has_skylight: bool,
     pub sky: Vec<LightSection>,
     pub block: Vec<LightSection>,
 }
@@ -87,9 +88,21 @@ impl ChunkLight {
         let empty = vec![LightSection::Empty; height.light_sections()];
         Self {
             height,
+            has_skylight: true,
             sky: empty.clone(),
             block: empty,
         }
+    }
+
+    /// Whether this column has a sky light engine (overworld / end).
+    pub fn has_skylight(&self) -> bool {
+        self.has_skylight
+    }
+
+    /// Nether: stored sky is empty and reads as 0, including above the world.
+    pub fn disable_skylight(&mut self) {
+        self.has_skylight = false;
+        self.sky.fill(LightSection::Empty);
     }
 
     /// Sky light `level` in every world section of an overworld column
@@ -131,20 +144,50 @@ impl ChunkLight {
             .filter(|&i| i < self.height.light_sections())
     }
 
-    /// Block and sky at world `(x, y, z)`, 0 outside the column's range.
+    /// Block and sky at world `(x, y, z)`.
+    ///
+    /// Vanilla `SkyLightSectionStorage`: above the stored column, and the
+    /// extra empty padding section the engine never wrote, sky is 15 when
+    /// this dimension has a sky. Empty sections inside the world stay 0
+    /// (`empty_sky_mask` is zeros, not a null walk-up). Below the column
+    /// both channels are 0. No sky engine (nether) never yields 15.
     pub fn at(&self, x: i32, y: i32, z: i32) -> (u8, u8) {
-        let Some(i) = self.slot(y) else {
-            return (0, 0);
-        };
-        let (lx, ly, lz) = ((x & 15) as usize, (y & 15) as usize, (z & 15) as usize);
-        (self.block[i].get(lx, ly, lz), self.sky[i].get(lx, ly, lz))
+        match self.slot(y) {
+            Some(i) => {
+                let (lx, ly, lz) = ((x & 15) as usize, (y & 15) as usize, (z & 15) as usize);
+                (
+                    self.block[i].get(lx, ly, lz),
+                    self.sky_at_slot(i, lx, ly, lz),
+                )
+            }
+            None => (
+                0,
+                if y >= self.height.light_max_y() && self.has_skylight {
+                    15
+                } else {
+                    0
+                },
+            ),
+        }
     }
 
     /// One layer at world `(x, y, z)`: sky light for `sky`, block light
     pub fn layer_at(&self, sky: bool, x: i32, y: i32, z: i32) -> Option<u8> {
         let i = self.slot(y)?;
-        let layer = if sky { &self.sky } else { &self.block };
-        Some(layer[i].get((x & 15) as usize, (y & 15) as usize, (z & 15) as usize))
+        let (lx, ly, lz) = ((x & 15) as usize, (y & 15) as usize, (z & 15) as usize);
+        Some(if sky {
+            self.sky_at_slot(i, lx, ly, lz)
+        } else {
+            self.block[i].get(lx, ly, lz)
+        })
+    }
+
+    fn sky_at_slot(&self, slot: usize, x: usize, y: usize, z: usize) -> u8 {
+        match &self.sky[slot] {
+            LightSection::Data(_) => self.sky[slot].get(x, y, z),
+            LightSection::Empty if self.has_skylight && slot + 1 == self.sky.len() => 15,
+            LightSection::Empty => 0,
+        }
     }
 
     /// Writes one layer at world `(x, y, z)`. No-op outside the column.
@@ -388,7 +431,22 @@ mod tests {
         assert_eq!(light.at(0, -64, 0), (0, 15));
         assert_eq!(light.at(8, 64, 8), (0, 15));
         assert_eq!(light.at(0, -80, 0), (0, 0));
-        assert_eq!(light.at(0, 320, 0), (0, 0));
+        assert_eq!(light.at(0, 320, 0), (0, 15));
+        assert_eq!(light.at(0, 336, 0), (0, 15));
+    }
+
+    #[test]
+    fn empty_sky_padding_is_full_when_the_dimension_has_a_sky() {
+        let light = ChunkLight::new(Height::OVERWORLD);
+        assert_eq!(light.at(0, 64, 0), (0, 0));
+        assert_eq!(light.at(0, 320, 0), (0, 15));
+        assert_eq!(light.at(0, 336, 0), (0, 15));
+        assert_eq!(light.at(0, -80, 0), (0, 0));
+        let mut nether = ChunkLight::new(Height::NETHER);
+        nether.disable_skylight();
+        assert_eq!(nether.at(0, 64, 0), (0, 0));
+        assert_eq!(nether.at(0, 256, 0), (0, 0));
+        assert_eq!(nether.at(0, 272, 0), (0, 0));
     }
 
     #[test]

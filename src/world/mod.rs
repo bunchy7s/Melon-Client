@@ -34,6 +34,7 @@ pub mod level_settings;
 pub mod lightmap;
 pub mod map_color;
 pub mod model_part;
+pub mod nibble_decode;
 pub mod physics;
 pub mod pick;
 pub mod player;

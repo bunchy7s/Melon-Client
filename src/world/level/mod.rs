@@ -137,8 +137,7 @@ impl Level {
             return;
         }
         if !self.has_skylight {
-            let light = Arc::make_mut(&mut chunk.light);
-            light.sky.fill(crate::world::chunk::LightSection::Empty);
+            Arc::make_mut(&mut chunk.light).disable_skylight();
         }
         let key = (chunk.x, chunk.z);
         self.remove(key.0, key.1);

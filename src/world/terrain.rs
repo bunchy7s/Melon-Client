@@ -33,8 +33,24 @@ impl<'a> Neighborhood<'a> {
         Self { chunks, flat: None }
     }
 
+    /// The nine chunks, centre at index 4, and an optional unpacked centre
+    pub fn with_chunks(
+        chunks: [Option<&'a Chunk>; 9],
+        decoded: Option<(usize, &'a [u16; BLOCKS_PER_SECTION])>,
+    ) -> Self {
+        Self {
+            chunks,
+            flat: decoded,
+        }
+    }
+
     pub fn center(&self) -> &'a Chunk {
         self.chunks[4].expect("a neighbourhood has its centre")
+    }
+
+    /// The centre section unpacked, if [`mesh_section`] decoded it.
+    pub fn decoded_center(&self) -> Option<(usize, &'a [u16; BLOCKS_PER_SECTION])> {
+        self.flat
     }
 
     /// The block at chunk-local `(x, z)` (`-16..32`) and `y` relative to
@@ -442,7 +458,7 @@ fn fill_section(
         translucent,
         light: light_cache,
     } = builders;
-    light_cache.start(s);
+    light_cache.start(neighborhood, s);
     for y in 0..16 {
         for z in 0..16 {
             let row = (y * 16 + z) as usize;
@@ -462,7 +478,7 @@ fn fill_section(
                 };
                 let block = [x as u32, (local_y + y) as u32, z as u32];
                 let here = [x, y, z];
-                let center = light_cache.flags(neighborhood, here);
+                let center = light_cache.flags(here);
                 let smooth = context.smooth_lighting
                     && center.emission() == 0
                     && context.models.smooth_lighting(id);
@@ -479,19 +495,9 @@ fn fill_section(
                             continue;
                         }
                         let shape = context.models.ao_shape(quad);
-                        let smooth_lit = smooth
-                            .then(|| {
-                                smooth_corners(
-                                    light_cache,
-                                    neighborhood,
-                                    shape,
-                                    here,
-                                    center,
-                                    quad.emission,
-                                )
-                            })
-                            .flatten();
-                        let corners = smooth_lit.unwrap_or_else(|| {
+                        let corners = if smooth {
+                            smooth_corners(light_cache, shape, here, center, quad.emission)
+                        } else {
                             let side = quad.cullface.or_else(|| {
                                 shape
                                     .cubic(center.collision_full())
@@ -501,14 +507,8 @@ fn fill_section(
                                 let [dx, dy, dz] = side.step();
                                 [x + dx, y + dy, z + dz]
                             });
-                            flat_corners(
-                                light_cache,
-                                neighborhood,
-                                light_pos,
-                                center,
-                                quad.emission,
-                            )
-                        });
+                            flat_corners(light_cache, light_pos, center, quad.emission)
+                        };
                         let tint = tints.color(quad.tint, pos);
                         let terrain = TerrainQuad::tinted(quad.index, block, corners, offset, tint);
                         if quad.layer == ChunkLayer::Translucent {

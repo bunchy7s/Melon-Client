@@ -126,6 +126,11 @@ impl Bytes for NeonBytes {
     }
 
     #[inline(always)]
+    fn store_bytes(self, v: [u8; 16], out: &mut [u8]) {
+        out[..16].copy_from_slice(&v);
+    }
+
+    #[inline(always)]
     fn bit_mask(self, v: [u8; 16], bit: u32) -> u64 {
         let n = self.neon;
         let set = n.test_u8x16(v, [1 << bit; 16]);

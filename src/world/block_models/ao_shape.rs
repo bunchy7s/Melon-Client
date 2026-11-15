@@ -16,8 +16,8 @@ pub struct AoShape {
     pub flat: bool,
     /// On the block's side along its axis: the rest of `faceCubic`, unless
     pub boundary: bool,
-    /// Per vertex, the corner group (vanilla's `vert0..vert3`) it takes;
-    pub groups: Option<[u8; 4]>,
+    /// Per vertex, the corner group (vanilla's `vert0..vert3`) it takes.
+    pub groups: [u8; 4],
     /// Per vertex, its four group weights for partial quads
     pub weights: [[f32; 4]; 4],
 }
@@ -35,43 +35,50 @@ const FS: usize = 9;
 const FW: usize = 10;
 const FE: usize = 11;
 
+/// Four `SizeInfo` products: each pair is one term of a group weight.
+macro_rules! vert {
+    ($($a:ident $b:ident),+ $(,)?) => {
+        [$($a, $b),+]
+    };
+}
+
 /// `AdjacencyInfo.vert0Weights..vert3Weights` by direction: four pairs
 const WEIGHTS: [[[usize; 8]; 4]; 6] = [
     [
-        [FW, S, FW, FS, W, FS, W, S],
-        [FW, N, FW, FN, W, FN, W, N],
-        [FE, N, FE, FN, E, FN, E, N],
-        [FE, S, FE, FS, E, FS, E, S],
+        vert!(FW S, FW FS, W FS, W S),
+        vert!(FW N, FW FN, W FN, W N),
+        vert!(FE N, FE FN, E FN, E N),
+        vert!(FE S, FE FS, E FS, E S),
     ],
     [
-        [E, S, E, FS, FE, FS, FE, S],
-        [E, N, E, FN, FE, FN, FE, N],
-        [W, N, W, FN, FW, FN, FW, N],
-        [W, S, W, FS, FW, FS, FW, S],
+        vert!(E S, E FS, FE FS, FE S),
+        vert!(E N, E FN, FE FN, FE N),
+        vert!(W N, W FN, FW FN, FW N),
+        vert!(W S, W FS, FW FS, FW S),
     ],
     [
-        [U, FW, U, W, FU, W, FU, FW],
-        [U, FE, U, E, FU, E, FU, FE],
-        [D, FE, D, E, FD, E, FD, FE],
-        [D, FW, D, W, FD, W, FD, FW],
+        vert!(U FW, U W, FU W, FU FW),
+        vert!(U FE, U E, FU E, FU FE),
+        vert!(D FE, D E, FD E, FD FE),
+        vert!(D FW, D W, FD W, FD FW),
     ],
     [
-        [U, FW, FU, FW, FU, W, U, W],
-        [D, FW, FD, FW, FD, W, D, W],
-        [D, FE, FD, FE, FD, E, D, E],
-        [U, FE, FU, FE, FU, E, U, E],
+        vert!(U FW, FU FW, FU W, U W),
+        vert!(D FW, FD FW, FD W, D W),
+        vert!(D FE, FD FE, FD E, D E),
+        vert!(U FE, FU FE, FU E, U E),
     ],
     [
-        [U, S, U, FS, FU, FS, FU, S],
-        [U, N, U, FN, FU, FN, FU, N],
-        [D, N, D, FN, FD, FN, FD, N],
-        [D, S, D, FS, FD, FS, FD, S],
+        vert!(U S, U FS, FU FS, FU S),
+        vert!(U N, U FN, FU FN, FU N),
+        vert!(D N, D FN, FD FN, FD N),
+        vert!(D S, D FS, FD FS, FD S),
     ],
     [
-        [FD, S, FD, FS, D, FS, D, S],
-        [FD, N, FD, FN, D, FN, D, N],
-        [FU, N, FU, FN, U, FN, U, N],
-        [FU, S, FU, FS, U, FS, U, S],
+        vert!(FD S, FD FS, D FS, D S),
+        vert!(FD N, FD FN, D FN, D N),
+        vert!(FU N, FU FN, U FN, U N),
+        vert!(FU S, FU FS, U FS, U S),
     ],
 ];
 
@@ -85,45 +92,136 @@ const REMAP: [[usize; 4]; 6] = [
     [1, 2, 3, 0],
 ];
 
+macro_rules! max {
+    (min) => {
+        false
+    };
+    (max) => {
+        true
+    };
+}
+
+/// `FaceInfo` winding: four corners as min/max on x, y, z.
+macro_rules! face {
+    ($(($x:ident, $y:ident, $z:ident)),+ $(,)?) => {
+        [$( [max!($x), max!($y), max!($z)] ),+]
+    };
+}
+
 /// `FaceInfo`: each slot's corner as max (true) or min per axis x, y, z.
 const FACE_INFO: [[[bool; 3]; 4]; 6] = [
-    [
-        [false, false, true],
-        [false, false, false],
-        [true, false, false],
-        [true, false, true],
-    ],
-    [
-        [false, true, false],
-        [false, true, true],
-        [true, true, true],
-        [true, true, false],
-    ],
-    [
-        [true, true, false],
-        [true, false, false],
-        [false, false, false],
-        [false, true, false],
-    ],
-    [
-        [false, true, true],
-        [false, false, true],
-        [true, false, true],
-        [true, true, true],
-    ],
-    [
-        [false, true, false],
-        [false, false, false],
-        [false, false, true],
-        [false, true, true],
-    ],
-    [
-        [true, true, true],
-        [true, false, true],
-        [true, false, false],
-        [true, true, false],
-    ],
+    face!(
+        (min, min, max),
+        (min, min, min),
+        (max, min, min),
+        (max, min, max)
+    ),
+    face!(
+        (min, max, min),
+        (min, max, max),
+        (max, max, max),
+        (max, max, min)
+    ),
+    face!(
+        (max, max, min),
+        (max, min, min),
+        (min, min, min),
+        (min, max, min)
+    ),
+    face!(
+        (min, max, max),
+        (min, min, max),
+        (max, min, max),
+        (max, max, max)
+    ),
+    face!(
+        (min, max, min),
+        (min, min, min),
+        (min, min, max),
+        (min, max, max)
+    ),
+    face!(
+        (max, max, max),
+        (max, min, max),
+        (max, min, min),
+        (max, max, min)
+    ),
 ];
+
+const fn plane_axes(d: usize) -> [usize; 2] {
+    match d {
+        0 | 1 => [0, 2],
+        2 | 3 => [0, 1],
+        _ => [1, 2],
+    }
+}
+
+const fn remap_inverse() -> [[u8; 4]; 6] {
+    let mut out = [[0u8; 4]; 6];
+    let mut d = 0;
+    while d < 6 {
+        let mut k = 0;
+        while k < 4 {
+            out[d][REMAP[d][k]] = k as u8;
+            k += 1;
+        }
+        d += 1;
+    }
+    out
+}
+
+const fn remap_group(d: usize, slot: usize) -> u8 {
+    let mut g = 0;
+    while g < 4 {
+        if REMAP[d][g] == slot {
+            return g as u8;
+        }
+        g += 1;
+    }
+    0
+}
+
+const fn group_of_bits() -> [[u8; 4]; 6] {
+    let mut out = [[0u8; 4]; 6];
+    let mut d = 0;
+    while d < 6 {
+        let plane = plane_axes(d);
+        let mut slot = 0;
+        while slot < 4 {
+            let info = FACE_INFO[d][slot];
+            let bits = (info[plane[0]] as usize) | (info[plane[1]] as usize) << 1;
+            out[d][bits] = remap_group(d, slot);
+            slot += 1;
+        }
+        d += 1;
+    }
+    out
+}
+
+const GROUPS_BY_INDEX: [[u8; 4]; 6] = remap_inverse();
+const GROUP_OF: [[u8; 4]; 6] = group_of_bits();
+
+fn corner_groups(d: usize, corners: [Vec3; 4], min: Vec3, max: Vec3) -> [u8; 4] {
+    let by_index = GROUPS_BY_INDEX[d];
+    let plane = plane_axes(d);
+    if max[plane[0]] <= min[plane[0]] || max[plane[1]] <= min[plane[1]] {
+        return by_index;
+    }
+    let mid = (min + max) * 0.5;
+    let mut groups = [0u8; 4];
+    let mut seen = 0u8;
+    for (i, c) in corners.iter().enumerate() {
+        let bits = usize::from(c[plane[0]] > mid[plane[0]])
+            | usize::from(c[plane[1]] > mid[plane[1]]) << 1;
+        let g = GROUP_OF[d][bits];
+        if seen & (1 << g) != 0 {
+            return by_index;
+        }
+        seen |= 1 << g;
+        groups[i] = g;
+    }
+    groups
+}
 
 impl AoShape {
     /// The shape of a quad with block-space `corners` (`0..1`, before any
@@ -147,12 +245,9 @@ impl AoShape {
             1.0 - max.x,
         ];
         let (lo, hi) = (1.0e-4, 0.9999);
+        let d = direction.index();
         let axis = direction.axis();
-        let plane = match axis {
-            0 => [1, 2],
-            1 => [0, 2],
-            _ => [0, 1],
-        };
+        let plane = plane_axes(d);
         let partial = plane.iter().any(|&a| min[a] >= lo || max[a] <= hi);
         let flat = min[axis] == max[axis];
         let boundary = if direction.is_positive() {
@@ -161,36 +256,18 @@ impl AoShape {
             min[axis] < lo
         };
 
-        let d = direction.index();
         let table = &WEIGHTS[d];
         let group_weights: [[f32; 4]; 4] = std::array::from_fn(|k| {
             std::array::from_fn(|j| size[table[k][2 * j]] * size[table[k][2 * j + 1]])
         });
-        let mid = (min + max) * 0.5;
-        let mut groups = [0u8; 4];
-        let mut seen = 0u8;
-        let mut matched = max[plane[0]] > min[plane[0]] && max[plane[1]] > min[plane[1]];
-        for (i, corner) in corners.iter().enumerate() {
-            let side = [corner.x > mid.x, corner.y > mid.y, corner.z > mid.z];
-            let slot = FACE_INFO[d]
-                .iter()
-                .position(|info| plane.iter().all(|&a| info[a] == side[a]));
-            let Some(slot) = slot else {
-                matched = false;
-                break;
-            };
-            let group = REMAP[d].iter().position(|&s| s == slot).unwrap_or(0);
-            seen |= 1 << group;
-            groups[i] = group as u8;
-        }
-        matched &= seen == 0b1111;
+        let groups = corner_groups(d, corners, min, max);
         let weights = std::array::from_fn(|i| group_weights[usize::from(groups[i])]);
         Self {
             direction,
             partial,
             flat,
             boundary,
-            groups: matched.then_some(groups),
+            groups,
             weights,
         }
     }
@@ -214,13 +291,19 @@ mod tests {
         let shape = AoShape::of([v(0., 1., 0.), v(0., 1., 1.), v(1., 1., 1.), v(1., 1., 0.)]);
         assert!(!shape.partial && shape.flat && shape.boundary);
         assert!(shape.cubic(false));
-        assert_eq!(shape.groups, Some([2, 3, 0, 1]));
+        assert_eq!(shape.groups, [2, 3, 0, 1]);
     }
 
     #[test]
     fn vertex_order_doesnt_matter() {
         let shape = AoShape::of([v(1., 1., 1.), v(1., 1., 0.), v(0., 1., 0.), v(0., 1., 1.)]);
-        assert_eq!(shape.groups, Some([0, 1, 2, 3]));
+        assert_eq!(shape.groups, [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn unmatched_faces_still_take_the_vanilla_remap() {
+        let shape = AoShape::of([v(0.5, 1., 0.5); 4]);
+        assert_eq!(shape.groups, [2, 3, 0, 1]);
     }
 
     #[test]

@@ -1001,9 +1001,6 @@ mod tests {
                 let shape = models.ao_shape(&quad);
                 if let Some(facing) = quad.facing {
                     assert_eq!(shape.direction, facing, "state {state}: {shape:?}");
-                    if !shape.partial {
-                        assert!(shape.groups.is_some(), "state {state}: {shape:?}");
-                    }
                 }
             }
         }
