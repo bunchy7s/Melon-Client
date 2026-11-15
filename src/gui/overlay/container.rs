@@ -568,7 +568,7 @@ fn draw_container<'a>(
         push_entity_preview(ui.draw_list, texture, &preview);
     }
     draw_titles(&overlay.layout, ui, menu);
-    draw_slots_and_tooltip(overlay, screen.as_deref(), sprites, ui, menu);
+    draw_slot_grid(overlay, screen.as_deref(), sprites, ui, menu);
     if let Some(screen) = screen.as_mut() {
         screen.foreground(&mut MenuDraw {
             ui,
@@ -578,12 +578,15 @@ fn draw_container<'a>(
         });
     }
     overlay.screen = screen;
+    if let Some(book) = &overlay.book
+        && recipe_sprites.is_some()
+        && let Some((container, display)) = ui.ghost
+        && *container == menu.id
+    {
+        book.draw_ghost(ui, &overlay.layout, display);
+    }
+    draw_hand_and_tooltip(overlay, ui, menu);
     if let (Some(book), Some(sprites)) = (&overlay.book, recipe_sprites) {
-        if let Some((container, display)) = ui.ghost
-            && *container == menu.id
-        {
-            book.draw_ghost(ui, &overlay.layout, display);
-        }
         book.draw_overlay(ui, sprites);
     }
 }
@@ -636,8 +639,8 @@ fn draw_label(ui: &mut OverlayDraw, text: &StyledText, x: f32, y: f32) {
     text::draw(ui.draw_list, &paint, text, x, y);
 }
 
-/// The slots with what the mouse drags over them, the carried stack, and
-fn draw_slots_and_tooltip(
+/// The slots with what the mouse drags over them.
+fn draw_slot_grid(
     overlay: &ContainerOverlay,
     screen: Option<&dyn MenuScreen>,
     sprites: &MenuSprites,
@@ -667,6 +670,16 @@ fn draw_slots_and_tooltip(
             max_in: &max_in,
         }),
     );
+}
+
+/// The carried stack and the hovered slot's tooltip, over the screen's
+/// foreground and the recipe book (`AbstractRecipeBookScreen.extractContents`).
+fn draw_hand_and_tooltip(overlay: &ContainerOverlay, ui: &mut OverlayDraw, menu: &OpenContainer) {
+    let hovered = overlay
+        .layout
+        .slot_at(overlay.cursor)
+        .filter(|&slot| slot < menu.slots.len());
+    let drag = overlay.mouse.quick_craft();
     draw_carried(
         ui.draw_list,
         ui.painter,

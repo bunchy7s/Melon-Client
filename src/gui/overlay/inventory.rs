@@ -197,14 +197,12 @@ impl InventoryOverlay {
     }
 
     /// Draws the screen over the world, the player in its box.
-    #[allow(clippy::too_many_arguments)]
     fn draw_screen(
         &self,
         draw_list: &mut DrawList,
         textures: &InventoryTextures,
         painter: ItemPainter,
         inventory: &Inventory,
-        lang: &Lang,
         size: (f32, f32),
         player: Option<TextureId>,
     ) {
@@ -255,6 +253,20 @@ impl InventoryOverlay {
                 max_in: &max_in,
             }),
         );
+    }
+
+    /// The carried stack and the hovered slot's tooltip, over the recipe
+    /// book (`AbstractRecipeBookScreen.extractContents`' last stratum).
+    fn draw_hand_and_tooltip(
+        &self,
+        draw_list: &mut DrawList,
+        painter: ItemPainter,
+        inventory: &Inventory,
+        lang: &Lang,
+        size: (f32, f32),
+    ) {
+        let hovered = self.hovered_slot();
+        let drag = self.mouse.quick_craft();
         draw_carried(draw_list, painter, inventory, drag, self.cursor, |slot| {
             (
                 inventory.slots()[slot].clone(),
@@ -365,7 +377,6 @@ impl Overlay for InventoryOverlay {
             ui.textures.inventory,
             ui.painter,
             ui.inventory,
-            ui.lang,
             ui.size,
             ui.entity_preview,
         );
@@ -376,6 +387,9 @@ impl Overlay for InventoryOverlay {
             {
                 self.book.draw_ghost(ui, &self.layout.menu, display);
             }
+        }
+        self.draw_hand_and_tooltip(ui.draw_list, ui.painter, ui.inventory, ui.lang, ui.size);
+        if let Some(sprites) = ui.textures.container.recipe_book.as_ref() {
             self.book.draw_overlay(ui, sprites);
         }
     }
